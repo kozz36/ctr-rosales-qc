@@ -1,0 +1,37 @@
+schema: spec-driven
+
+context: |
+  Project: ctr-rosales-qc — QC reconciliation tool for construction material receipts.
+  Input: 493-page Autodesk Forma PDF export (CTR-PLC01-FR001 Recepción de Materiales).
+  Goal: reconcile declared materials (digital text) vs SUM of scanned guías de remisión,
+  grouped by Registro N° + fecha de entrega; flag mismatches; reassign misfiled guías; export table.
+  Stack: Python 3.12 + FastAPI, PyMuPDF, PaddleOCR (deskew + printed tables), Anthropic SDK
+  (Claude vision for handwritten dates, Message Batches), polars, pydantic. Frontend: Vue 3 + TS + Vite.
+  Architecture: Hexagonal / Ports & Adapters (greenfield). Deployment: local-first.
+  Domain rules: units KG/TN/RD/Rollo summed independently (no conversion); classify pages by title
+  (GUÍA DE REMISIÓN sums; Planilla Resumen / Listado de Barras / photos do not).
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - State assumptions explicitly for OCR/vision accuracy and cost
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Keep domain core pure; extraction engines are adapters behind ExtractionPort
+    - Document architecture decisions with rationale (Hexagonal, Dependency Inversion)
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    - Follow existing code patterns
+    - Match hexagonal layering (domain / application / adapters)
+    tdd: false
+    test_command: ""
+  verify:
+    test_command: ""
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas

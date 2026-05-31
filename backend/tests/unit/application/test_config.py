@@ -1,0 +1,180 @@
+"""Tests for AppConfig — pydantic-settings configuration.
+
+All tests run without any real environment variables; monkeypatching is used
+to inject values where needed.
+"""
+
+from __future__ import annotations
+
+import os
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from reconciliation.application.config import (
+    AppConfig,
+    ConfidenceConfig,
+    DeskewConfig,
+    VisionConfig,
+)
+
+
+# ---------------------------------------------------------------------------
+# AppConfig defaults
+# ---------------------------------------------------------------------------
+
+
+class TestAppConfigDefaults:
+    def test_vision_provider_default(self) -> None:
+        cfg = AppConfig()
+        assert cfg.vision.provider == "anthropic"
+
+    def test_max_vision_calls_default(self) -> None:
+        cfg = AppConfig()
+        assert cfg.vision.max_vision_calls == 500
+
+    def test_deskew_scope_locked(self) -> None:
+        cfg = AppConfig()
+        assert cfg.deskew.scope == "guia_only"
+
+    def test_confidence_threshold_default(self) -> None:
+        cfg = AppConfig()
+        assert cfg.confidence.threshold == 0.85
+
+    def test_output_dir_default(self) -> None:
+        cfg = AppConfig()
+        assert cfg.output_dir == Path("runs")
+
+    def test_anthropic_model_default(self) -> None:
+        cfg = AppConfig()
+        assert cfg.vision.anthropic.model == "claude-3-5-sonnet-20241022"
+
+    def test_ollama_base_url_default(self) -> None:
+        cfg = AppConfig()
+        assert cfg.vision.ollama.base_url == "http://localhost:11434/v1"
+
+
+# ---------------------------------------------------------------------------
+# ConfidenceConfig locked threshold
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceConfigLocked:
+    def test_locked_at_0_85(self) -> None:
+        """threshold=0.85 is accepted."""
+        c = ConfidenceConfig(threshold=0.85)
+        assert c.threshold == 0.85
+
+    def test_raises_on_non_locked_value(self) -> None:
+        """Any value != 0.85 raises a validation error."""
+        with pytest.raises(Exception):  # pydantic ValidationError
+            ConfidenceConfig(threshold=0.90)
+
+    def test_raises_on_lower_value(self) -> None:
+        with pytest.raises(Exception):
+            ConfidenceConfig(threshold=0.50)
+
+
+# ---------------------------------------------------------------------------
+# DeskewConfig
+# ---------------------------------------------------------------------------
+
+
+class TestDeskewConfig:
+    def test_scope_is_guia_only(self) -> None:
+        d = DeskewConfig()
+        assert d.scope == "guia_only"
+
+
+# ---------------------------------------------------------------------------
+# VisionConfig provider selection
+# ---------------------------------------------------------------------------
+
+
+class TestVisionConfig:
+    def test_provider_anthropic(self) -> None:
+        v = VisionConfig(provider="anthropic")
+        assert v.provider == "anthropic"
+
+    def test_provider_openai(self) -> None:
+        v = VisionConfig(provider="openai")
+        assert v.provider == "openai"
+
+    def test_provider_ollama(self) -> None:
+        v = VisionConfig(provider="ollama")
+        assert v.provider == "ollama"
+
+    def test_max_vision_calls_positive(self) -> None:
+        v = VisionConfig(max_vision_calls=100)
+        assert v.max_vision_calls == 100
+
+    def test_max_vision_calls_must_be_positive(self) -> None:
+        with pytest.raises(Exception):
+            VisionConfig(max_vision_calls=0)
+
+
+# ---------------------------------------------------------------------------
+# AppConfig.from_yaml
+# ---------------------------------------------------------------------------
+
+
+class TestFromYaml:
+    def test_loads_from_yaml_file(self, tmp_path: Path) -> None:
+        yaml_content = textwrap.dedent("""\
+            vision:
+              provider: ollama
+              max_vision_calls: 10
+            output_dir: /tmp/runs
+        """)
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml_content, encoding="utf-8")
+
+        cfg = AppConfig.from_yaml(cfg_file)
+        assert cfg.vision.provider == "ollama"
+        assert cfg.vision.max_vision_calls == 10
+
+    def test_missing_file_uses_defaults(self, tmp_path: Path) -> None:
+        missing = tmp_path / "nonexistent.yaml"
+        cfg = AppConfig.from_yaml(missing)
+        assert cfg.vision.provider == "anthropic"
+
+    def test_empty_yaml_uses_defaults(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "empty.yaml"
+        cfg_file.write_text("", encoding="utf-8")
+        cfg = AppConfig.from_yaml(cfg_file)
+        assert cfg.vision.provider == "anthropic"
+
+    def test_env_overrides_yaml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Environment variables must win over yaml values."""
+        yaml_content = "vision:\n  max_vision_calls: 50\n"
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml_content, encoding="utf-8")
+
+        monkeypatch.setenv("RECONCILIATION__VISION__MAX_VISION_CALLS", "999")
+        cfg = AppConfig.from_yaml(cfg_file)
+        assert cfg.vision.max_vision_calls == 999
+
+
+# ---------------------------------------------------------------------------
+# API key injection from env (api_key is never serialised to disk)
+# ---------------------------------------------------------------------------
+
+
+class TestApiKeyEnvInjection:
+    def test_anthropic_api_key_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-anthropic")
+        cfg = AppConfig()
+        assert cfg.vision.anthropic.api_key == "sk-test-anthropic"
+
+    def test_openai_api_key_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-openai")
+        cfg = AppConfig()
+        assert cfg.vision.openai.api_key == "sk-test-openai"
+
+    def test_no_api_key_when_env_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg = AppConfig()
+        assert cfg.vision.anthropic.api_key is None
+        assert cfg.vision.openai.api_key is None

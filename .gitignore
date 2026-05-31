@@ -1,0 +1,45 @@
+# Sensitive: real QC data (RUCs, company data, SUNAT docs)
+*.pdf
+.playwright-mcp/
+*.png
+claude-prompt-*.md
+*chat-export*
+
+# Local agent tooling (excluded from public repo)
+.claude/
+.atl/
+.pi/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+backend/runs/
+
+# Node / Vue
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+config.local.yaml
+backend/config.local.yaml
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

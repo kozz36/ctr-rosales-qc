@@ -1,0 +1,41 @@
+# config.yaml — CTR Rosales QC reconciliation pipeline
+#
+# Secrets (api_key) MUST be set via environment variables, NOT in this file.
+# Environment variables always override values set here.
+#
+# Env var format: RECONCILIATION__<SECTION>__<KEY>
+# Example:        RECONCILIATION__VISION__PROVIDER=ollama
+#                 ANTHROPIC_API_KEY=sk-ant-...
+#                 OPENAI_API_KEY=sk-...
+
+vision:
+  # Provider selection: anthropic | openai | ollama
+  provider: anthropic
+
+  # Per-provider settings (api_key injected from env, never here)
+  anthropic:
+    model: claude-3-5-sonnet-20241022
+
+  openai:
+    model: gpt-4o
+
+  ollama:
+    model: llava:latest
+    base_url: http://localhost:11434/v1
+
+  # Hard cap on vision LLM calls per run.
+  # VisionCapExceededError is raised when this limit is reached.
+  max_vision_calls: 500
+
+deskew:
+  # Locked: guia_only — deskew is applied only to GUIA pages post-classification.
+  # Do not change this value without amending the spec (EXT-003).
+  scope: guia_only
+
+confidence:
+  # Locked at 0.85 — EXT-002. Values below this threshold are flagged for review.
+  # Do not change this value without amending the spec.
+  threshold: 0.85
+
+# Base directory for per-run output directories (relative to working directory).
+output_dir: runs

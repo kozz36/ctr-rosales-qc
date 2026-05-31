@@ -1,0 +1,225 @@
+/**
+ * Design tokens — CTR Rosales QC
+ *
+ * Aesthetic direction: industrial/utilitarian. A civil-engineering QC tool
+ * demands legibility over decoration: high contrast, monospaced numerics,
+ * neutral cool surfaces, and sharp semantic status accents.
+ *
+ * Typography stack:
+ *   - Display/UI labels: "DM Sans" (geometric, technical, clear at small sizes)
+ *   - Body copy: system-ui stack (legible, fast loading, zero flash)
+ *   - Numerics: "JetBrains Mono" / system monospace (column-aligned qty/delta)
+ *
+ * Color system:
+ *   - Base surface: very dark slate (not pure black — avoids Halation on bright monitors)
+ *   - Text: cool near-white with distinct hierarchy tiers
+ *   - Status: MATCH → emerald (factual positive), MISMATCH → amber-red (alert, not panic),
+ *     DECLARED_MISSING / GUIA_MISSING → distinct warm/cool orange, UNCLASSIFIED → neutral amber
+ *   - Confidence: continuous amber→green scale anchored at the 0.85 threshold
+ *
+ * Token naming convention:
+ *   --{category}-{variant}: value
+ *   Categories: surface, text, border, status, confidence, action, spacing, type, font, radius, shadow
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  /* -------------------------------------------------------------------------
+   * Surface (background layers)
+   * ------------------------------------------------------------------------- */
+  --surface-base:       #0d1117;  /* page background — deep slate */
+  --surface-raised:     #161b22;  /* card / panel */
+  --surface-overlay:    #1f2937;  /* modal / dialog */
+  --surface-hover:      #243040;  /* row hover, interactive hover */
+  --surface-active:     #2d3b52;  /* selected row / focused cell */
+  --surface-inset:      #090d12;  /* input background */
+  --surface-divider:    #21262d;  /* horizontal rules, column separators */
+
+  /* -------------------------------------------------------------------------
+   * Text
+   * ------------------------------------------------------------------------- */
+  --text-primary:       #e6edf3;  /* body, labels */
+  --text-secondary:     #8b949e;  /* metadata, captions, helper text */
+  --text-tertiary:      #3d444d;  /* placeholder, disabled */
+  --text-inverse:       #0d1117;  /* text on bright accent backgrounds */
+  --text-link:          #58a6ff;  /* actionable text */
+
+  /* -------------------------------------------------------------------------
+   * Border
+   * ------------------------------------------------------------------------- */
+  --border-subtle:      #21262d;
+  --border-default:     #30363d;
+  --border-strong:      #484f58;
+  --border-focus:       #388bfd;  /* keyboard focus ring */
+
+  /* -------------------------------------------------------------------------
+   * Status — reconciliation row outcomes
+   *
+   * Each status has three tokens: bg (chip/badge fill), fg (text on bg), glow (left-border accent).
+   * Rule: status is conveyed by icon + label, not color alone (WCAG 1.4.1).
+   * ------------------------------------------------------------------------- */
+
+  /* MATCH — pipeline confirmed declarado == sumado */
+  --status-match-bg:    #0d2818;
+  --status-match-fg:    #3fb950;
+  --status-match-glow:  #238636;
+
+  /* MISMATCH — delta ≠ 0, requires correction */
+  --status-mismatch-bg:   #2d1111;
+  --status-mismatch-fg:   #f85149;
+  --status-mismatch-glow: #da3633;
+
+  /* DECLARED_MISSING — guía exists but no matching declarado entry */
+  --status-declared-missing-bg:    #271c07;
+  --status-declared-missing-fg:    #e3b341;
+  --status-declared-missing-glow:  #bb8009;
+
+  /* GUIA_MISSING — declarado exists but no guía was found */
+  --status-guia-missing-bg:    #0d1f35;
+  --status-guia-missing-fg:    #58a6ff;
+  --status-guia-missing-glow:  #1f6feb;
+
+  /* UNCLASSIFIED — pipeline could not classify the page */
+  --status-unclassified-bg:    #1c1c20;
+  --status-unclassified-fg:    #848d97;
+  --status-unclassified-glow:  #484f58;
+
+  /* Shorthand aliases used in ReviewGrid (PR-5b) */
+  --status-match:            var(--status-match-fg);
+  --status-mismatch:         var(--status-mismatch-fg);
+  --status-flag:             var(--status-mismatch-fg);  /* generic flag = mismatch red */
+  --status-declared-missing: var(--status-declared-missing-fg);
+  --status-guia-missing:     var(--status-guia-missing-fg);
+  --status-unclassified:     var(--status-unclassified-fg);
+
+  /* -------------------------------------------------------------------------
+   * Confidence scale
+   *
+   * Anchor: 0.85 is the configured threshold (AppConfig.confidence_threshold).
+   * Below 0.85 → amber warning. At/above 0.85 → green. 1.0 = trusted (digital).
+   * ------------------------------------------------------------------------- */
+  --confidence-low:        #e3b341;  /* < 0.85 — requires review */
+  --confidence-ok:         #3fb950;  /* >= 0.85 — acceptable */
+  --confidence-trusted:    #58a6ff;  /* null/1.0 — digital text, no OCR */
+
+  /* Discrete scale for ConfidenceBadge fill gradient (PR-5b) */
+  --confidence-scale-0:    #f85149;
+  --confidence-scale-50:   #d29922;
+  --confidence-scale-75:   #e3b341;
+  --confidence-scale-85:   #3fb950;  /* threshold breakpoint */
+  --confidence-scale-95:   #4ccc60;
+  --confidence-scale-100:  #58a6ff;  /* digital — visually distinct from OCR 100% */
+
+  /* -------------------------------------------------------------------------
+   * Action / interactive
+   * ------------------------------------------------------------------------- */
+  --action-primary:        #1f6feb;
+  --action-primary-hover:  #388bfd;
+  --action-primary-active: #1158c7;
+  --action-danger:         #da3633;
+  --action-danger-hover:   #f85149;
+
+  /* -------------------------------------------------------------------------
+   * Spacing — 4-point grid
+   * ------------------------------------------------------------------------- */
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:   12px;
+  --space-4:   16px;
+  --space-5:   20px;
+  --space-6:   24px;
+  --space-8:   32px;
+  --space-10:  40px;
+  --space-12:  48px;
+  --space-16:  64px;
+
+  /* -------------------------------------------------------------------------
+   * Type scale (rem-based; base = 16px)
+   * ------------------------------------------------------------------------- */
+  --text-2xs:  0.625rem;   /* 10px — column headers */
+  --text-xs:   0.75rem;    /* 12px — badges, captions */
+  --text-sm:   0.875rem;   /* 14px — table body, metadata */
+  --text-base: 1rem;       /* 16px — body */
+  --text-lg:   1.125rem;   /* 18px — card titles */
+  --text-xl:   1.25rem;    /* 20px — section headings */
+  --text-2xl:  1.5rem;     /* 24px — page headings */
+  --text-3xl:  1.875rem;   /* 30px — display */
+
+  /* -------------------------------------------------------------------------
+   * Font families
+   * ------------------------------------------------------------------------- */
+  --font-sans: 'DM Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+               'Liberation Mono', monospace;
+
+  /* -------------------------------------------------------------------------
+   * Radius
+   * ------------------------------------------------------------------------- */
+  --radius-sm:   3px;
+  --radius-md:   6px;
+  --radius-lg:   10px;
+  --radius-pill: 9999px;
+
+  /* -------------------------------------------------------------------------
+   * Shadow / elevation
+   * ------------------------------------------------------------------------- */
+  --shadow-sm:  0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --shadow-md:  0 4px 12px 0 rgb(0 0 0 / 0.5);
+  --shadow-lg:  0 8px 24px 0 rgb(0 0 0 / 0.6);
+  --shadow-focus: 0 0 0 3px rgb(56 139 253 / 0.4);
+
+  /* -------------------------------------------------------------------------
+   * Transition
+   * ------------------------------------------------------------------------- */
+  --transition-fast:   100ms ease;
+  --transition-normal: 180ms ease;
+  --transition-slow:   300ms ease;
+
+  /* -------------------------------------------------------------------------
+   * Layout
+   * ------------------------------------------------------------------------- */
+  --header-height: 56px;
+  --sidebar-width: 240px;
+  --content-max-w: 1440px;
+}
+
+/* -------------------------------------------------------------------------
+ * Base reset & typography
+ * ------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--text-primary);
+  background-color: var(--surface-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Numeric columns always monospaced */
+.mono,
+[data-numeric] {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Focus ring — keyboard only via :focus-visible */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}

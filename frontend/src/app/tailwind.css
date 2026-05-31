@@ -1,0 +1,10 @@
+/**
+ * Tailwind CSS entry point.
+ *
+ * CSS layer order: base < components < utilities.
+ * PrimeVue component styles are imported separately after this file
+ * so they can override Tailwind utilities where needed.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

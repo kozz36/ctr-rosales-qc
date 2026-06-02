@@ -19,7 +19,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Guía contribution (inline per reconciliation row — rev-2, REC-C02)
 # ---------------------------------------------------------------------------

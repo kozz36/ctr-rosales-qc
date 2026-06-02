@@ -24,12 +24,12 @@ from typing import Annotated, Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
+from reconciliation.domain.models import ReconciliationRow
 from reconciliation.infrastructure.api.schemas import (
     AuditEventResponse,
     AuditTrailResponse,
     ErrorResponse,  # noqa: F401 — imported for openapi docs
     ExportRequest,
-    ExportResponse,
     GuiaContributionResponse,
     GuiaLineEditRequest,
     ReassignRequest,
@@ -43,7 +43,6 @@ from reconciliation.infrastructure.api.schemas import (
     UnresolvedGuiaResponse,
     _row_id,
 )
-from reconciliation.domain.models import ReconciliationRow
 
 logger = logging.getLogger(__name__)
 
@@ -62,17 +61,17 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
-def _get_registry(request: Request) -> "dict[str, Any]":
+def _get_registry(request: Request) -> dict[str, Any]:
     """Extract the run registry dict from FastAPI app state."""
     return request.app.state.run_registry  # type: ignore[no-any-return]
 
 
 def _get_config(request: Request) -> Any:
     """Extract the AppConfig from FastAPI app state."""
-    return request.app.state.config  # type: ignore[no-any-return]
+    return request.app.state.config  # noqa: ANN401
 
 
-RunRegistry = Annotated[dict, Depends(_get_registry)]
+RunRegistry = Annotated[dict[str, Any], Depends(_get_registry)]
 AppConfigDep = Annotated[Any, Depends(_get_config)]
 
 
@@ -110,7 +109,7 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
     )
 
 
-def _require_run(registry: dict, run_id: str) -> Any:
+def _require_run(registry: dict[str, Any], run_id: str) -> Any:
     """Look up a run entry or raise 404."""
     entry = registry.get(run_id)
     if entry is None:
@@ -144,7 +143,7 @@ def _run_pipeline_background(
     run_id: str,
     pdf_path: Path,
     config: Any,
-    registry: dict,
+    registry: dict[str, Any],
 ) -> None:
     """Execute the pipeline synchronously inside a background task.
 
@@ -307,7 +306,11 @@ def get_table(run_id: str, registry: RunRegistry) -> ReconciliationTableResponse
             guia_id=g.guia_id,
             identity_source=g.identity_source,
             source_pages=g.source_pages,
-            first_page=g.first_page if g.first_page != 0 else (g.source_pages[0] if g.source_pages else None),
+            first_page=(
+                g.first_page
+                if g.first_page != 0
+                else (g.source_pages[0] if g.source_pages else None)
+            ),
         )
         for g in review_service.guias
         if g.registro is None

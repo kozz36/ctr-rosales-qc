@@ -9,8 +9,7 @@ pytest.importorskip() to skip gracefully when the libs are absent.
 from __future__ import annotations
 
 from io import BytesIO
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -20,7 +19,6 @@ from reconciliation.adapters.identity.qr_barcode import (
     parse_compact_gre_qr,
 )
 from reconciliation.domain.models import GuiaIdentity
-
 
 # ---------------------------------------------------------------------------
 # parse_compact_gre_qr — pure function tests (no libs required)

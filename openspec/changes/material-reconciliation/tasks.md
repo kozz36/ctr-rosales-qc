@@ -1137,3 +1137,35 @@ Cross-slice parallelism:
 - [x] Add `test_parse_line_items_missing_section_returns_empty`
 - [x] 587 unit tests pass (baseline 585 + 2 new)
 - [x] Unit tests updated: `ExtractionError` propagation tests → graceful degradation tests
+
+---
+
+## R7 — Vision stamp-crop region fix + qwen3.5 thinking-model compatibility (real-run bugfix, 2026-06-02)
+
+> Real-run finding (after R6): guía `fecha=None`, vision confidence 0.00 on all guías → zero MATCH rows.
+> Two compounded bugs: (1) stamp-crop region set to lower-right but CTR stamp is upper-right;
+> (2) `max_tokens=128` exhausted during qwen3.5:9b `<think>` phase → empty `content` string.
+
+### R7.1 — Correct stamp-crop region to upper-right in config.yaml + StampCropConfig defaults
+- [x] Change `config.yaml` `stamp_crop` from `x0=0.5, y0=0.6, x1=1.0, y1=1.0` → `x0=0.55, y0=0.05, x1=1.0, y1=0.45`
+- [x] Update `StampCropConfig` defaults and docstring in `config.py` (R7 bake-off annotation)
+- [x] Update docstrings in `pipeline.py` (`_prepare_vision_image`, `_stage_extract_vision`) from "lower-right" → "upper-right — R7 fix"
+- [x] Empirical tuning: crop `0.55, 0.05, 1.0, 0.45` reliably yields day-month on pages 4,5,6,8,20,25,30 of subset PDF
+
+### R7.2 — Fix qwen3.5:9b thinking-model max_tokens + think-block stripping
+- [x] Increase `OpenAICompatibleVisionAdapter` default `max_tokens` from 128 → 4096
+- [x] Add `_THINK_RE` regex to `openai_compatible.py` to strip `<think>…</think>` blocks before JSON parsing
+- [x] Update `_parse_vision_json` docstring to document think-block stripping
+
+### R7.3 — Tests
+- [x] Add 3 new unit tests to `test_vision_adapters.py`: think-block strip, multiline think + code-fence, empty-content→null
+- [x] Update `test_date_inference.py::TestStampCropRegionSelection::test_crop_enabled_returns_smaller_image` to R7 defaults (180×240 from 400×600 image)
+- [x] 590 unit tests pass (baseline 587 + 3 new)
+
+### R7 real-run evidence (run 7fd67700, subset PDF, ollama qwen3.5:9b, SUNAT enabled)
+- [x] 35 vision calls made, cap not reached
+- [x] 22/35 guías have non-null `fecha` (vision IS reading dates)
+- [x] Sample: T009-0741771 fecha=2026-05-28 (day=28, month=05 — matches ground truth), T009-0741319 fecha=2026-05-28
+- [x] Rows grouped by fecha: 46/60 DECLARED_MISSING rows have non-null `fecha` (up from 0)
+- [x] No MATCH/MISMATCH: subset PDF declared side returns `material=None` (pre-existing subset limitation, not R7 regression)
+- [x] year_inferred=True on 13 guías (year reconstructed by year-inference bounds; day-month from vision)

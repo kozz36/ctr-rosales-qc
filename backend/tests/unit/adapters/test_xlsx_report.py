@@ -41,6 +41,8 @@ LOCKED_COLUMNS = [
     "Páginas origen",
     # Rev-3 D5 (REC-C07): advisory year-inference flag (EXT-021).
     "Año inferido",
+    # R8.11 (MAT-008/S10): canonical key derivation method.
+    "Método",
 ]
 
 
@@ -375,6 +377,117 @@ class TestCsvOutput:
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# R8.11: +Método column in xlsx/csv (MAT-008/S10, ADR-5)
+# ---------------------------------------------------------------------------
+
+
+class TestMetodoColumn:
+    """MAT-S10: 'Método' column present in xlsx and csv export."""
+
+    def _make_row_with_method(
+        self,
+        match_method: str = "deterministic",
+        registro: str = "232",
+    ) -> ReconciliationRow:
+        from decimal import Decimal
+        return ReconciliationRow(
+            registro=registro,
+            fecha=date(2024, 1, 15),
+            material_canonical="BARRA A615 G60 1/2\" 9M",
+            unidad="TN",
+            declared_qty=Decimal("4.124"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[5, 6, 8],
+            match_method=match_method,  # type: ignore[arg-type]
+        )
+
+    def test_xlsx_metodo_column_in_header(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        rows = [self._make_row_with_method("deterministic")]
+        dst = tmp_path / "out.xlsx"
+        adapter.export(rows, [], dst, "xlsx")
+        wb = openpyxl.load_workbook(str(dst))
+        ws = wb["Reconciliacion"]
+        headers = [ws.cell(row=1, column=i+1).value for i in range(12)]
+        assert "Método" in headers
+
+    def test_xlsx_metodo_column_position(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        rows = [self._make_row_with_method("deterministic")]
+        dst = tmp_path / "out.xlsx"
+        adapter.export(rows, [], dst, "xlsx")
+        wb = openpyxl.load_workbook(str(dst))
+        ws = wb["Reconciliacion"]
+        # "Año inferido" must still be present (non-regression)
+        all_headers = [ws.cell(row=1, column=i+1).value for i in range(12)]
+        assert "Año inferido" in all_headers
+
+    def test_xlsx_metodo_value_deterministic(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        rows = [self._make_row_with_method("deterministic")]
+        dst = tmp_path / "out.xlsx"
+        adapter.export(rows, [], dst, "xlsx")
+        wb = openpyxl.load_workbook(str(dst))
+        ws = wb["Reconciliacion"]
+        headers = [ws.cell(row=1, column=i+1).value for i in range(12)]
+        metodo_col = headers.index("Método") + 1
+        val = ws.cell(row=2, column=metodo_col).value
+        assert val == "deterministic"
+
+    def test_xlsx_metodo_value_llm_inferred(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        rows = [self._make_row_with_method("llm_inferred")]
+        dst = tmp_path / "out.xlsx"
+        adapter.export(rows, [], dst, "xlsx")
+        wb = openpyxl.load_workbook(str(dst))
+        ws = wb["Reconciliacion"]
+        headers = [ws.cell(row=1, column=i+1).value for i in range(12)]
+        metodo_col = headers.index("Método") + 1
+        val = ws.cell(row=2, column=metodo_col).value
+        assert val == "llm_inferred"
+
+    def test_xlsx_metodo_value_unresolved(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        rows = [self._make_row_with_method("unresolved")]
+        dst = tmp_path / "out.xlsx"
+        adapter.export(rows, [], dst, "xlsx")
+        wb = openpyxl.load_workbook(str(dst))
+        ws = wb["Reconciliacion"]
+        headers = [ws.cell(row=1, column=i+1).value for i in range(12)]
+        metodo_col = headers.index("Método") + 1
+        val = ws.cell(row=2, column=metodo_col).value
+        assert val == "unresolved"
+
+    def test_xlsx_total_column_count_is_12(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        rows = [self._make_row_with_method("deterministic")]
+        dst = tmp_path / "out.xlsx"
+        adapter.export(rows, [], dst, "xlsx")
+        wb = openpyxl.load_workbook(str(dst))
+        ws = wb["Reconciliacion"]
+        # Count non-None header cells
+        col_count = sum(1 for i in range(20) if ws.cell(row=1, column=i+1).value is not None)
+        assert col_count == 12
+
+    def test_csv_metodo_column_present(self, tmp_path: Path) -> None:
+        from reconciliation.adapters.report.xlsx_report import ExcelReportAdapter
+        adapter = ExcelReportAdapter()
+        rows = [self._make_row_with_method("deterministic")]
+        dst = tmp_path / "out.csv"
+        adapter.export(rows, [], dst, "csv")
+        with open(dst, encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            headers = next(reader)
+        assert "Método" in headers
+
+    def test_csv_total_column_count_is_12(self, tmp_path: Path) -> None:
+        from reconciliation.adapters.report.xlsx_report import ExcelReportAdapter
+        adapter = ExcelReportAdapter()
+        rows = [self._make_row_with_method("deterministic")]
+        dst = tmp_path / "out.csv"
+        adapter.export(rows, [], dst, "csv")
+        with open(dst, encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            headers = next(reader)
+        assert len(headers) == 12
+
 
 class TestErrorHandling:
     def test_invalid_format_raises_value_error(

@@ -1,16 +1,16 @@
 """ExcelReportAdapter — ReportPort implementation writing xlsx and csv.
 
-Locked 10-column set (EXT-003, per design/tasks):
+Locked 12-column set (R8.11 +Método; was 11 in rev-3, 10 in original EXT-003):
     Registro | Fecha | Material | Unidad | Declarado | Sumado(guías) | Delta |
-    Estado | Confianza mín | Páginas origen
+    Estado | Confianza mín | Páginas origen | Año inferido | Método
 
 xlsx output contains three sheets:
-    1. Reconciliacion — the main 10-column reconciliation table
+    1. Reconciliacion — the main 12-column reconciliation table
     2. Resumen         — per-registro summary (count, totals, status breakdown)
     3. Audit Trail     — the raw audit trail events (optional; omitted if empty)
 
 csv output writes two UTF-8 files:
-    <dst>.csv           — reconciliation table (same 10 columns)
+    <dst>.csv           — reconciliation table (same 12 columns)
     <dst>_resumen.csv   — summary sheet
 
 Both xlsx and csv honour the same column order and data types.
@@ -49,6 +49,8 @@ _COLUMNS: Final[list[str]] = [
     "Páginas origen",
     # Rev-3 D5 (REC-C07): advisory year-inference flag (EXT-021).
     "Año inferido",
+    # R8.11 (MAT-008/S10 ADR-5): canonical key derivation method.
+    "Método",
 ]
 
 # Status → fill colour (ARGB)
@@ -70,7 +72,7 @@ _HEADER_FONT_COLOUR: Final[str] = "FFFFFFFF"
 
 
 def _row_to_values(row: ReconciliationRow) -> list[object]:
-    """Serialise a ReconciliationRow to 11 ordered cell values (rev-3: +Año inferido)."""
+    """Serialise a ReconciliationRow to 12 ordered cell values (R8.11: +Método)."""
     fecha_str = row.fecha.isoformat() if isinstance(row.fecha, date) else (row.fecha or "")
     pages_str = ", ".join(str(p) for p in sorted(row.source_pages)) if row.source_pages else ""
     conf_str = (
@@ -90,6 +92,8 @@ def _row_to_values(row: ReconciliationRow) -> list[object]:
         conf_str,
         pages_str,
         any_year_inferred_str,
+        # R8.11 (MAT-008/S10): canonical key derivation method (raw literal).
+        row.match_method,
     ]
 
 

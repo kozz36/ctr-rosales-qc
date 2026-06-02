@@ -171,6 +171,201 @@ Per-unit tolerance overrides and rounding epsilon are PROHIBITED for this change
 
 ---
 
+## Delta — rev 2 (2026-06-01): guía-granularity review model + fecha authority + UNRESOLVED fallback
+
+> The requirements below ADD or MODIFY behaviour relative to REC-001 through REC-010 above.
+> Each entry is marked [ADDED] or [MODIFIED: replaces <id>].
+
+### REC-C01 — [ADDED] Authoritative fecha: handwritten reception date only
+
+**[MODIFIED: makes the grouping-key `fecha` invariant explicit at the reconciliation tier;
+reinforces EXT-017]**
+
+The `fecha` component of the grouping key `(registro, fecha, material_canonical, unidad)`
+MUST be sourced exclusively from the handwritten reception date extracted by
+`VisionLLMPort` (vision LLM) from the guía page stamp area.
+The electronic GRE date obtained via `SunatGreFetchPort` MUST NOT be used as `fecha`,
+even when a SUNAT fetch is enabled.
+
+A `GuiaDeRemision` whose `fecha` differs from the `Registro.fecha_declarada` of its
+assigned registro MUST be treated as a potentially misfiled guía and MUST be surfaced in
+the review UI for the engineer to reassign or confirm.
+
+### REC-C02 — [ADDED] GuiaContribution — inline in ReconciliationRow
+
+Each `ReconciliationRow` MUST expose an inline `guias` field of type
+`list[GuiaContribution]`.
+
+`GuiaContribution` MUST carry:
+- `guia_id: str` — the deterministic `{serie}-{numero}` identifier from the QR tier, or
+  the OCR-fallback identity string; MUST be unique per block
+- `source_pages: list[int]` — all page indices in the guía block
+- `cantidad: float` — this guía's contribution to the group's sum for this unit
+- `unidad: str` — the unit for this contribution (matches the group's unit)
+- `confidence: float` — minimum OCR confidence for quantity rows in this block
+- `identity_source: Literal["qr", "ocr_fallback"]`
+
+The `guias` list MUST be populated INLINE in the DTO; a separate API endpoint that fetches
+guía detail on demand MUST NOT be used (chosen explicitly to avoid N+1 query patterns
+when the review UI renders the full grid).
+
+`summed_qty` on `ReconciliationRow` MUST be a derived, read-only field computed as
+`sum(g.cantidad for g in guias)`. It MUST NOT be directly editable via any API endpoint.
+
+### REC-C03 — [ADDED] Reassign by guia_id (serie-numero)
+
+**[MODIFIED: replaces the guía identification scheme in REC-006 which used "guía number +
+source page index"]**
+
+The `reassign_guia` operation MUST identify the guía to move by `guia_id`
+(`{serie}-{numero}`) rather than by guía number + source page index alone.
+When multiple guías in the same group share a source page (not expected in normal
+operation but MUST be handled defensively), `guia_id` MUST be the disambiguating key.
+The API endpoint for reassignment MUST accept `guia_id` as the target identifier.
+
+### REC-C04 — [ADDED] Guía-line cantidad edit; summed_qty is read-only
+
+A new editing path MUST be supported: the engineer edits the `cantidad` value of a
+specific line within a specific `GuiaContribution` (identified by `guia_id` and line
+index or material description).
+After a line `cantidad` edit:
+1. The `GuiaContribution.cantidad` for that block is recomputed as the sum of its
+   corrected line quantities.
+2. The `ReconciliationRow.summed_qty` is recomputed as `sum(g.cantidad for g in guias)`.
+3. The MATCH/MISMATCH status for the group is recomputed.
+4. The audit trail records the edit with `action_type = "guia_line_edit"`, the `guia_id`,
+   the line identifier, `old_value`, and `new_value`.
+
+The following edit path is PROHIBITED and MUST be removed:
+- Editing `summed_qty` directly on a `ReconciliationRow` as a field named `fecha` or as
+  any computed aggregate field. This was identified as the root cause of the
+  `date.fromisoformat("845")` corruption bug (frontend CRITICAL-2 from §frontend-review).
+
+### REC-C05 — [ADDED] UNRESOLVED guías surface in reconciliation output
+
+A `GuiaDeRemision` whose `registro` is `None` or matches the pattern `"UNRESOLVED:*"`
+MUST NOT be silently grouped or discarded.
+Such guías MUST be collected in a dedicated `unresolved_guias: list[GuiaDeRemision]`
+field on the reconciliation output (alongside the normal `rows` list).
+Each unresolved guía MUST appear in the review UI under an "unresolved guías" bucket so
+the engineer can assign a registro manually.
+An unresolved guía MUST be counted in the reconciliation audit trail as a distinct item
+(contributing zero to any declared-group sum until assigned).
+
+### REC-C06 — [ADDED] API surface additions
+
+The following API surface changes MUST be implemented to support the guía-granularity
+review model:
+
+**Modified response shape**:
+`ReconciliationRowResponse` MUST include a `guias: list[GuiaContributionResponse]` field
+(inline; not a separate lazy-loaded endpoint). The `GuiaContributionResponse` fields mirror
+`GuiaContribution` (guia_id, source_pages, cantidad, unidad, confidence, identity_source).
+
+**New endpoint**:
+`PATCH /runs/{run_id}/guias/{guia_id}/lines`
+- Purpose: edit the `cantidad` of a specific line within a guía block.
+- Request body: `{ "line_index": int, "cantidad": float }` or `{ "material_canonical": str, "cantidad": float }`.
+- Response: updated `ReconciliationRowResponse` for every affected group (source and, after
+  reassignment, target).
+- Idempotent: calling with the same value MUST produce the same result.
+- Error: returns 404 when `guia_id` is not found in the run; returns 422 when `cantidad < 0`.
+
+**Modified reassign endpoint**:
+`POST /runs/{run_id}/reassign` MUST accept `guia_id` (in addition to or replacing the
+previous `source_page` identification scheme). If both are provided, `guia_id` takes
+precedence.
+
+---
+
+## Acceptance Scenarios — Delta rev 2
+
+### Scenario REC-S01 — [MODIFIED] MATCH with guia list populated
+
+**Given** declared quantity for `(registro=232, fecha=2025-03-15, material_canonical="BARRA CORRUGADA 1/2", unidad="KG")` is 1250.0 KG
+**And** guía block `T009-0741770` (pages 47–48) contributes 750.0 KG (min confidence 0.95)
+**And** guía block `T009-0741771` (page 50) contributes 500.0 KG (min confidence 0.88)
+**When** `ReconciliationService` processes these rows
+**Then** the group status is `MATCH`
+**And** `ReconciliationRow.summed_qty = 1250.0` (derived, read-only)
+**And** `ReconciliationRow.guias` contains exactly 2 `GuiaContribution` entries:
+  - `{guia_id: "T009-0741770", source_pages: [47, 48], cantidad: 750.0, confidence: 0.95}`
+  - `{guia_id: "T009-0741771", source_pages: [50], cantidad: 500.0, confidence: 0.88}`
+**And** the group's aggregate confidence is 0.88
+
+> **Note**: scenario REC-S01 above replaces the greenfield REC-S01 (which used `registro=4252`
+> — a section ID, not a Registro N°). The correct business key is the Registro N° (e.g., `232`).
+
+### Scenario REC-C01 — [ADDED] Handwritten fecha drives grouping; electronic fecha ignored
+
+**Given** guía block `T009-0741770` has:
+  - `VisionLLMPort` returned handwritten fecha `2025-03-15` (confidence 0.91)
+  - SUNAT GRE fetch (enabled in this scenario) returned electronic fecha `2025-03-18`
+**When** `ReconciliationService` groups the guía's rows
+**Then** the grouping key uses `fecha = 2025-03-15` (handwritten)
+**And** `fecha = 2025-03-18` does NOT appear in any grouping key
+**And** the electronic date is NOT stored as a group-key component anywhere in the output
+
+### Scenario REC-C02 — [ADDED] Misfiled guía detected by fecha divergence
+
+**Given** registro 232 has `fecha_declarada = 2025-03-15`
+**And** guía block `T009-0741770` has handwritten fecha `2025-02-10` (a different date)
+**When** reconciliation processes the guía
+**Then** the guía is surfaced in the review UI with a "fecha mismatch" indicator
+**And** the reconciliation row for `(232, 2025-02-10, ...)` is created (using the guía's actual fecha)
+**And** a misfiled-guía flag is set so the engineer can reassign
+
+### Scenario REC-C03 — [ADDED] Reassign targets guia_id
+
+**Given** guía `T009-0741770` is currently contributing to group `(registro=232, fecha=2025-03-15)`
+**And** this guía belongs to `(registro=231, fecha=2025-02-10)` (misfiled)
+**When** the engineer reassigns `guia_id="T009-0741770"` to `(registro=231, fecha=2025-02-10)`
+**Then** all `GuiaContribution` entries for `T009-0741770` are removed from group `(232, 2025-03-15)`
+**And** a `GuiaContribution` for `T009-0741770` is added to group `(231, 2025-02-10)`
+**And** `summed_qty` is recomputed for BOTH groups
+**And** MATCH/MISMATCH status is refreshed for BOTH groups
+**And** the audit trail records `action_type="guia_reassign"`, `guia_id="T009-0741770"`,
+  `old_value="(232, 2025-03-15)"`, `new_value="(231, 2025-02-10)"`
+
+### Scenario REC-C04 — [ADDED] Guía-line cantidad edit recomputes summed_qty
+
+**Given** guía `T009-0741770` contributes a line with `material_canonical="BARRA CORRUGADA 1/2"`,
+  `cantidad=1260.0`, `unidad="KG"` (OCR misread)
+**And** the group's `summed_qty` is currently 1260.0
+**When** the engineer edits the line cantidad to `1250.0` via `PATCH /runs/{id}/guias/T009-0741770/lines`
+**Then** `GuiaContribution.cantidad` for `T009-0741770` is updated to 1250.0
+**And** `ReconciliationRow.summed_qty` recomputes to 1250.0
+**And** the group status updates from MISMATCH to MATCH
+**And** the audit trail records `action_type="guia_line_edit"`, `guia_id="T009-0741770"`,
+  `old_value=1260.0`, `new_value=1250.0`
+
+### Scenario REC-C05 — [ADDED] summed_qty direct edit is rejected
+
+**Given** a `ReconciliationRow` with `summed_qty = 1260.0`
+**When** the API receives a PATCH request targeting `summed_qty` as an editable field
+**Then** the API returns 422 (Unprocessable Entity)
+**And** no reconciliation state is modified
+**And** no audit trail entry is created
+
+### Scenario REC-C06 — [ADDED] Unresolved guía surfaces in reconciliation output
+
+**Given** a guía block whose `_derive_numero` returns `None` (no matching section entry)
+**When** reconciliation processes the output
+**Then** the `GuiaDeRemision` appears in `reconciliation_result.unresolved_guias`
+**And** the guía does NOT contribute to any declared-group sum
+**And** the reconciliation audit trail includes the unresolved guía by `guia_id` or page index
+**And** the review UI surfaces it in the "unresolved guías" bucket
+
+### Scenario REC-C07 — [ADDED] Section ID never used as registro key
+
+**Given** a page whose section/Contents map entry is `4252`
+**And** the Registro N° derivation fails (no matching registro)
+**When** reconciliation receives the guía
+**Then** no `ReconciliationRow` is keyed with `registro = "4252"`
+**And** the guía appears in `unresolved_guias` with an explanatory sentinel
+
+---
+
 ## Out of scope for this domain
 
 - PDF reading, page rendering, deskew (ingestion domain).

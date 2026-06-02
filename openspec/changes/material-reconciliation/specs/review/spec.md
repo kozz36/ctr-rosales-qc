@@ -172,6 +172,122 @@ At export time, the engineer-corrected value MUST take precedence.
 
 ---
 
+## Delta — rev 2 (2026-06-01): guía-granularity UI + reassign by guia_id + line edit
+
+> The requirements below ADD or MODIFY behaviour relative to REV-001 through REV-009 above.
+> Each entry is marked [ADDED] or [MODIFIED: replaces <id>].
+
+### REV-C01 — [ADDED] Row drill-down to contributing guías
+
+Each row in the reconciliation grid MUST be expandable to reveal the list of contributing
+guías for that group (`ReconciliationRow.guias`).
+The expanded drill-down view MUST display, per `GuiaContribution`:
+- `guia_id` (formatted as `{serie}-{numero}`)
+- `source_pages` (comma-separated list of page indices)
+- `cantidad` and `unidad`
+- `confidence` (with the ConfidenceBadge < 0.85 flag applied)
+- `identity_source` indicator (`QR` or `OCR fallback`)
+
+The drill-down MUST be rendered without a separate API call — the data is already inline in
+the `ReconciliationRowResponse.guias[]` array (avoiding N+1 fetch on expand).
+
+### REV-C02 — [ADDED] Reassign action targets guia_id
+
+**[MODIFIED: replaces REV-003's identification scheme]**
+
+The `GuiaReassignDialog` MUST identify the guía to be reassigned by `guia_id`
+(`{serie}-{numero}`) — NOT by `row_id` alone.
+The dialog MUST be reachable from the drill-down view (REV-C01) with a discoverable
+"Reassign" action per `GuiaContribution` entry.
+The reassign API call MUST send `guia_id` to `POST /runs/{id}/reassign`.
+After a successful reassign:
+- Both the source and target `ReconciliationRow` entries MUST update in the grid without a
+  full page reload.
+- The drill-down for both rows MUST reflect the updated `guias[]` list.
+
+The prior behavior of sending `row_id` as a proxy for `guia_id` is PROHIBITED (this was
+identified as CRITICAL-1 in §frontend-review).
+
+### REV-C03 — [ADDED] Guía-line cantidad edit in drill-down
+
+From the drill-down view, the engineer MUST be able to edit the `cantidad` of an
+individual line within a `GuiaContribution`.
+The edit MUST be submitted via `PATCH /runs/{id}/guias/{guia_id}/lines`.
+After a successful edit:
+- `GuiaContribution.cantidad` in the drill-down updates to the new value.
+- `ReconciliationRow.summed_qty` in the parent row updates (recomputed).
+- The MATCH/MISMATCH badge updates immediately.
+The cell displaying `summed_qty` in the aggregate row MUST be read-only in the UI;
+it MUST NOT be an editable input field.
+
+The prior behavior of presenting `summed_qty` as a directly editable field aliased to
+`field:'fecha'` is PROHIBITED (this was identified as CRITICAL-2 in §frontend-review).
+
+### REV-C04 — [ADDED] Unresolved guías bucket
+
+The review UI MUST include an "Unresolved guías" section (or filter) that lists all
+`GuiaDeRemision` entries from `reconciliation_result.unresolved_guias`.
+Each entry MUST display:
+- `guia_id` (or page range if guia_id is unavailable)
+- `identity_source`
+- `source_pages`
+- A manual "Assign to registro" action that triggers `POST /runs/{id}/reassign` with a
+  target registro/fecha selected by the engineer.
+
+Unresolved guías MUST NOT appear as rows in the main reconciliation grid until they have
+been assigned.
+
+---
+
+## Acceptance Scenarios — Delta rev 2
+
+### Scenario REV-C01 — [ADDED] Drill-down shows guía contributions without extra fetch
+
+**Given** a reconciliation row for group `(registro=232, fecha=2025-03-15, "BARRA CORRUGADA 1/2", "KG")`
+**And** `ReconciliationRowResponse.guias` contains 2 `GuiaContributionResponse` entries
+**When** the engineer expands the row in the review grid
+**Then** both guías are displayed with guia_id, source_pages, cantidad, unidad, confidence
+**And** no additional API call is made to fetch guía detail
+**And** a "Reassign" button is visible for each guía entry
+
+### Scenario REV-C02 — [ADDED] Reassign dialog uses guia_id
+
+**Given** the engineer clicks "Reassign" for guía `T009-0741770` in the drill-down
+**When** the GuiaReassignDialog opens
+**Then** the dialog identifies the guía by `guia_id = "T009-0741770"` (not by row_id)
+**When** the engineer selects target `(registro=231, fecha=2025-02-10)` and confirms
+**Then** the API call is `POST /runs/{id}/reassign` with body `{ "guia_id": "T009-0741770", ... }`
+**And** the source row (232 / 2025-03-15) and target row (231 / 2025-02-10) both update
+  in the grid without a page reload
+
+### Scenario REV-C03 — [ADDED] Guía-line edit updates summed_qty immediately
+
+**Given** the drill-down for row `(232, 2025-03-15, "BARRA CORRUGADA 1/2", "KG")` shows
+  guía `T009-0741770` with `cantidad = 1260.0`
+**When** the engineer edits the cantidad cell to `1250.0`
+**Then** `PATCH /runs/{id}/guias/T009-0741770/lines` is called with the new value
+**And** the `GuiaContribution` cantidad cell updates to 1250.0
+**And** the aggregate `summed_qty` in the parent row updates to 1250.0
+**And** the MATCH/MISMATCH badge on the parent row updates (from MISMATCH to MATCH if applicable)
+
+### Scenario REV-C04 — [ADDED] summed_qty cell is read-only
+
+**Given** the engineer views a `ReconciliationRow` in the review grid
+**When** the engineer attempts to click or activate the `summed_qty` cell
+**Then** the cell is NOT editable (no input field rendered)
+**And** no PATCH request targeting `summed_qty` as a direct field is issued
+
+### Scenario REV-C05 — [ADDED] Unresolved guías appear in dedicated bucket
+
+**Given** the reconciliation result contains 2 unresolved guías (failed registro derivation)
+**When** the engineer opens the review UI
+**Then** an "Unresolved guías" section is visible
+**And** both guías are listed with their guia_id (or page range), identity_source, and source_pages
+**And** each unresolved guía has an "Assign to registro" control
+**And** neither unresolved guía appears as a row in the main reconciliation grid
+
+---
+
 ## Out of scope for this domain
 
 - Pipeline execution (ingestion, extraction, normalization, reconciliation).

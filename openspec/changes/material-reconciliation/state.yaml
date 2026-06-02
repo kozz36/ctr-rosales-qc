@@ -11,15 +11,25 @@ dag:
   spec:
     status: done
     completed: 2026-05-31
+    delta_applied: 2026-06-01
     depends_on: [proposal]
     artifact: specs/
     engram_topic: sdd/material-reconciliation/spec
     domains: [ingestion, extraction, reconciliation, review, export]
+    delta_domains: [extraction, reconciliation, review]
+    delta_summary: >
+      Rev-2 delta (A-F) encoded as testable requirements + scenarios.
+      EXT-011 to EXT-022 added to extraction/spec.md (QR identity port, local decode
+      adapter spec, tiered precedence invariant, OCR fallback, multi-page block
+      grouping, SunatGreFetchPort seam, authoritative fecha, UNRESOLVED fallback).
+      REC-C01 to REC-C06 added to reconciliation/spec.md (handwritten fecha authority,
+      GuiaContribution inline DTO, reassign by guia_id, line-cantidad edit,
+      summed_qty read-only, UNRESOLVED surfacing, API surface PATCH /guias/{id}/lines).
+      REV-C01 to REV-C04 added to review/spec.md (drill-down, reassign by guia_id,
+      line edit, unresolved guias bucket).
     note: >
-      A spec-DELTA is PENDING to encode design rev-2 (sections A-F): QR identity
-      tier, multi-page block grouping, authoritative handwritten reception date,
-      guia-granularity review model, UNRESOLVED page->registro fallback. This is
-      the FIRST task of the next session.
+      tasks.md predates the rev-2 delta and must be refreshed next (slice-1 backend-hotfix
+      tasks now have full testable spec coverage).
   design:
     status: done
     completed: 2026-05-31

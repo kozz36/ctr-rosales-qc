@@ -472,6 +472,50 @@ def export_run(
 
 
 @router.get(
+    "/runs/{run_id}/pages/{page}/thumbnail",
+    summary="Fetch the deskewed page render as a PNG thumbnail.",
+)
+def get_page_thumbnail(
+    run_id: str,
+    page: int,
+    registry: RunRegistry,
+) -> FileResponse:
+    """Return the deskewed PNG render for page *page* (0-based) of run *run_id*.
+
+    Spec: REV-005 / S1.8.
+
+    The file is expected at ``run_dir/pages/{page:04d}.png`` — written by the
+    pipeline's DeskewAdapter during processing.  Returns 404 if the page file
+    does not exist (run not yet processed or page index out of range).
+
+    No new dependencies — uses the standard ``FileResponse`` from ``fastapi``.
+    """
+    entry = _require_run(registry, run_id)
+    ctx = entry.get("ctx")
+    if ctx is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run '{run_id}' has no processed context yet (status: {entry.get('status')}).",
+        )
+
+    pages_dir: Path = ctx.run_dir / "pages"
+    page_file = pages_dir / f"{page:04d}.png"
+
+    if not page_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Page {page} not found for run '{run_id}'. "
+            "The page may not have been rendered or the index is out of range.",
+        )
+
+    return FileResponse(
+        path=str(page_file),
+        media_type="image/png",
+        filename=f"{run_id[:8]}_page_{page:04d}.png",
+    )
+
+
+@router.get(
     "/runs/{run_id}/audit",
     response_model=AuditTrailResponse,
     summary="Retrieve the audit trail for a run.",

@@ -568,6 +568,74 @@ class TestUploadSecurity:
 
 
 # ---------------------------------------------------------------------------
+# GET /runs/{run_id}/pages/{page}/thumbnail (S1.8)
+# ---------------------------------------------------------------------------
+
+
+class TestGetThumbnail:
+    def _seed_with_pages_dir(
+        self,
+        client: TestClient,
+        run_id: str,
+        tmp_path: Path,
+        pages: list[int] | None = None,
+    ) -> Path:
+        """Seed a run with a fake ctx that has a pages directory."""
+        run_dir = tmp_path / "runs" / run_id
+        pages_dir = run_dir / "pages"
+        pages_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write minimal PNG bytes for requested page numbers
+        for page_idx in (pages or [0]):
+            (pages_dir / f"{page_idx:04d}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        fake_ctx = MagicMock()
+        fake_ctx.run_dir = run_dir
+
+        registry = client.app.state.run_registry  # type: ignore[attr-defined]
+        registry[run_id] = {
+            "status": "review",
+            "review_service": _make_review_service(),
+            "ctx": fake_ctx,
+            "result": None,
+            "vision_calls_made": 0,
+            "warnings": [],
+            "error": None,
+        }
+        return pages_dir
+
+    def test_returns_200_with_png_for_existing_page(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        run_id = str(uuid.uuid4())
+        self._seed_with_pages_dir(client, run_id, tmp_path, pages=[0])
+
+        resp = client.get(f"/api/v1/runs/{run_id}/pages/0/thumbnail")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("image/png")
+
+    def test_returns_404_for_missing_page(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        run_id = str(uuid.uuid4())
+        self._seed_with_pages_dir(client, run_id, tmp_path, pages=[0])
+
+        resp = client.get(f"/api/v1/runs/{run_id}/pages/99/thumbnail")
+        assert resp.status_code == 404
+
+    def test_returns_404_for_unknown_run(self, client: TestClient) -> None:
+        resp = client.get("/api/v1/runs/nope/pages/0/thumbnail")
+        assert resp.status_code == 404
+
+    def test_returns_409_when_ctx_not_ready(self, client: TestClient) -> None:
+        """Run exists but ctx is None (still processing) → 409."""
+        run_id = str(uuid.uuid4())
+        _seed_run(client, run_id, status="processing")
+        resp = client.get(f"/api/v1/runs/{run_id}/pages/0/thumbnail")
+        assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
 # PATCH /runs/{run_id}/guias/{guia_id}/lines (S1.7 — rev-2 line edit)
 # ---------------------------------------------------------------------------
 

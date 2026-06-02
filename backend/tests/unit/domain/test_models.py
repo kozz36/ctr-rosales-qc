@@ -1,6 +1,8 @@
 """Unit tests for domain value objects (task 1.1).
 
-Covers: model instantiation, Decimal precision, None confidence allowed.
+Covers: model instantiation, Decimal precision, None confidence allowed,
+rev-2 new models (GuiaIdentity, GuiaContribution), GuiaDeRemision rev-2 fields,
+ReconciliationRow.guias default.
 """
 
 from __future__ import annotations
@@ -11,7 +13,9 @@ from decimal import Decimal
 import pytest
 
 from reconciliation.domain.models import (
+    GuiaContribution,
     GuiaDeRemision,
+    GuiaIdentity,
     MaterialLine,
     PageClassification,
     ReconciliationRow,
@@ -235,3 +239,198 @@ class TestVisionResult:
         vr = VisionResult(date=None, confidence=0.0, raw="")
         assert vr.date is None
         assert vr.confidence == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Rev-2 new models (S1.1)
+# ---------------------------------------------------------------------------
+
+
+class TestGuiaIdentity:
+    """Tests for GuiaIdentity (EXT-011)."""
+
+    def test_instantiation_all_fields(self) -> None:
+        gi = GuiaIdentity(
+            serie="T009",
+            numero="0741770",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            hashqr_url=None,
+            confidence=1.0,
+        )
+        assert gi.serie == "T009"
+        assert gi.numero == "0741770"
+        assert gi.ruc_emisor == "20370146994"
+        assert gi.confidence == pytest.approx(1.0)
+
+    def test_guia_id_computed_from_serie_numero(self) -> None:
+        gi = GuiaIdentity(
+            serie="T009",
+            numero="0741770",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            confidence=1.0,
+        )
+        assert gi.guia_id == "T009-0741770"
+
+    def test_hashqr_url_optional_defaults_none(self) -> None:
+        gi = GuiaIdentity(
+            serie="T009",
+            numero="0741770",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            confidence=1.0,
+        )
+        assert gi.hashqr_url is None
+
+    def test_hashqr_url_populated(self) -> None:
+        url = "https://e-consulta.sunat.gob.pe/descargaqr?hashqr=ABC123"
+        gi = GuiaIdentity(
+            serie="T009",
+            numero="0741770",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            hashqr_url=url,
+            confidence=1.0,
+        )
+        assert gi.hashqr_url == url
+
+    def test_tipo_31_valid(self) -> None:
+        gi = GuiaIdentity(
+            serie="V001",
+            numero="0000001",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="31",
+            confidence=1.0,
+        )
+        assert gi.tipo == "31"
+
+
+class TestGuiaContribution:
+    """Tests for GuiaContribution (REC-C02 / design §D)."""
+
+    def test_instantiation_all_fields(self) -> None:
+        gc = GuiaContribution(
+            guia_id="T009-0741770",
+            source_pages=[47, 48],
+            cantidad=Decimal("1250.00"),
+            unidad="KG",
+            confidence=1.0,
+            identity_source="qr",
+        )
+        assert gc.guia_id == "T009-0741770"
+        assert gc.source_pages == [47, 48]
+        assert gc.cantidad == Decimal("1250.00")
+        assert gc.unidad == "KG"
+        assert gc.identity_source == "qr"
+
+    def test_ocr_fallback_source(self) -> None:
+        gc = GuiaContribution(
+            guia_id="guia_fallback",
+            source_pages=[10],
+            cantidad=Decimal("500"),
+            unidad="TN",
+            confidence=0.80,
+            identity_source="ocr_fallback",
+        )
+        assert gc.identity_source == "ocr_fallback"
+
+    def test_unidad_preserved_exactly(self) -> None:
+        """Units MUST be preserved as-is — never converted (domain invariant)."""
+        for unit in ("KG", "TN", "RD", "Rollo"):
+            gc = GuiaContribution(
+                guia_id="X-1",
+                source_pages=[1],
+                cantidad=Decimal("1"),
+                unidad=unit,
+                confidence=1.0,
+                identity_source="qr",
+            )
+            assert gc.unidad == unit
+
+
+class TestGuiaDeRemisionRev2Fields:
+    """GuiaDeRemision rev-2 identity fields default safely (EXT-015 / design §7)."""
+
+    def test_existing_construction_still_works(self) -> None:
+        """Rev-2 fields default so existing call sites are not broken."""
+        guia = GuiaDeRemision(
+            guia_id="G-001",
+            registro="232",
+            fecha=date(2025, 3, 15),
+            lines=[],
+            source_pages=[10, 11],
+        )
+        assert guia.ruc_emisor is None
+        assert guia.ruc_receptor is None
+        assert guia.tipo is None
+        assert guia.gre_hashqr_url is None
+        assert guia.identity_confidence == pytest.approx(0.0)
+        assert guia.identity_source == "ocr_fallback"
+        assert guia.first_page == 0
+
+    def test_rev2_fields_populated(self) -> None:
+        guia = GuiaDeRemision(
+            guia_id="T009-0741770",
+            registro="232",
+            fecha=date(2025, 3, 15),
+            lines=[],
+            source_pages=[47, 48],
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            gre_hashqr_url=None,
+            identity_confidence=1.0,
+            identity_source="qr",
+            first_page=47,
+        )
+        assert guia.ruc_emisor == "20370146994"
+        assert guia.identity_source == "qr"
+        assert guia.first_page == 47
+
+
+class TestReconciliationRowGuias:
+    """ReconciliationRow.guias defaults to empty list (rev-2 / design §D)."""
+
+    def test_guias_defaults_empty(self) -> None:
+        row = ReconciliationRow(
+            registro="232",
+            fecha=date(2025, 3, 15),
+            material_canonical="barra corrugada 1/2",
+            unidad="KG",
+            declared_qty=Decimal("1250.00"),
+            summed_qty=Decimal("1250.00"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[10, 11],
+        )
+        assert row.guias == []
+
+    def test_guias_populated(self) -> None:
+        gc = GuiaContribution(
+            guia_id="T009-0741770",
+            source_pages=[10],
+            cantidad=Decimal("1250.00"),
+            unidad="KG",
+            confidence=1.0,
+            identity_source="qr",
+        )
+        row = ReconciliationRow(
+            registro="232",
+            fecha=date(2025, 3, 15),
+            material_canonical="barra corrugada 1/2",
+            unidad="KG",
+            declared_qty=Decimal("1250.00"),
+            summed_qty=Decimal("1250.00"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[10],
+            guias=[gc],
+        )
+        assert len(row.guias) == 1
+        assert row.guias[0].guia_id == "T009-0741770"

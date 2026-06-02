@@ -28,3 +28,14 @@ class VisionCapExceededError(ReconciliationError):
 
     ``detail`` keys: ``calls_made``, ``cap``, ``pages_remaining``.
     """
+
+
+class IdentityDecodeError(ReconciliationError):
+    """Logged-only error for QR/barcode decode failures (rev-2, EXT-012).
+
+    NOT raised to the caller — QR failures degrade gracefully to the OCR identity
+    fallback (EXT-014).  This class exists so the audit trail can record structured
+    context about why a decode attempt failed.
+
+    ``detail`` keys: ``page_idx``, ``reason``.
+    """

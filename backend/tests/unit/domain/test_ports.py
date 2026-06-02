@@ -2,6 +2,8 @@
 
 Each test creates a minimal stub implementing the Protocol and verifies
 that isinstance() check passes (runtime_checkable=True).
+
+Rev-2 additions: IdentityExtractionPort, SunatGreFetchPort (seam only).
 """
 
 from __future__ import annotations
@@ -11,11 +13,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from reconciliation.domain.models import MaterialLine, ReconciliationRow, VisionResult
+from reconciliation.domain.models import GuiaIdentity, MaterialLine, ReconciliationRow, VisionResult
 from reconciliation.domain.ports import (
     DocumentSourcePort,
     ExtractionPort,
+    IdentityExtractionPort,
     ReportPort,
+    SunatGreFetchPort,
     VisionLLMPort,
 )
 
@@ -129,3 +133,56 @@ class TestReportPort:
         dst = Path("/tmp/out")
         result = stub.export([], [], dst, "xlsx")
         assert result == dst
+
+
+# ---------------------------------------------------------------------------
+# Rev-2 ports (S1.1)
+# ---------------------------------------------------------------------------
+
+
+class _StubIdentityExtraction:
+    def decode_identity(self, image: bytes) -> GuiaIdentity | None:
+        return GuiaIdentity(
+            serie="T009",
+            numero="0741770",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            confidence=1.0,
+        )
+
+
+class _StubSunatGreFetch:
+    def fetch(self, hashqr_url: str) -> None:
+        return None
+
+
+class TestIdentityExtractionPort:
+    def test_isinstance_check_passes(self) -> None:
+        stub = _StubIdentityExtraction()
+        assert isinstance(stub, IdentityExtractionPort)
+
+    def test_decode_identity_returns_guia_identity(self) -> None:
+        stub = _StubIdentityExtraction()
+        result = stub.decode_identity(b"image")
+        assert isinstance(result, GuiaIdentity)
+        assert result.guia_id == "T009-0741770"
+
+    def test_decode_identity_can_return_none(self) -> None:
+        class _NoneStub:
+            def decode_identity(self, image: bytes) -> GuiaIdentity | None:
+                return None
+
+        stub = _NoneStub()
+        assert isinstance(stub, IdentityExtractionPort)
+        assert stub.decode_identity(b"img") is None
+
+
+class TestSunatGreFetchPort:
+    def test_isinstance_check_passes(self) -> None:
+        stub = _StubSunatGreFetch()
+        assert isinstance(stub, SunatGreFetchPort)
+
+    def test_fetch_returns_none_when_disabled(self) -> None:
+        stub = _StubSunatGreFetch()
+        assert stub.fetch("https://example.com/hashqr=XYZ") is None

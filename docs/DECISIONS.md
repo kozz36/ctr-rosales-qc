@@ -111,3 +111,212 @@ The business date is the **handwritten reception date + signature** on the scann
 electronic document). It MAY differ from the electronic GRE date. Therefore: vision is
 irreplaceable even with QR/fetch; a SUNAT fetch's electronic date is at most a cross-check,
 never the grouping key.
+
+---
+
+## §rev-3 — real-run validation findings & fixes (2026-06-02)
+
+All seven items below surfaced during the first real-data run of rev-2 (subset PDF, pages
+0–45, registros 230/231/232, Ollama qwen3.5:9b, real paddle + real QR libs). They were
+**masked by injected mocks** (`HybridDocSource`) in the prior integration tests — classic
+"green-with-mocks / broken-on-real" failure mode; see §recurring-mock-gap below.
+
+### R1 — CRITICAL: hybrid classifier gap (classification-gap #2749)
+
+**Root cause**: `PageClassifier` classifies by reading the PDF digital-text layer. Scanned
+guía pages carry only the 4-line Autodesk Forma header in their text layer (~158 chars) and
+NO "GUÍA DE REMISIÓN" string. Classification runs **before** OCR in the pipeline, so every
+guía page is classified UNCLASSIFIED → QR decode, block grouping, OCR, and vision all never
+execute on real input. Result: 24 rows GUIA_MISSING, summed_qty=0.
+
+**Why it was masked**: `test_pipeline_e2e_rev2` and PR-8 used `HybridDocSource` to inject the
+"GUIA DE REMISION" string into the digital layer, bypassing the real text. The "20/20 guías
+QR-decoded" result in PR-8 was entirely artifact of the injected text.
+
+**Fix (R1, PR-12)**: hybrid OR-gate classifier with a decode_identities pre-pass:
+
+```
+Condition A: QR decode succeeded → GUIA (deterministic, conf 1.0)
+Condition B: body < 200 chars AND Forma-header signature AND image_dominant → GUIA (heuristic)
+Condition C: digital/OCR title match → existing logic
+```
+
+`_stage_decode_identities` runs first, rendering each page once and storing a
+`DecodeOutcome` map (identity, hashqr_url, decoded). `_stage_classify` consumes this cached
+map — no second render. `assemble_blocks` also reuses the same map. Guard: Condition B must
+not fire on pages with body >= 200 chars (EXT-S25).
+
+### R2 — Vision bake-off + stamp-crop fix (vision-model-evaluation #2747, vision-crop-region #2760)
+
+**Bake-off (real guía pages 6/10/15, air-gapped RTX 5070 Ti 16GB)**:
+
+| Model | Full-page 200dpi | Stamp-crop |
+|-------|-----------------|------------|
+| gemma4:e4b | NINGUNA (fails) | 28-05 ✓, year wrong (2016) |
+| gemma3:12b | hallucinates | 28-05 on p6 only, year wrong |
+| **qwen3.5:9b** | **28-05 on all 3** | **28-05 on all 3** |
+
+**Decision**: qwen3.5:9b is the only local model that reads the date from the full page.
+Use it for air-gapped runs. gemma models require a cropped stamp region and still
+underperform.
+
+**Year reliability**: day-month is robust across all local models; YEAR is consistently wrong
+(2016/2022/2024 instead of 2026). This is expected for 4B–12B air-gapped vision models.
+
+**Stamp-crop region bug (R7, #2760)**: R2 configured the stamp crop as lower-right
+(x0=0.5, y0=0.6). The CTR reception stamp on these guías is in the **upper-right** region.
+This caused vision confidence=0.00 (no date read) for all guías after R6, even though SUNAT
+quantities were flowing. Fix: config.yaml `stamp_crop` corrected to
+`x0=0.55, y0=0.05, x1=1.0, y1=0.45` (empirically validated on pages 4,5,6,8,20,25,30).
+
+**max_tokens bug (R7, #2760)**: `max_tokens=128` is exhausted by qwen3.5:9b's
+`<think>…</think>` extended-thinking phase before any content is emitted. The empty string
+is parsed as confidence=0.00, date=None. Fix: `max_tokens` raised to 4096; `_THINK_RE`
+regex strips think-blocks before JSON parse. Three new unit tests cover the stripping logic.
+
+**Real-run verification (run 7fd67700)**: 35 vision calls; 22/35 guías non-null fecha;
+sample T009-0741771 fecha=2026-05-28 (day=28, month=05 confirmed ground truth).
+
+### R3 — Bounded year inference (year-inference-rule #2748, year-normalize-gap #2753)
+
+**Decision (domain rule)**: trust vision's day-month; INFER the year via bounded constraint:
+
+```
+delivery_GRE_date <= reception <= doc_date (PDF export date or current date)
+```
+
+Pick the year making `date(Y, DD, MM)` satisfy both bounds (unique in practice). Record
+`year_inferred=True` on `VisionResult` and `GuiaContribution`; surface
+`any_year_inferred` on `ReconciliationRow` so the UI can show an advisory indicator.
+
+**Year-normalize gap (R3, #2753)**: the initial R2 implementation only ran inference when
+`guia.fecha is None`. But local models often return a PARSEABLE date with the WRONG year
+(2016/2022/2024 instead of 2026) — `fecha` is not None, so inference never fires. Fix: trust
+ONLY the day-month from vision; ALWAYS reconstruct the year via bounds. Edge: if the vision
+year is already within bounds and matches the most-recent candidate, leave it
+(`year_inferred=False`). Lower bound source: SUNAT `fecha_entrega` (when enabled) or
+OCR-printed GRE delivery date; upper bound: PDF doc date or run date.
+
+**Real-run (R7)**: 13/35 guías had `year_inferred=True` (year reconstructed from bounds;
+day-month from vision was correct).
+
+### R4 — SUNAT descargaqr opt-in (sunat-fetch-spike #2750)
+
+**Discovery**: scanned guía pages carry a SECOND, URL-variant QR (missed by initial
+grayscale@2x decode). Multi-resolution COLOR decode (200dpi + 400dpi, pyzbar + zxing-cpp)
+finds 2–3 QRs/page including this variant. The URL:
+
+```
+https://e-factura.sunat.gob.pe/v1/contribuyente/gre/comprobantes/descargaqr?hashqr=<HASH>
+```
+
+A plain GET (no OAuth — the `hashqr` IS the token) returns HTTP 200, Content-Type
+application/pdf (~4KB). It is the official SUNAT GRE PDF with full digital text
+(PyMuPDF get_text() — ~1544 chars), not a scan. Deterministic fields extracted:
+identity (RUC, N°, destinatario), dates (fecha emisión, fecha entrega), and line items
+(Bienes por transportar: cantidad, unidad, descripción, código SUNAT).
+
+**SUNAT PDF format (token-per-line)**: the real PDF does NOT use slash-separated fields. The
+parser (`_parse_line_items`) was rewritten (R6): anchor on "Bienes por transportar:", skip
+column headers (sentinel = "SUNAT"), then group 6-token repeating value blocks
+[desc, codigo, unidad, N°, indicator, cantidad]. Unit normalisation: TONELADAS→TN,
+KILOGRAMOS→KG. Verified against live data: `T073-00680258` → cantidad=0.192, unidad=TN,
+desc="BARRA A A615-G60 3/8\" X 9M".
+
+**Fetch resilience**: timeout raised to 30s; exponential-backoff retry (`_MAX_RETRIES=3`,
+`_BACKOFF_BASE=1.0`).
+
+**Architecture**: `SunatDescargaqrAdapter` implements `SunatGreFetchPort`; wired in
+`container.py` only when `config.sunat.enabled=True`. Config default: `enabled: false`.
+SUNAT quantities override OCR quantities (`extraction_method="sunat_gre"`). Grouping `fecha`
+ALWAYS from vision (handwritten stamp) — the SUNAT electronic date is a year-inference lower
+bound only, never the grouping key.
+
+**Air-gap invariant**: this adapter BREAKS the local-first air-gap. It must remain opt-in
+(`sunat.enabled=False` default, documented in `config.yaml`). The integration tests verify
+zero HTTP calls when disabled. SUNAT fetch is the only source for guía QUANTITIES when
+paddle OCR is unavailable on the current env (see §R5-R7 below).
+
+### R5 — PaddleOCR 3.6 API compat + graceful degradation (paddle-compat-gap #2755)
+
+**API breaking changes (2.x → 3.6)**: `use_gpu` and `show_log` removed; `use_angle_cls=True`
+replaced by `use_textline_orientation=True`; `ocr()` deprecated in favour of `predict()`;
+3.x `OCRResult` format completely different from 2.x nested list:
+
+```python
+# 3.x: predict() → list[OCRResult], each dict-like:
+item["rec_texts"]   # list[str]
+item["rec_scores"]  # list[float]
+# 2.x: ocr() → [[ [bbox, (text, conf)], ... ]]  ← wrong; causes silent KeyError
+```
+
+**Graceful degradation (R5.2)**: `extract_printed_table()` catches all exceptions, returns
+`[]`, sets `_ocr_failed=True`. Pipeline continues; `PipelineResult.warnings` records the
+degradation. Load failure sets permanent `_unavailable=True`; predict failure is transient
+(`_ocr_failed=True`, not `_unavailable`).
+
+### R6–R7 — Paddle runtime env (paddle-runtime-env #2757)
+
+**Env bug**: `paddle 3.3.1` + `paddleocr 3.6.0` on CachyOS CPU (oneDNN/PIR build) raises
+`NotImplementedError: ConvertPirAttribute2RuntimeAttribute not support` at `predict()` time.
+The adapter instantiates fine; the bug manifests only at inference. R5's graceful degradation
+catches it: the run completes, OCR quantities are empty, `_ocr_failed=True` is flagged.
+
+**Impact on this env**: air-gapped OCR quantity path yields nothing here. The two quantity
+sources are paddle OCR (broken on this paddle build) and SUNAT descargaqr (functional, but
+breaks air-gap). A fully air-gapped real run cannot produce guía quantities until the paddle
+runtime is resolved.
+
+**Mitigations to try**: `FLAGS_enable_pir_api=0`, `FLAGS_use_mkldnn=0`, or a GPU/different
+paddlepaddle build. SUNAT fetch (quantities only) may be used as an explicit bounded air-gap
+exception during validation.
+
+---
+
+## §recurring-mock-gap — recurring failure mode: green-with-mocks, broken-on-real
+
+The following bugs ALL passed mocked unit/integration tests while failing on real input:
+
+| Issue | What passed | What failed |
+|-------|-------------|-------------|
+| Classification gap (R1) | `HybridDocSource` injected "GUIA DE REMISION" | Real Forma-only digital layer → UNCLASSIFIED |
+| Container identity-port wiring | Mock identity adapter fed directly | Real DI container didn't wire the port |
+| Paddle API compat (R5) | Mocks assumed 2.x nested-list format | Real `predict()` returns 3.x dict-like |
+| SUNAT parser (R6) | Fixture used slash-separated format | Real PDF uses token-per-line format |
+
+**Lesson (reinforced)**: unit tests with injected fake document sources are not a substitute
+for a real-data e2e gate. The check is: run the pipeline against the real PDF **without
+bypassing any adapter via `HybridDocSource`** and assert on the reconciliation output
+structure, not just on whether the pipeline terminates.
+
+Minimum real-data e2e assertions that must pass before any slice is declared complete:
+1. At least one `GuiaDeRemision.identity_source == "qr"` (QR decode reaching a real guía page).
+2. No row with `status=GUIA_MISSING` and `guias==[]` when guía pages are physically present.
+3. `PipelineResult.warnings` must be inspected — silent degradation is not success.
+
+---
+
+## §known-open — open issues after rev-3 (as of 2026-06-02)
+
+| Issue | Severity | Notes |
+|-------|----------|-------|
+| MATCH not resolving on subset PDF | Medium | Declared extraction on the subset (pages 0–45) returns `material=None`. Pre-existing subset limitation. Full-PDF run needed to confirm MATCH resolves. Not a rev-3 regression. |
+| ~13/35 guías null fecha | Medium | Stamp region varies by guía layout; some pages don't have the stamp in the upper-right quadrant. Residual, not a blocker — those guías show `requires_review=True`. |
+| paddle OCR broken on this env | Medium | paddle 3.3.1 oneDNN/PIR CPU bug. Graceful degradation active. Quantities only available via SUNAT fetch (breaks air-gap) or a working paddle runtime / GPU. |
+| SUNAT UNIDADES items skipped | Low | Domain only accepts KG/TN/RD/Rollo; GRE PDF items with `unidad=UNIDAD` (UND) are silently dropped. Out-of-scope for current domain rules. |
+| max_tokens=4096 latency | Low | qwen3.5:9b with 4096 tokens is slower than the prior 128 budget. Acceptable for the current 35-guía PDF; monitor on full 493-page run. |
+
+---
+
+## §engram-mirror-rev3 — engram topic → versioned location map (rev-3 additions)
+
+| Engram topic / ID | Versioned in |
+|---|---|
+| `sdd/material-reconciliation/classification-gap` (#2749) | `docs/DECISIONS.md` §rev-3 R1 |
+| `sdd/material-reconciliation/vision-model-evaluation` (#2747) | `docs/DECISIONS.md` §rev-3 R2 |
+| `sdd/material-reconciliation/vision-crop-region` (#2760) | `docs/DECISIONS.md` §rev-3 R2 |
+| `sdd/material-reconciliation/year-inference-rule` (#2748) | `docs/DECISIONS.md` §rev-3 R3 |
+| `sdd/material-reconciliation/year-normalize-gap` (#2753) | `docs/DECISIONS.md` §rev-3 R3 |
+| `sdd/material-reconciliation/sunat-fetch-spike` (#2750) | `docs/DECISIONS.md` §rev-3 R4 |
+| `sdd/material-reconciliation/paddle-compat-gap` (#2755) | `docs/DECISIONS.md` §rev-3 R5 |
+| `sdd/material-reconciliation/paddle-runtime-env` (#2757) | `docs/DECISIONS.md` §rev-3 R6–R7 |

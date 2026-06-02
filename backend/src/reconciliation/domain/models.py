@@ -113,11 +113,21 @@ class GuiaDeRemision(BaseModel):
 
 
 class Registro(BaseModel):
-    """A declared-side registry entry sourced from digital text."""
+    """A declared-side registry entry sourced from digital text.
+
+    R9.1 (ADR-2): ``protocolo_page`` is the 0-based PDF page index of the source
+    Protocolo de Recepción (``None`` for detail-page-only registros — they carry
+    no Protocolo "Fecha:" field).  The pipeline's declared-date vision sub-stage
+    needs it to know which PDF page to render and crop.
+    """
 
     numero: str
     fecha_declarada: date | None
     declared_lines: list[MaterialLine]
+    # R9.1: source page of the Protocolo de Recepción (0-based PDF page index).
+    # None when the Registro originates from a detail page, not a Protocolo.
+    # 0 is a VALID concrete page index — never treat as falsy.
+    protocolo_page: int | None = None
 
 
 class PageClassification(BaseModel):

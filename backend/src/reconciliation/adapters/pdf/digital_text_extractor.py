@@ -360,6 +360,10 @@ class DigitalTextExtractionAdapter:
             numero=numero,
             fecha_declarada=fecha,
             declared_lines=lines,
+            # R9.1 (ADR-2): propagate the Protocolo source page (was silently
+            # discarded).  The declared-date vision sub-stage needs it to know
+            # which PDF page to render and crop.  source_page=0 is valid.
+            protocolo_page=source_page,
         )
 
     # ------------------------------------------------------------------

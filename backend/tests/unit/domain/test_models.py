@@ -146,6 +146,25 @@ class TestRegistro:
         )
         assert reg.fecha_declarada is None
 
+    def test_protocolo_page_defaults_none(self) -> None:
+        """R9.1: protocolo_page defaults to None (detail-page registros)."""
+        reg = Registro(numero="232", fecha_declarada=None, declared_lines=[])
+        assert reg.protocolo_page is None
+
+    def test_protocolo_page_zero_is_valid(self) -> None:
+        """R9.1: page 0 is a valid concrete index, not a falsy sentinel."""
+        reg = Registro(
+            numero="232", fecha_declarada=None, declared_lines=[], protocolo_page=0
+        )
+        assert reg.protocolo_page == 0
+
+    def test_backward_compat_model_validate_no_protocolo_page(self) -> None:
+        """R9.1: old serialised dict without protocolo_page parses with default None."""
+        reg = Registro.model_validate(
+            {"numero": "232", "fecha_declarada": None, "declared_lines": []}
+        )
+        assert reg.protocolo_page is None
+
 
 class TestPageClassification:
     def test_instantiation_guia(self) -> None:

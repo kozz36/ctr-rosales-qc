@@ -82,7 +82,7 @@ class _StatefulIdentity:
         self._seq = list(sequence)
         self._idx = 0
 
-    def decode_identity(self, image: bytes) -> GuiaIdentity | None:
+    def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
         if self._idx < len(self._seq):
             result = self._seq[self._idx]
         else:

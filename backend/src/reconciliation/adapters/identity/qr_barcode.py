@@ -334,7 +334,7 @@ class QrBarcodeExtractionAdapter:
         try:
             import pyzbar.pyzbar as pyzbar  # noqa: PLC0415
 
-            for barcode in pyzbar.decode(img):  # type: ignore[arg-type]
+            for barcode in pyzbar.decode(img):  # type: ignore[arg-type,unused-ignore]
                 payload = barcode.data.decode("utf-8", errors="replace")
                 if payload not in seen:
                     seen.add(payload)

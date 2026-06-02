@@ -139,7 +139,7 @@ class TestReportPort:
 
 
 class _StubIdentityExtraction:
-    def decode_identity(self, image: bytes) -> GuiaIdentity | None:
+    def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
         return GuiaIdentity(
             serie="T009",
             numero="0741770",
@@ -168,7 +168,7 @@ class TestIdentityExtractionPort:
 
     def test_decode_identity_can_return_none(self) -> None:
         class _NoneStub:
-            def decode_identity(self, image: bytes) -> GuiaIdentity | None:
+            def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
                 return None
 
         stub = _NoneStub()

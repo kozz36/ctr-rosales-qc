@@ -325,7 +325,7 @@ class PageClassifier:
         # Guard: only fires when the cleaned body is <= _FORMA_HEADER_MAX_CHARS chars
         # AND the page is image-dominant.  Declared/protocolo pages (step 1/9 above)
         # always exceed 200 chars so they can NEVER reach this branch.
-        body_char_count = sum(len(l) for l in body_lines)
+        body_char_count = sum(len(ln) for ln in body_lines)
         if body_char_count <= _FORMA_HEADER_MAX_CHARS and image_dominant:
             return PageClassification(
                 page=0,

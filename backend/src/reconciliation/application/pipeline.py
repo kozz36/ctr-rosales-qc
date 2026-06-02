@@ -13,8 +13,7 @@ Stage sequence (rev-3, fixed, non-negotiable per design D1):
                           parsers (DigitalTextExtractionAdapter); dedupe
                           protocolo+detail into ONE Registro per numero
                           (protocolo is canonical source per decision 2026-05-31).
-  5. extract_ocr        — OCR material tables from GUIA pages (ExtractionPort.extract_printed_table);
-                          produces per-page _RawGuia objects (no guia_id assignment here).
+  5. extract_ocr        — OCR material tables from GUIA pages; per-page _RawGuia objects.
                           REUSES cached rendered bytes from decode_identities (no re-render).
   5b. assemble_blocks   — group per-page _RawGuia objects into multi-page GuiaBlocks;
                           REUSES cached DecodeOutcome map (no QR re-scan).
@@ -51,14 +50,17 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from reconciliation.application.config import AppConfig
+from reconciliation.application.run_context import RunContext
 from reconciliation.domain.classifier import PageClassifier
 from reconciliation.domain.errors import VisionCapExceededError
 from reconciliation.domain.models import (
     GuiaDeRemision,
+    GuiaIdentity,
     MaterialLine,
     PageClassification,
-    Registro,
     ReconciliationRow,
+    Registro,
     VisionResult,
 )
 from reconciliation.domain.normalizer import MaterialNormalizer
@@ -69,8 +71,6 @@ from reconciliation.domain.ports import (
     VisionLLMPort,
 )
 from reconciliation.domain.reconciliation import ReconciliationService
-from reconciliation.application.config import AppConfig
-from reconciliation.application.run_context import RunContext
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class DecodeOutcome:
                      regardless of confidence gating.
     """
 
-    identity: "GuiaIdentity | None"
+    identity: GuiaIdentity | None
     hashqr_url: str | None
     rendered: bytes
     decoded: bool
@@ -158,13 +158,13 @@ class DeclaredExtractorPort(Protocol):
 
     def extract_registro_from_detail_page(
         self, text: str, source_page: int
-    ) -> "Registro | None":
+    ) -> Registro | None:
         """Parse a Form Detail page into a Registro; None if not a valid page."""
         ...
 
     def extract_registro_from_proto_page(
         self, text: str, source_page: int
-    ) -> "Registro | None":
+    ) -> Registro | None:
         """Parse a Protocolo de Recepción page into a Registro; None if not a valid page."""
         ...
 
@@ -377,18 +377,15 @@ class ReconciliationPipeline:
 
             if self._identity is not None and rendered:
                 try:
-                    # Try with page_idx kwarg first (full adapter); fall back to
-                    # positional-only signature (test fakes implement Protocol minimum).
-                    try:
-                        identity = self._identity.decode_identity(rendered, page_idx=idx)
-                    except TypeError:
-                        identity = self._identity.decode_identity(rendered)
+                    identity = self._identity.decode_identity(rendered, page_idx=idx)
                     decoded = identity is not None
                     # Even if identity gate failed, check for URL-variant QR.
                     # QrBarcodeExtractionAdapter returns None when only URL-QR found;
                     # we still want the hashqr_url.  Attempt via duck-type helper.
                     if not decoded and hasattr(self._identity, "decode_hashqr_url"):
-                        _url = self._identity.decode_hashqr_url(rendered, page_idx=idx)  # type: ignore[attr-defined]
+                        _url = self._identity.decode_hashqr_url(  # noqa: E501
+                            rendered, page_idx=idx
+                        )
                         if _url:
                             decoded = True
                             decode_map[idx] = DecodeOutcome(
@@ -582,7 +579,9 @@ class ReconciliationPipeline:
             if canonical is not None:
                 registros.append(canonical)
             else:
-                logger.warning("extract_declared: numero=%r has no parseable page; skipping.", numero)
+                logger.warning(
+                    "extract_declared: numero=%r has no parseable page; skipping.", numero
+                )
 
         logger.debug(
             "extract_declared: %d unique registros (from %d DECLARED pages)",
@@ -900,13 +899,13 @@ class ReconciliationPipeline:
 
         normalised_declared = [
             registro.model_copy(
-                update={"declared_lines": [_norm_line(l) for l in registro.declared_lines]}
+                update={"declared_lines": [_norm_line(ln) for ln in registro.declared_lines]}
             )
             for registro in declared
         ]
         normalised_guias = [
             guia.model_copy(
-                update={"lines": [_norm_line(l) for l in guia.lines]}
+                update={"lines": [_norm_line(ln) for ln in guia.lines]}
             )
             for guia in guias
         ]
@@ -970,7 +969,7 @@ def _has_meaningful_text(text: str | None) -> bool:
     return bool(_clean_lines(text))
 
 
-def _get_image_dominant(doc: "DocumentSourcePort", idx: int) -> bool:
+def _get_image_dominant(doc: DocumentSourcePort, idx: int) -> bool:
     """Return True if page *idx* is image-dominant (rev-3 D1 Condition B).
 
     Calls ``DocumentSourcePort.image_coverage_ratio`` when the method is
@@ -982,7 +981,7 @@ def _get_image_dominant(doc: "DocumentSourcePort", idx: int) -> bool:
     if not hasattr(doc, "image_coverage_ratio"):
         return False
     try:
-        ratio: float = doc.image_coverage_ratio(idx)  # type: ignore[union-attr]
+        ratio: float = doc.image_coverage_ratio(idx)
         return ratio >= IMAGE_DOMINANT_THRESHOLD
     except Exception as exc:  # noqa: BLE001
         logger.debug("_get_image_dominant: page %d failed: %s", idx, exc)

@@ -124,7 +124,7 @@ class FakeIdentityPerPage:
     def __init__(self) -> None:
         self._seq = 0
 
-    def decode_identity(self, image: bytes) -> GuiaIdentity:
+    def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity:
         seq = self._seq
         self._seq += 1
         return GuiaIdentity(

@@ -105,11 +105,15 @@ class IdentityExtractionPort(Protocol):
     layer and MUST NOT be imported by the domain or application layer directly.
     """
 
-    def decode_identity(self, image: bytes) -> GuiaIdentity | None:
+    def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
         """Return a ``GuiaIdentity`` decoded from *image*, or ``None`` on failure.
 
         ``None`` signals that QR decoding failed or confidence gating rejected the
         result; the caller MUST fall back to OCR-derived identity (EXT-014).
+
+        Args:
+            image:    PNG or JPEG bytes of a rendered page.
+            page_idx: Optional 0-based page index for audit logging.
         """
         ...
 

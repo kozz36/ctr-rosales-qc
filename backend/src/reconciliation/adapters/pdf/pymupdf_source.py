@@ -148,7 +148,7 @@ class PdfStructureAdapter:
         """Release the underlying fitz.Document handle."""
         self._doc.close()
 
-    def __enter__(self) -> "PdfStructureAdapter":
+    def __enter__(self) -> PdfStructureAdapter:
         return self
 
     def __exit__(self, *_: object) -> None:

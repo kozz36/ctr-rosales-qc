@@ -1,4 +1,5 @@
-"""Rev-3 real-data e2e gate (R1.9) — proves the hybrid classifier unblocks guía extraction.
+"""Rev-3 real-data e2e gate (R1.9 + R2.8) — proves the hybrid classifier unblocks guía extraction
+and verifies vision adequacy (stamp-crop D4) + bounded year inference (D5 / EXT-021).
 
 CRITICAL: this test uses the real PDF and real QrBarcodeExtractionAdapter (pyzbar+zxing-cpp
 installed in the venv).  It MUST NOT use HybridDocSource — the whole point is to prove that
@@ -20,6 +21,7 @@ Skips when the real PDF is absent (CI/CD environments without the file).
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from pathlib import Path
 from datetime import date
 
@@ -38,6 +40,20 @@ _SKIP_NO_PDF = pytest.mark.skipif(
     reason=f"Real PDF not present at {_PDF_PATH}; skipping rev-3 real-data gate",
 )
 
+# Ollama availability guard for R2.8 real-vision test
+def _ollama_running() -> bool:
+    try:
+        import urllib.request  # noqa: PLC0415
+        urllib.request.urlopen("http://localhost:11434/api/version", timeout=3)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+_SKIP_NO_OLLAMA = pytest.mark.skipif(
+    not _ollama_running(),
+    reason="Ollama not running; skipping R2.8 real-vision gate",
+)
+
 _FORBIDDEN_GUIA_PAGE_PATTERN = re.compile(r"guia_page_\d+")
 
 
@@ -54,6 +70,24 @@ class FakeVision:
     def read_handwritten_date(self, image: bytes, hint: str | None = None):
         from reconciliation.domain.models import VisionResult  # noqa: PLC0415
         return VisionResult(date=date(2026, 5, 28), confidence=0.99, raw="28/05/2026")
+
+    def read_handwritten_date_batch(self, images: list[bytes]) -> list:  # pragma: no cover
+        return [self.read_handwritten_date(img) for img in images]
+
+
+class FakeVisionNullDate:
+    """Simulates a vision model that reads DD/MM but not the year (returns date=None).
+
+    Used to force the _stage_normalize_dates year-inference path.
+    The raw string contains "28/05" (day-month only, no parseable year).
+    """
+
+    supports_batch: bool = False
+
+    def read_handwritten_date(self, image: bytes, hint: str | None = None):
+        from reconciliation.domain.models import VisionResult  # noqa: PLC0415
+        # Return date=None but raw contains parseable DD/MM
+        return VisionResult(date=None, confidence=0.60, raw="28/05")
 
     def read_handwritten_date_batch(self, images: list[bytes]) -> list:  # pragma: no cover
         return [self.read_handwritten_date(img) for img in images]
@@ -322,3 +356,284 @@ class TestColorQrDecodeOnRealPage:
         assert ratio > 0.5, (
             f"Expected image coverage > 0.5 for a scanned guía page; got {ratio:.3f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# R2.8 Gate A — Year inference provenance via FakeVisionNullDate
+# ---------------------------------------------------------------------------
+# This gate verifies:
+# 1. _stage_normalize_dates reconstructs fecha from "28/05" raw (upper-bound only).
+# 2. any_year_inferred=True surfaces in guías and ReconciliationRow.
+# Uses the REAL PDF + REAL QR adapter; FakeVisionNullDate simulates the
+# "day-month trusted, year absent" failure mode.
+
+
+@_SKIP_NO_PDF
+class TestRev3R2YearInferenceGate:
+    """Prove that _stage_normalize_dates reconstructs non-null fecha with year_inferred=True.
+
+    Uses FakeVisionNullDate which returns date=None but raw="28/05".
+    The pipeline should infer 2026-05-28 (upper=today, no lower in R2).
+    """
+
+    @pytest.fixture(scope="class")
+    def pipeline_result_null_vision(self):
+        """Run the real pipeline with FakeVisionNullDate (returns date=None, raw='28/05')."""
+        from reconciliation.adapters.pdf.pymupdf_source import PdfStructureAdapter  # noqa: PLC0415
+        from reconciliation.adapters.pdf.digital_text_extractor import DigitalTextExtractionAdapter  # noqa: PLC0415
+        from reconciliation.adapters.identity.qr_barcode import QrBarcodeExtractionAdapter  # noqa: PLC0415
+        from reconciliation.application.config import AppConfig  # noqa: PLC0415
+        from reconciliation.application.pipeline import ReconciliationPipeline  # noqa: PLC0415
+        from reconciliation.application.run_context import RunContext  # noqa: PLC0415
+        from reconciliation.infrastructure.container import (  # noqa: PLC0415
+            CompositeExtractionAdapter,
+            build_page_to_registro_map,
+        )
+        import tempfile  # noqa: PLC0415
+
+        with PdfStructureAdapter(_PDF_PATH) as pdf_src:
+            declared_extractor = DigitalTextExtractionAdapter()
+            contents_offsets = pdf_src.contents_offsets()
+            total_pages = pdf_src.page_count()
+            page_to_registro = build_page_to_registro_map(
+                contents_offsets,
+                total_pages,
+                doc_source=pdf_src,
+                declared_extractor=declared_extractor,
+            )
+            extractor = CompositeExtractionAdapter.__new__(CompositeExtractionAdapter)
+            extractor._declared_adapter = declared_extractor
+            extractor._ocr_adapter = FakeOCR()
+            identity = QrBarcodeExtractionAdapter(render_dpi=200, upscale=2)
+            config = AppConfig()
+
+            pipeline = ReconciliationPipeline(
+                doc_source=pdf_src,
+                extractor=extractor,
+                vision=FakeVisionNullDate(),
+                config=config,
+                page_to_registro=page_to_registro,
+                identity=identity,
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                ctx = RunContext(pdf_path=_PDF_PATH, output_base=Path(tmp))
+                result = pipeline.run(ctx)
+        return result
+
+    def test_guias_have_non_null_fecha_after_year_inference(
+        self, pipeline_result_null_vision
+    ) -> None:
+        """After _stage_normalize_dates, guías with raw='28/05' must have fecha=2026-05-28."""
+        result = pipeline_result_null_vision
+        guias_with_fecha = [g for g in result.guias if g.fecha is not None]
+        assert len(guias_with_fecha) > 0, (
+            "No guías have a non-null fecha after year inference. "
+            f"All guías: {[(g.guia_id, g.fecha, g.fecha_raw) for g in result.guias]}"
+        )
+
+    def test_guias_have_correct_inferred_date(self, pipeline_result_null_vision) -> None:
+        """Inferred fecha must be 2026-05-28 (DD=28, MM=05, upper≈today 2026-06-xx)."""
+        result = pipeline_result_null_vision
+        inferred_guias = [g for g in result.guias if g.fecha is not None and g.year_inferred]
+        assert len(inferred_guias) > 0, (
+            "No guías have year_inferred=True. "
+            f"Guía fechas: {[(g.guia_id, g.fecha, g.year_inferred) for g in result.guias]}"
+        )
+        for guia in inferred_guias:
+            assert guia.fecha is not None
+            assert guia.fecha.month == 5
+            assert guia.fecha.day == 28
+            assert guia.fecha.year >= 2026, (
+                f"Inferred year {guia.fecha.year} is too old; expected >= 2026"
+            )
+
+    def test_year_inferred_flag_set_on_guias(self, pipeline_result_null_vision) -> None:
+        """All guías with raw='28/05' (null date from vision) must have year_inferred=True."""
+        result = pipeline_result_null_vision
+        fecha_guias = [g for g in result.guias if g.fecha is not None]
+        for guia in fecha_guias:
+            assert guia.year_inferred is True, (
+                f"Guia {guia.guia_id!r} has fecha={guia.fecha} but year_inferred=False"
+            )
+
+    def test_any_year_inferred_surfaces_in_reconciliation_rows(
+        self, pipeline_result_null_vision
+    ) -> None:
+        """any_year_inferred=True must appear in at least one ReconciliationRow."""
+        result = pipeline_result_null_vision
+        rows_with_inferred = [r for r in result.rows if r.any_year_inferred]
+        assert len(rows_with_inferred) > 0, (
+            "No ReconciliationRow has any_year_inferred=True. "
+            f"Sample rows: {[(r.registro, r.status, r.any_year_inferred) for r in result.rows[:5]]}"
+        )
+
+    def test_any_year_inferred_in_api_json(self, pipeline_result_null_vision) -> None:
+        """any_year_inferred field must be present and True in serialised row JSON."""
+        from reconciliation.infrastructure.api.routes import _row_to_response  # noqa: PLC0415
+
+        result = pipeline_result_null_vision
+        rows_with_inferred = [r for r in result.rows if r.any_year_inferred]
+        if not rows_with_inferred:
+            pytest.skip("No rows with any_year_inferred; covered by prior test")
+
+        response = _row_to_response(rows_with_inferred[0])
+        dumped = response.model_dump()
+        assert "any_year_inferred" in dumped
+        assert dumped["any_year_inferred"] is True
+
+
+# ---------------------------------------------------------------------------
+# R2.8 Gate B — Stamp-crop adequacy (D4 / EXT-S26)
+# ---------------------------------------------------------------------------
+# Uses the real PDF and renders a known guía page, then proves the stamp-crop
+# function returns a smaller PNG consistent with the lower-right quadrant.
+
+
+@_SKIP_NO_PDF
+class TestRev3R2StampCropGate:
+    """Prove _prepare_vision_image produces a cropped stamp region from a real page."""
+
+    def test_stamp_crop_on_real_guia_page(self) -> None:
+        """Stamp crop of a real rendered guía page (page 4) must be smaller than full page."""
+        import io  # noqa: PLC0415
+
+        from PIL import Image  # noqa: PLC0415
+        from reconciliation.adapters.pdf.pymupdf_source import PdfStructureAdapter  # noqa: PLC0415
+        from reconciliation.application.config import AppConfig  # noqa: PLC0415
+        from reconciliation.application.pipeline import _prepare_vision_image  # noqa: PLC0415
+
+        with PdfStructureAdapter(_PDF_PATH) as src:
+            full_page_bytes = src.render_page(4, dpi=200)
+
+        cfg = AppConfig()
+        crop_bytes = _prepare_vision_image(full_page_bytes, cfg)
+
+        with Image.open(io.BytesIO(full_page_bytes)) as full:
+            fw, fh = full.size
+        with Image.open(io.BytesIO(crop_bytes)) as crop:
+            cw, ch = crop.size
+
+        assert cw < fw, f"Crop width {cw} must be < full page width {fw}"
+        assert ch < fh, f"Crop height {ch} must be < full page height {fh}"
+        # Verify it targets the lower-right quadrant (x0=0.5, y0=0.6 defaults)
+        assert cw == int(0.5 * fw), f"Expected crop width {int(0.5*fw)}, got {cw}"
+        assert ch == int(0.4 * fh), f"Expected crop height {int(0.4*fh)}, got {ch}"
+
+
+# ---------------------------------------------------------------------------
+# R2.8 Gate C — Real vision (Ollama qwen3.5:9b) reads 28/05 from stamp crop
+# ---------------------------------------------------------------------------
+# Skipped when Ollama is not running.  This is the authoritative gate for
+# confirming that the stamp-crop input + qwen3.5:9b returns a parseable date
+# with day=28, month=5 (ground truth from manual inspection, engram #2747).
+
+
+@_SKIP_NO_PDF
+@_SKIP_NO_OLLAMA
+class TestRev3R2RealVisionGate:
+    """Prove qwen3.5:9b reads 28/05 from the stamp-crop of a real guía page.
+
+    Ground truth: day-month = 28-05 on all three guía pages in section 4252
+    (pages 4/5/6 of the real PDF, registro 232) — confirmed by manual inspection
+    and the rev-2 bake-off (engram #2747).
+    """
+
+    @pytest.fixture(scope="class")
+    def pipeline_result_real_vision(self):
+        """Run the real pipeline end-to-end with real Ollama vision + stamp crop."""
+        from reconciliation.adapters.pdf.pymupdf_source import PdfStructureAdapter  # noqa: PLC0415
+        from reconciliation.adapters.pdf.digital_text_extractor import DigitalTextExtractionAdapter  # noqa: PLC0415
+        from reconciliation.adapters.identity.qr_barcode import QrBarcodeExtractionAdapter  # noqa: PLC0415
+        from reconciliation.adapters.vision.factory import build_vision_adapter  # noqa: PLC0415
+        from reconciliation.application.config import AppConfig  # noqa: PLC0415
+        from reconciliation.application.pipeline import ReconciliationPipeline  # noqa: PLC0415
+        from reconciliation.application.run_context import RunContext  # noqa: PLC0415
+        from reconciliation.infrastructure.container import (  # noqa: PLC0415
+            CompositeExtractionAdapter,
+            build_page_to_registro_map,
+        )
+        import tempfile  # noqa: PLC0415
+
+        # Use the real Ollama adapter (qwen3.5:9b via config.yaml)
+        import yaml  # noqa: PLC0415
+        with open(_PROJECT_ROOT / "backend" / "config.yaml") as f:
+            raw_cfg = yaml.safe_load(f)
+        # Override provider to ollama
+        raw_cfg.setdefault("vision", {})["provider"] = "ollama"
+        raw_cfg["vision"].setdefault("ollama", {})["model"] = "qwen3.5:9b"
+
+        import tempfile as _tf  # noqa: PLC0415
+        import os  # noqa: PLC0415
+        with _tf.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp_cfg:
+            yaml.dump(raw_cfg, tmp_cfg)
+            tmp_cfg_path = tmp_cfg.name
+
+        try:
+            config = AppConfig.from_yaml(tmp_cfg_path)
+        finally:
+            os.unlink(tmp_cfg_path)
+
+        vision = build_vision_adapter(config)
+
+        with PdfStructureAdapter(_PDF_PATH) as pdf_src:
+            declared_extractor = DigitalTextExtractionAdapter()
+            contents_offsets = pdf_src.contents_offsets()
+            total_pages = pdf_src.page_count()
+            page_to_registro = build_page_to_registro_map(
+                contents_offsets,
+                total_pages,
+                doc_source=pdf_src,
+                declared_extractor=declared_extractor,
+            )
+            extractor = CompositeExtractionAdapter.__new__(CompositeExtractionAdapter)
+            extractor._declared_adapter = declared_extractor
+            extractor._ocr_adapter = FakeOCR()
+            identity = QrBarcodeExtractionAdapter(render_dpi=200, upscale=2)
+
+            pipeline = ReconciliationPipeline(
+                doc_source=pdf_src,
+                extractor=extractor,
+                vision=vision,
+                config=config,
+                page_to_registro=page_to_registro,
+                identity=identity,
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                ctx = RunContext(pdf_path=_PDF_PATH, output_base=Path(tmp))
+                result = pipeline.run(ctx)
+
+        return result
+
+    def test_guias_have_non_null_fecha_with_real_vision(
+        self, pipeline_result_real_vision
+    ) -> None:
+        """Real Ollama vision must produce at least one guía with non-null fecha.
+
+        qwen3.5:9b reads 28/05 from full-page-200dpi (bake-off confirmed).
+        With stamp-crop it should be even more reliable.  If fecha is still None
+        (year only wrong), year inference should reconstruct it.
+        """
+        result = pipeline_result_real_vision
+        guias_with_fecha = [g for g in result.guias if g.fecha is not None]
+        assert len(guias_with_fecha) > 0, (
+            "CRITICAL (R2.8): No guías have non-null fecha with real Ollama vision. "
+            f"Guías: {[(g.guia_id, g.fecha, g.fecha_raw, g.year_inferred) for g in result.guias]}"
+        )
+
+    def test_guias_fecha_day_month_is_28_05(self, pipeline_result_real_vision) -> None:
+        """Real vision must produce day=28, month=05 for section-4252 guías (ground truth).
+
+        This is the critical proof that stamp-crop + qwen3.5:9b reads the correct
+        handwritten date from the CTR 'Recibí conforme' stamp (engram #2747).
+        """
+        result = pipeline_result_real_vision
+        guias_with_fecha = [g for g in result.guias if g.fecha is not None]
+        # Ground truth: all three guía pages in section 4252 have day=28, month=5
+        for guia in guias_with_fecha:
+            assert guia.fecha is not None
+            assert guia.fecha.month == 5, (
+                f"Expected month=5 for guia {guia.guia_id!r}, got {guia.fecha.month}"
+            )
+            assert guia.fecha.day == 28, (
+                f"Expected day=28 for guia {guia.guia_id!r}, got {guia.fecha.day}"
+            )

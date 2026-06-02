@@ -1,7 +1,7 @@
 """Unit tests for ExcelReportAdapter.
 
 Tests verify:
-- Locked 10-column set in Reconciliacion sheet
+- Locked 11-column set in Reconciliacion sheet (rev-3: +Año inferido)
 - Summary sheet structure and per-registro aggregation
 - CSV output column set
 - Audit Trail sheet written only when non-empty
@@ -39,6 +39,8 @@ LOCKED_COLUMNS = [
     "Estado",
     "Confianza mín",
     "Páginas origen",
+    # Rev-3 D5 (REC-C07): advisory year-inference flag (EXT-021).
+    "Año inferido",
 ]
 
 
@@ -98,7 +100,7 @@ class TestProtocolConformance:
 
 class TestXlsxColumnSet:
     def test_locked_columns_constant(self) -> None:
-        """The _COLUMNS constant must match exactly the 10 locked columns."""
+        """The _COLUMNS constant must match exactly the 11 locked columns (rev-3: +Año inferido)."""
         assert _COLUMNS == LOCKED_COLUMNS
 
     def test_reconciliacion_sheet_headers(

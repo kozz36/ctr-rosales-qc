@@ -95,6 +95,13 @@ class VisionConfig(BaseSettings):
     max_vision_calls: int = Field(default=500, gt=0)
     # Rev-3 D4: stamp-crop config — lower-right quadrant default (EXT-020)
     stamp_crop: StampCropConfig = Field(default_factory=StampCropConfig)
+    # R9.5 (ADR-6): Protocolo "Fecha:" crop box for the declared-date read.
+    # The Protocolo layout differs from the guía stamp, so it gets its own crop.
+    # Default is DISABLED (degenerate zero box) → safe full-page >=300dpi fallback
+    # until the crop box is tuned for the Protocolo layout.
+    protocolo_crop: StampCropConfig = Field(
+        default_factory=lambda: StampCropConfig(x0=0.0, y0=0.0, x1=0.0, y1=0.0)
+    )
     # Rev-3 D4 Option B: DPI for full-page fallback when stamp_crop is disabled
     fallback_dpi: int = Field(default=300, gt=0)
 

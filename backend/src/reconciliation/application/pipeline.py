@@ -355,6 +355,12 @@ class ReconciliationPipeline:
         # Stage 7: normalize descriptions
         declared, guias = self._stage_normalize(declared, guias)
 
+        # Stage 7b (R9.5 / ADR-1): read the handwritten Protocolo declared date via
+        # the SAME VisionLLMPort.  Reads are counted against vision.max_vision_calls.
+        # Failures/low-confidence fall back to the electronic fecha (ADR-2/7), so the
+        # reconciliation gate never asserts a wrong baseline.
+        declared = self._stage_extract_declared_date(declared)
+
         # Stage 8: reconcile
         rows = self._stage_reconcile(declared, guias)
 
@@ -1060,6 +1066,110 @@ class ReconciliationPipeline:
 
         return guias, calls_made, warnings
 
+    def _stage_extract_declared_date(
+        self,
+        registros: list[Registro],
+    ) -> list[Registro]:
+        """Stage 6b: read the handwritten Protocolo "Fecha:" via VisionLLMPort (R9.5).
+
+        ADR-1: reuses ``VisionLLMPort.read_handwritten_date`` — no new port.
+        ADR-6: uses ``vision.protocolo_crop`` (full-page >=fallback_dpi when disabled).
+        ADR-7: confidence gate — a low-confidence read (< threshold) sets
+               ``fecha_declarada_handwritten=None`` and records the confidence,
+               flagging the registro without asserting a wrong baseline.  The
+               domain divergence check then auto-skips (None declared → not divergent).
+
+        Year handling: vision year is NEVER trusted (#2753).  The year is always
+        reconstructed from day/month via bounded inference with ``lower=None``
+        (declared side has no SUNAT lower bound) and ``upper=today``.
+
+        Cost: declared reads are counted against the SAME ``vision.max_vision_calls``
+        cap as the guía reads (the cap is checked here before each call).
+
+        Returns a NEW list of Registro (no mutation of the input).
+        """
+        from datetime import date as _date  # noqa: PLC0415
+
+        threshold = self._config.confidence.threshold
+        cap = self._config.vision.max_vision_calls
+        dpi = self._config.vision.fallback_dpi
+        today = _date.today()
+        calls_made = 0
+
+        updated: list[Registro] = []
+        for reg in registros:
+            # Detail-page-only registro: no Protocolo to read; fecha_authoritative
+            # falls back to electronic fecha_declarada (rollback path, ADR-2).
+            if reg.protocolo_page is None:
+                updated.append(reg)
+                continue
+
+            if calls_made >= cap:
+                # Cap exhausted — leave remaining registros unread (fail-safe).
+                updated.append(reg)
+                continue
+
+            try:
+                page_bytes = self._doc.render_page(reg.protocolo_page, dpi=dpi)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "extract_declared_date: render_page(%d) failed: %s",
+                    reg.protocolo_page, exc,
+                )
+                updated.append(reg)
+                continue
+
+            vision_image = _prepare_vision_image_proto(page_bytes, self._config)
+            vr = self._vision.read_handwritten_date(vision_image)
+            calls_made += 1
+
+            if vr is None or vr.confidence < threshold:
+                # ADR-7: fail-closed. Low confidence → flag registro, skip baseline.
+                updated.append(
+                    reg.model_copy(
+                        update={
+                            "fecha_declarada_handwritten": None,
+                            "fecha_declarada_confidence": getattr(vr, "confidence", None),
+                        }
+                    )
+                )
+                continue
+
+            # Reconstruct year from day/month — vision year is never trusted (#2753).
+            raw_str = vr.raw or (
+                vr.date.strftime("%d/%m/%Y") if vr.date is not None else None
+            )
+            day, month = _parse_day_month(vr.confidence, raw_str)
+            if day is None or month is None:
+                # Vision confident but unparseable day/month → flag, no baseline.
+                updated.append(
+                    reg.model_copy(
+                        update={
+                            "fecha_declarada_handwritten": None,
+                            "fecha_declarada_confidence": vr.confidence,
+                        }
+                    )
+                )
+                continue
+
+            reconstructed, year_inferred = infer_reception_year(
+                day=day,
+                month=month,
+                lower=None,
+                upper=today,
+            )
+            updated.append(
+                reg.model_copy(
+                    update={
+                        "fecha_declarada_handwritten": reconstructed,
+                        "fecha_declarada_confidence": vr.confidence,
+                        "fecha_declarada_year_inferred": year_inferred,
+                    }
+                )
+            )
+
+        return updated
+
     def _stage_normalize_dates(
         self,
         guias: list[GuiaDeRemision],
@@ -1370,10 +1480,28 @@ def _prepare_vision_image(image: bytes, config: AppConfig) -> bytes:
         PNG bytes — either the cropped stamp region (Option A) or the original
         image (Option B fallback or on any PIL failure).
     """
-    crop_cfg = config.vision.stamp_crop
+    return _crop_vision_image(image, config.vision.stamp_crop, label="stamp")
+
+
+def _prepare_vision_image_proto(image: bytes, config: AppConfig) -> bytes:
+    """Prepare the Protocolo page image for the declared-date read (R9.5 / ADR-6).
+
+    Sibling to ``_prepare_vision_image`` but selects ``config.vision.protocolo_crop``
+    (the Protocolo "Fecha:" layout differs from the guía stamp).  When the crop is
+    disabled (default), the full-page image is returned unchanged (Option B
+    fallback — the caller should have rendered at >=300dpi).
+    """
+    return _crop_vision_image(image, config.vision.protocolo_crop, label="protocolo")
+
+
+def _crop_vision_image(image: bytes, crop_cfg: Any, label: str) -> bytes:
+    """Shared crop core for the guía-stamp and Protocolo vision images.
+
+    Returns the cropped region when ``crop_cfg`` is enabled, else the original
+    bytes (Option B full-page fallback).  Any PIL failure falls back to original.
+    """
     if not crop_cfg.enabled:
-        # Option B: no cropping — return original (caller should have passed >=300dpi)
-        logger.debug("_prepare_vision_image: stamp_crop disabled; using full-page image")
+        logger.debug("_crop_vision_image: %s crop disabled; using full-page image", label)
         return image
 
     try:
@@ -1395,8 +1523,8 @@ def _prepare_vision_image(image: bytes, config: AppConfig) -> bytes:
             cropped.save(buf, format="PNG")
             result = buf.getvalue()
             logger.debug(
-                "_prepare_vision_image: stamp crop (%d,%d,%d,%d) → %dx%d px, %d bytes",
-                left, upper, right, lower,
+                "_crop_vision_image: %s crop (%d,%d,%d,%d) → %dx%d px, %d bytes",
+                label, left, upper, right, lower,
                 cropped.width, cropped.height,
                 len(result),
             )
@@ -1404,7 +1532,8 @@ def _prepare_vision_image(image: bytes, config: AppConfig) -> bytes:
 
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "_prepare_vision_image: crop failed (%s); falling back to full-page image", exc
+            "_crop_vision_image: %s crop failed (%s); falling back to full-page image",
+            label, exc,
         )
         return image
 

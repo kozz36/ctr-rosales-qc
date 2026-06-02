@@ -14,6 +14,8 @@ import axios, { type AxiosInstance } from 'axios'
 import type {
   AuditTrailResponse,
   ExportFormat,
+  GuiaLineEditRequest,
+  GuiaLineEditResponse,
   ReassignRequest,
   ReassignResponse,
   ReconciliationTableResponse,
@@ -82,6 +84,22 @@ export async function editRow(
   body: RowEditRequest,
 ): Promise<RowEditResponse> {
   const { data } = await http.patch<RowEditResponse>(`/runs/${runId}/rows/${rowId}`, body)
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// PATCH /runs/{run_id}/guias/{guia_id}/lines  — edit a guía line cantidad (rev-2)
+// ---------------------------------------------------------------------------
+
+export async function editGuiaLine(
+  runId: string,
+  guiaId: string,
+  body: GuiaLineEditRequest,
+): Promise<GuiaLineEditResponse> {
+  const { data } = await http.patch<GuiaLineEditResponse>(
+    `/runs/${runId}/guias/${encodeURIComponent(guiaId)}/lines`,
+    body,
+  )
   return data
 }
 

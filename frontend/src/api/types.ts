@@ -43,6 +43,25 @@ export interface RunStatusResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Guía contribution (rev-2: inline in each ReconciliationRowResponse)
+// ---------------------------------------------------------------------------
+
+/**
+ * One contributing guía within a reconciliation row.
+ *
+ * Mirrors backend GuiaContributionResponse (schemas.py).
+ * cantidad is serialised as a Decimal string by the backend.
+ */
+export interface GuiaContributionResponse {
+  guia_id: string // serie-numero, e.g. "T009-0741770"
+  source_pages: number[]
+  cantidad: string // Decimal serialised as string
+  unidad: string
+  confidence: number
+  identity_source: 'qr' | 'ocr_fallback'
+}
+
+// ---------------------------------------------------------------------------
 // Reconciliation table
 // ---------------------------------------------------------------------------
 
@@ -55,6 +74,9 @@ export interface RunStatusResponse {
  * declared_qty / summed_qty / delta are serialised as strings by the backend
  * (Pydantic Decimal → JSON string via model_config json_encoders) to preserve
  * exact decimal precision.
+ *
+ * guias[] is inline from the backend (rev-2) — no additional API call needed
+ * to expand the drill-down view (REV-C01).
  */
 export interface ReconciliationRowResponse {
   row_id: string // "{registro}|{fecha}|{material_canonical}|{unidad}"
@@ -68,6 +90,7 @@ export interface ReconciliationRowResponse {
   status: RowStatus
   source_pages: number[]
   min_confidence: number | null
+  guias: GuiaContributionResponse[] // rev-2: inline contributions
 }
 
 /** GET /runs/{run_id}/table */
@@ -87,6 +110,26 @@ export interface RowEditRequest {
 }
 
 export interface RowEditResponse {
+  run_id: string
+  rows: ReconciliationRowResponse[]
+}
+
+// ---------------------------------------------------------------------------
+// Guía line edit (PATCH /runs/{run_id}/guias/{guia_id}/lines) — rev-2
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors backend GuiaLineEditRequest (schemas.py).
+ * cantidad must be >= 0 (backend enforces ge=0; 422 otherwise).
+ */
+export interface GuiaLineEditRequest {
+  line_index: number | null
+  material_canonical: string | null
+  cantidad: number // numeric (not string) — backend expects float ge=0
+}
+
+/** The updated rows are returned, same shape as the table endpoint. */
+export interface GuiaLineEditResponse {
   run_id: string
   rows: ReconciliationRowResponse[]
 }

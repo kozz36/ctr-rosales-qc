@@ -59,6 +59,12 @@ export interface GuiaContributionResponse {
   unidad: string
   confidence: number
   identity_source: 'qr' | 'ocr_fallback'
+  /**
+   * Rev-3 D5 (REC-C07): true when the year component of this guía's reception
+   * date was reconstructed via bounded inference (EXT-021), not read directly
+   * from vision output. Advisory flag — does NOT affect MATCH/MISMATCH logic.
+   */
+  year_inferred: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +99,12 @@ export interface ReconciliationRowResponse {
   /** True when OCR confidence < 0.85 or vision returned null date (task 7.3 / REV-004). */
   requires_review: boolean // server always sends this; default false
   guias: GuiaContributionResponse[] // rev-2: inline contributions
+  /**
+   * Rev-3 D5 (REC-C07): true when at least one contributing guía's reception-date
+   * year was reconstructed via bounded inference (EXT-021). Advisory only —
+   * yellow badge in UI; does NOT affect MATCH/MISMATCH logic.
+   */
+  any_year_inferred: boolean
 }
 
 // ---------------------------------------------------------------------------

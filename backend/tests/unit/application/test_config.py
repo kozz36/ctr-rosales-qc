@@ -17,6 +17,7 @@ from reconciliation.application.config import (
     ConfidenceConfig,
     DeskewConfig,
     InferenceConfig,
+    OcrConfig,
     VisionConfig,
 )
 
@@ -219,3 +220,41 @@ class TestInferenceConfig:
         dumped = cfg.inference.model_dump()
         assert "api_key" not in dumped
         assert cfg.vision.openai.api_key is None
+
+
+# ---------------------------------------------------------------------------
+# OcrConfig — ocr.enabled flag (broken-paddle / SUNAT-quantities use-case)
+# ---------------------------------------------------------------------------
+
+
+class TestOcrConfig:
+    def test_default_ocr_enabled_is_true(self) -> None:
+        """Default AppConfig has ocr.enabled=True — preserves existing behaviour."""
+        cfg = AppConfig()
+        assert cfg.ocr.enabled is True
+
+    def test_ocr_config_directly(self) -> None:
+        """OcrConfig can be constructed directly with enabled=False."""
+        c = OcrConfig(enabled=False)
+        assert c.enabled is False
+
+    def test_app_config_ocr_enabled_false_inline(self) -> None:
+        """AppConfig accepts ocr sub-config with enabled=False."""
+        cfg = AppConfig(ocr=OcrConfig(enabled=False))
+        assert cfg.ocr.enabled is False
+
+    def test_env_override_ocr_enabled_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RECONCILIATION__OCR__ENABLED=false overrides the default True."""
+        monkeypatch.setenv("RECONCILIATION__OCR__ENABLED", "false")
+        cfg = AppConfig()
+        assert cfg.ocr.enabled is False
+
+    def test_env_override_ocr_enabled_true_explicit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RECONCILIATION__OCR__ENABLED=true keeps the default True."""
+        monkeypatch.setenv("RECONCILIATION__OCR__ENABLED", "true")
+        cfg = AppConfig()
+        assert cfg.ocr.enabled is True

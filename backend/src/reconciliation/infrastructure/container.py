@@ -368,7 +368,27 @@ def build_pipeline(
 
     # --- Extraction adapter (composite: digital + OCR) ---
     # Instantiated early so we can pass the declared_extractor to build_page_to_registro_map.
-    extractor = CompositeExtractionAdapter()
+    #
+    # When ocr.enabled=False: bypass CompositeExtractionAdapter.__init__ entirely so
+    # paddle_table.py is never imported and PaddleOCR is never reachable.  We build the
+    # composite manually: DigitalTextExtractionAdapter for the declared slot (no heavy deps)
+    # + NullOcrExtractor for the OCR slot.  All other CompositeExtractionAdapter methods
+    # (DeclaredExtractorPort delegation) still work because they route through _declared_adapter.
+    if not config.ocr.enabled:
+        from reconciliation.adapters.ocr.null_extractor import NullOcrExtractor  # noqa: PLC0415
+        from reconciliation.adapters.pdf.digital_text_extractor import (  # noqa: PLC0415
+            DigitalTextExtractionAdapter,
+        )
+
+        extractor = CompositeExtractionAdapter.__new__(CompositeExtractionAdapter)
+        extractor._declared_adapter = DigitalTextExtractionAdapter()  # type: ignore[attr-defined]
+        extractor._ocr_adapter = NullOcrExtractor()  # type: ignore[attr-defined]
+        logger.info(
+            "build_pipeline: OCR DISABLED (config.ocr.enabled=False) — "
+            "NullOcrExtractor injected; paddle_table.py NOT imported"
+        )
+    else:
+        extractor = CompositeExtractionAdapter()
 
     # --- Section ↔ Registro correlation (C-3 fix) ---
     # Pass doc_source + extractor so the map is keyed on Description numeros ("232"),
@@ -402,15 +422,25 @@ def build_pipeline(
     vision = build_vision_adapter(config)
 
     # --- Deskew adapter (lazy PaddleOCR; None when ML deps absent at import time) ---
-    # The DeskewAdapter itself loads PaddleOCR lazily on first call; it won't
-    # crash here.  We pass it to the pipeline so H-5 wiring exists; if PaddleOCR
-    # is absent at call time, DeskewAdapter._unavailable is set and it fast-returns.
-    try:
-        from reconciliation.adapters.ocr.paddle_deskew import DeskewAdapter  # noqa: PLC0415
-        deskew: object | None = DeskewAdapter()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("build_pipeline: DeskewAdapter import failed (%s); deskew disabled", exc)
-        deskew = None
+    # When ocr.enabled=False, skip DeskewAdapter entirely — no paddle import whatsoever.
+    # Classification falls back to QR Condition-A / heuristic Condition-B (primary path);
+    # title-OCR Condition-C is the only capability lost.
+    if not config.ocr.enabled:
+        deskew: object | None = None
+        logger.info(
+            "build_pipeline: deskew DISABLED (config.ocr.enabled=False) — "
+            "DeskewAdapter skipped; classify uses QR/heuristic conditions only"
+        )
+    else:
+        # The DeskewAdapter itself loads PaddleOCR lazily on first call; it won't
+        # crash here.  We pass it to the pipeline so H-5 wiring exists; if PaddleOCR
+        # is absent at call time, DeskewAdapter._unavailable is set and it fast-returns.
+        try:
+            from reconciliation.adapters.ocr.paddle_deskew import DeskewAdapter  # noqa: PLC0415
+            deskew = DeskewAdapter()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("build_pipeline: DeskewAdapter import failed (%s); deskew disabled", exc)
+            deskew = None
 
     # --- Run context ---
     ctx = RunContext(

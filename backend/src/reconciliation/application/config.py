@@ -163,6 +163,31 @@ class SunatConfig(BaseSettings):
     cache: bool = True
 
 
+class OcrConfig(BaseSettings):
+    """PaddleOCR on/off switch (local-first / broken-paddle recovery).
+
+    OFF state (``enabled=False``): the pipeline injects a NullOcrExtractor
+    whose ``extract_printed_table`` always returns ``[]`` WITHOUT importing or
+    instantiating PaddleOCR.  Deskew is also disabled (``deskew=None``).
+    Classification falls back to the primary QR Condition-A / heuristic
+    Condition-B path — title-OCR (Condition C) is the only loss.
+
+    ON state (``enabled=True``, default): byte-for-byte identical to the
+    previous behaviour.  PaddleOCR is loaded lazily by PrintedTableAdapter and
+    DeskewAdapter on first call.
+
+    Intended use-case: machines where PaddleOCR crashes on load (oneDNN / PIR
+    initialisation failure) while SUNAT supplies authoritative quantities via
+    ``sunat.enabled=True``.
+
+    Env override: ``RECONCILIATION__OCR__ENABLED=false``.
+    """
+
+    model_config = SettingsConfigDict(extra="allow")
+
+    enabled: bool = True
+
+
 class DeskewConfig(BaseSettings):
     """Deskew scope and fallback settings (locked: guia_only)."""
 
@@ -226,6 +251,9 @@ class AppConfig(BaseSettings):
     sunat: SunatConfig = Field(default_factory=SunatConfig)
     # R8.8 (ADR-2): LLM inference for ambiguous material descriptions. Off by default.
     inference: InferenceConfig = Field(default_factory=InferenceConfig)
+    # OCR on/off switch — ON by default; set False to skip PaddleOCR entirely
+    # when paddle is broken (oneDNN/PIR) and SUNAT supplies quantities instead.
+    ocr: OcrConfig = Field(default_factory=OcrConfig)
 
     # Base directory under which per-run directories are created.
     output_dir: Path = Field(default=Path("runs"))

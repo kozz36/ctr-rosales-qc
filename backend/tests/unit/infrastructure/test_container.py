@@ -464,3 +464,101 @@ class TestBuildPipelineResolverWiring:
         assert pipeline._key_resolver is not None
         assert pipeline._key_resolver._inference is not None
         assert isinstance(pipeline._key_resolver._inference, OllamaMaterialInferenceAdapter)
+
+
+# ---------------------------------------------------------------------------
+# OCR wiring — ocr.enabled flag (broken-paddle / SUNAT-quantities use-case)
+# ---------------------------------------------------------------------------
+
+from reconciliation.application.config import OcrConfig
+from reconciliation.adapters.ocr.null_extractor import NullOcrExtractor
+
+
+class TestBuildPipelineOcrWiring:
+    """build_pipeline wires NullOcrExtractor + deskew=None when ocr.enabled=False."""
+
+    def _patched_build_pipeline_ocr_enabled(self, config: AppConfig):
+        """Call build_pipeline for ocr.enabled=True: patches CompositeExtractionAdapter."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        with patch(
+            "reconciliation.infrastructure.container.CompositeExtractionAdapter"
+        ) as mock_composite, patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.vision.factory.build_vision_adapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.ocr.paddle_deskew.DeskewAdapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            mock_composite.return_value._declared_adapter = MagicMock()
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+        return pipeline
+
+    def _patched_build_pipeline_ocr_disabled(self, config: AppConfig):
+        """Call build_pipeline for ocr.enabled=False.
+
+        Does NOT patch CompositeExtractionAdapter because the OCR-disabled path
+        uses __new__ + manual attribute assignment and must NOT call __init__.
+        Patches only PDF source and vision adapters (no ML deps needed).
+        """
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        with patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.vision.factory.build_vision_adapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+        return pipeline
+
+    def test_default_config_wires_real_extraction_adapter(self) -> None:
+        """Default config (ocr.enabled=True) does NOT inject NullOcrExtractor."""
+        config = AppConfig()
+        assert config.ocr.enabled is True
+        pipeline = self._patched_build_pipeline_ocr_enabled(config)
+        # The extractor should NOT be a NullOcrExtractor; it's the CompositeExtractionAdapter
+        # (mocked here, but _ocr_adapter must not be a NullOcrExtractor)
+        assert not isinstance(pipeline._extractor._ocr_adapter, NullOcrExtractor)
+
+    def test_ocr_disabled_wires_null_ocr_extractor(self) -> None:
+        """When ocr.enabled=False, the composite's _ocr_adapter is NullOcrExtractor."""
+        config = AppConfig(ocr=OcrConfig(enabled=False))
+        pipeline = self._patched_build_pipeline_ocr_disabled(config)
+        assert isinstance(pipeline._extractor._ocr_adapter, NullOcrExtractor)
+
+    def test_ocr_disabled_wires_deskew_none(self) -> None:
+        """When ocr.enabled=False, pipeline._deskew is None (no DeskewAdapter instantiated)."""
+        config = AppConfig(ocr=OcrConfig(enabled=False))
+        pipeline = self._patched_build_pipeline_ocr_disabled(config)
+        assert pipeline._deskew is None
+
+    def test_ocr_enabled_wires_deskew_adapter(self) -> None:
+        """When ocr.enabled=True (default), pipeline._deskew is a DeskewAdapter (mocked here)."""
+        config = AppConfig()
+        assert config.ocr.enabled is True
+        pipeline = self._patched_build_pipeline_ocr_enabled(config)
+        # The DeskewAdapter is patched with a MagicMock; it must be non-None.
+        assert pipeline._deskew is not None

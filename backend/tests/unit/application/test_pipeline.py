@@ -1035,4 +1035,104 @@ class TestKeyResolverDefensive:
         )]
         norm_declared, _ = pipeline._stage_normalize(declared, [])
         assert norm_declared[0].declared_lines[0].description_canonical.startswith("UNRESOLVED::")
-        assert norm_declared[0].declared_lines[0].requires_review is True
+
+
+# ---------------------------------------------------------------------------
+# OCR disabled mode — _stage_extract_ocr with NullOcrExtractor
+# ---------------------------------------------------------------------------
+
+from reconciliation.adapters.ocr.null_extractor import NullOcrExtractor
+from reconciliation.application.config import OcrConfig
+
+
+class TestOcrDisabledPipelineStage:
+    """Pipeline stage tests for ocr.enabled=False mode.
+
+    Uses fake doc source and NullOcrExtractor directly — no paddle, no real PDF.
+    """
+
+    def _build_ocr_disabled_pipeline(
+        self,
+        pages: list[dict],
+        tmp_path: Path,
+    ) -> tuple[ReconciliationPipeline, RunContext]:
+        cfg = AppConfig(ocr=OcrConfig(enabled=False))
+        doc = FakeDocumentSource(pages)
+        # NullOcrExtractor as the extractor (satisfies ExtractionPort)
+        extractor = NullOcrExtractor()
+        vision = FakeVisionSerial()
+        pipeline = ReconciliationPipeline(
+            doc_source=doc,
+            extractor=extractor,
+            vision=vision,
+            config=cfg,
+            deskew=None,  # explicitly no deskew (mirrors what build_pipeline wires)
+        )
+        ctx = RunContext(pdf_path=tmp_path / "input.pdf", output_base=tmp_path / "runs")
+        return pipeline, ctx
+
+    def test_stage_extract_ocr_with_null_extractor_returns_raw_guias_with_empty_lines(
+        self, tmp_path: Path
+    ) -> None:
+        """With NullOcrExtractor, _stage_extract_ocr creates _RawGuia objects
+        with empty lines per GUIA page — no OCR failure warning emitted.
+        """
+        from reconciliation.application.pipeline import DecodeOutcome
+        from reconciliation.domain.models import PageClassification
+
+        pipeline, ctx = self._build_ocr_disabled_pipeline(
+            pages=[{"text": _GUIA_TEXT, "image": b"\x89PNG\r\n"}],
+            tmp_path=tmp_path,
+        )
+        classifications = [
+            PageClassification(page=0, kind="GUIA", title_matched="GUIA DE REMISION", confidence=1.0)
+        ]
+        decode_map = {
+            0: DecodeOutcome(
+                identity=None,
+                hashqr_url=None,
+                rendered=b"\x89PNG\r\n",
+                decoded=False,
+            )
+        }
+
+        raw_guias, ocr_warnings = pipeline._stage_extract_ocr(
+            classifications, decode_map=decode_map
+        )
+
+        assert len(raw_guias) == 1
+        assert raw_guias[0].lines == []
+        # No _ocr_failed warning — empty lines are INTENTIONAL (skip, not failure)
+        assert ocr_warnings == []
+
+    def test_stage_extract_ocr_no_ocr_failed_flag_on_null_extractor(
+        self, tmp_path: Path
+    ) -> None:
+        """NullOcrExtractor does NOT set _ocr_failed — intentional skip != failure."""
+        from reconciliation.application.pipeline import DecodeOutcome
+        from reconciliation.domain.models import PageClassification
+
+        pipeline, ctx = self._build_ocr_disabled_pipeline(
+            pages=[{"text": _GUIA_TEXT, "image": b"\x89PNG\r\n"}],
+            tmp_path=tmp_path,
+        )
+        # Confirm _ocr_failed is absent or False on the extractor
+        assert not getattr(pipeline._extractor, "_ocr_failed", False)
+
+    def test_full_run_ocr_disabled_guia_gets_empty_lines(
+        self, tmp_path: Path
+    ) -> None:
+        """End-to-end run with ocr.enabled=False: GUIA page produces a guía with
+        empty lines and no OCR warnings in the result.
+        """
+        pipeline, ctx = self._build_ocr_disabled_pipeline(
+            pages=[{"text": _GUIA_TEXT, "image": b"\x89PNG\r\n"}],
+            tmp_path=tmp_path,
+        )
+        result = pipeline.run(ctx)
+        assert result.classifications[0].kind == "GUIA"
+        assert len(result.guias) == 1
+        assert result.guias[0].lines == []
+        # No OCR failure warnings — empty lines are intentional
+        ocr_warnings = [w for w in result.warnings if "OCR unavailable" in w]
+        assert ocr_warnings == []

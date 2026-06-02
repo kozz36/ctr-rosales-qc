@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import NamedTuple
 
 from reconciliation.domain.models import (
+    GuiaContribution,
     GuiaDeRemision,
     MaterialLine,
     ReconciliationRow,
@@ -46,7 +47,11 @@ class ReconciliationService:
     ) -> list[ReconciliationRow]:
         """Produce one ``ReconciliationRow`` per (registro, fecha, material, unidad) group.
 
-        Spec: REC-001 through REC-010.
+        Spec: REC-001 through REC-010, REC-C02, REC-C05, REC-C07.
+
+        Rev-2: ``ReconciliationRow.guias`` is populated inline as a list of
+        ``GuiaContribution`` objects.  ``summed_qty`` is a computed property on
+        the row (derived from ``guias[*].cantidad``) — it is never written directly.
 
         Args:
             declared: List of declared-side Registro objects (trusted digital source).
@@ -55,8 +60,9 @@ class ReconciliationService:
         Returns:
             One row per unique group key.  Every key present in either ``declared``
             or ``guias`` generates a row; no group is silently dropped (REC-007).
+            Guías with ``registro=None`` surface in ``unresolved_guias`` (REC-C05).
         """
-        # Build declared index: key -> (declared_qty, declared source lines)
+        # Build declared index: key -> declared_qty
         declared_index: dict[_GroupKey, Decimal] = {}
         for registro in declared:
             for line in registro.declared_lines:
@@ -68,16 +74,17 @@ class ReconciliationService:
                 )
                 declared_index[key] = declared_index.get(key, Decimal(0)) + line.cantidad
 
-        # Build guía index: key -> list of (cantidad, confidence, source_page)
-        _GuiaEntry = tuple[Decimal, float | None, int | None]
+        # Build guía index: key -> list of _GuiaEntry (contribution + meta)
+        # Each entry carries the GuiaDeRemision reference for building GuiaContribution objects.
+        _GuiaEntry = tuple[GuiaDeRemision, Decimal, float | None, int | None]
         guia_index: dict[_GroupKey, list[_GuiaEntry]] = defaultdict(list)
+
         for guia in guias:
             if guia.registro is None:
-                # Guías without an assigned registro are still indexed under empty string
-                # so they appear in the output (REC-007).
-                effective_registro = ""
-            else:
-                effective_registro = guia.registro
+                # Guías without assigned registro skipped from row grouping;
+                # they surface as unresolved_guias (REC-C05).
+                continue
+            effective_registro = guia.registro
             for line in guia.lines:
                 key = _GroupKey(
                     registro=effective_registro,
@@ -85,7 +92,7 @@ class ReconciliationService:
                     material_canonical=line.description_canonical,
                     unidad=line.unidad,
                 )
-                guia_index[key].append((line.cantidad, line.confidence, line.source_page))
+                guia_index[key].append((guia, line.cantidad, line.confidence, line.source_page))
 
         # Union of all keys
         all_keys = set(declared_index.keys()) | set(guia_index.keys())
@@ -95,30 +102,49 @@ class ReconciliationService:
             declared_qty = declared_index.get(key, None)
             guia_entries = guia_index.get(key, [])
 
-            summed_qty = sum(
-                (qty for qty, _conf, _page in guia_entries),
-                start=Decimal(0),
-            )
+            # Build GuiaContribution objects for this group.
+            # Contributions are keyed by guia_id; each guia contributes once per group
+            # with the summed cantidad across all its lines in this group.
+            contrib_map: dict[str, tuple[GuiaDeRemision, Decimal]] = {}
+            for entry_guia, cantidad, _conf, _page in guia_entries:
+                existing = contrib_map.get(entry_guia.guia_id)
+                if existing is None:
+                    contrib_map[entry_guia.guia_id] = (entry_guia, cantidad)
+                else:
+                    contrib_map[entry_guia.guia_id] = (existing[0], existing[1] + cantidad)
+
+            contributions: list[GuiaContribution] = [
+                GuiaContribution(
+                    guia_id=g.guia_id,
+                    source_pages=g.source_pages,
+                    cantidad=total_qty,
+                    unidad=key.unidad,  # contribution MUST carry the group's unit (domain invariant)
+                    confidence=g.identity_confidence,
+                    identity_source=g.identity_source,
+                )
+                for g, total_qty in contrib_map.values()
+            ]
 
             source_pages = sorted(
-                {page for _qty, _conf, page in guia_entries if page is not None}
+                {page for _g, _qty, _conf, page in guia_entries if page is not None}
             )
 
-            confidences = [conf for _qty, conf, _page in guia_entries if conf is not None]
+            confidences = [conf for _g, _qty, conf, _page in guia_entries if conf is not None]
             min_confidence = min(confidences) if confidences else None
 
             if declared_qty is None:
                 # Guía exists but no declared counterpart
                 status: str = "DECLARED_MISSING"
                 declared_qty = Decimal(0)
-                delta = summed_qty
+                delta = sum((c.cantidad for c in contributions), start=Decimal(0))
             elif not guia_entries:
                 # Declared exists but no guía rows
                 status = "GUIA_MISSING"
-                summed_qty = Decimal(0)
+                # contributions is empty → summed_qty will be 0 (computed property)
                 delta = Decimal(0) - declared_qty
             else:
-                delta = summed_qty - declared_qty
+                summed = sum((c.cantidad for c in contributions), start=Decimal(0))
+                delta = summed - declared_qty
                 # EXACT(0) tolerance — REC-010
                 status = "MATCH" if delta == Decimal(0) else "MISMATCH"
 
@@ -129,11 +155,11 @@ class ReconciliationService:
                     material_canonical=key.material_canonical,
                     unidad=key.unidad,
                     declared_qty=declared_qty,
-                    summed_qty=summed_qty,
                     delta=delta,
                     status=status,  # type: ignore[arg-type]
                     source_pages=source_pages,
                     min_confidence=min_confidence,
+                    guias=contributions,
                 )
             )
 

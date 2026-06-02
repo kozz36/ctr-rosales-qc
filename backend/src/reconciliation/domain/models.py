@@ -110,8 +110,11 @@ class ReconciliationRow(BaseModel):
     """Output row from ReconciliationService — one per (registro, fecha, material, unidad) group.
 
     Rev-2: ``guias`` carries per-guía contribution detail (REC-C02 / design §D).
-    ``summed_qty`` MUST remain a stored field (not a computed property) because the
-    reconciler derives it during grouping; ``guias`` will be populated in S1.6 (PR-7).
+    ``summed_qty`` is a DERIVED computed property: sum of ``guias[*].cantidad``.
+    It MUST NOT be written directly; the reconciler populates ``guias`` and
+    ``summed_qty`` is derived automatically (REC-C04, S1.6).
+
+    GUIA_MISSING rows have an empty ``guias`` list → ``summed_qty == 0``.
     """
 
     registro: str
@@ -119,13 +122,18 @@ class ReconciliationRow(BaseModel):
     material_canonical: str
     unidad: str
     declared_qty: Decimal
-    summed_qty: Decimal
     delta: Decimal
     status: Literal["MATCH", "MISMATCH", "DECLARED_MISSING", "GUIA_MISSING", "UNCLASSIFIED"]
     source_pages: list[int]
     min_confidence: float | None = None
-    # Rev-2: inline guía contributions (populated in PR-7 S1.6; empty by default)
+    # Rev-2: inline guía contributions (populated by ReconciliationService.reconcile)
     guias: list[GuiaContribution] = []
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def summed_qty(self) -> Decimal:
+        """Derived from guias — MUST NOT be written directly (REC-C04, S1.6 invariant)."""
+        return sum((g.cantidad for g in self.guias), start=Decimal(0))
 
 
 class VisionResult(BaseModel):

@@ -49,19 +49,30 @@ def _make_row(
     declared: str = "10.0",
     summed: str = "10.0",
 ) -> ReconciliationRow:
+    from reconciliation.domain.models import GuiaContribution  # noqa: PLC0415
     d = Decimal(declared)
     s = Decimal(summed)
+    # summed_qty is a computed property (sum of guias[*].cantidad).
+    # Build a dummy contribution so summed_qty reflects the expected value.
+    contrib = GuiaContribution(
+        guia_id="test-guia",
+        source_pages=[1, 2],
+        cantidad=s,
+        unidad="TN",
+        confidence=0.9,
+        identity_source="ocr_fallback",
+    )
     return ReconciliationRow(
         registro=registro,
         fecha=date(2024, 1, 15),
         material_canonical=material,
         unidad="TN",
         declared_qty=d,
-        summed_qty=s,
         delta=d - s,
         status=status,  # type: ignore[arg-type]
         source_pages=[1, 2],
         min_confidence=0.9,
+        guias=[contrib],
     )
 
 

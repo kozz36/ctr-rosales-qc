@@ -461,7 +461,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 **Parallelism**: independent of S1.1–S1.7; can be implemented in the same session as any other S1 task.
 **Completable in**: one session (small — ~50 lines).
 
-### [ ] S1.9 — Real-data e2e assertions for rev-2 (backend)
+### [x] S1.9 — Real-data e2e assertions for rev-2 (backend)
 
 **Spec refs**: EXT-S13, EXT-S14, EXT-S15, EXT-S16, EXT-S17, EXT-S18, EXT-S19, EXT-S20, REC-S01 (modified), REC-C03, REC-C04, REC-C06.
 **Depends on**: S1.1–S1.8 complete (all backend hotfix tasks done).

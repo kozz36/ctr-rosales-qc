@@ -456,21 +456,12 @@ def _parse_line_items(
         The block ends when a line matches _ITEMS_END_RE
         ('Indicador de traslado' / 'Datos del traslado' / 'Peso Bruto').
 
-    Unit normalisation (SUNAT raw → canonical):
-        TONELADAS → TN  |  KILOGRAMOS → KG  |  UNIDAD / UNIDADES → UND
-        METROS → M  |  LITROS → L
-        (Unknown units are stored as-is for downstream normaliser.)
+    Units are stored as raw SUNAT strings (e.g. "TONELADAS", "KILOGRAMOS").
+    Normalisation to domain codes (TN, KG, etc.) is performed downstream by
+    ``_normalize_sunat_unit`` in the application pipeline, which owns that mapping.
 
     Returns a list of ``GreLineItem`` instances.
     """
-    _UNIT_MAP = {
-        "TONELADAS": "TN",
-        "KILOGRAMOS": "KG",
-        "UNIDAD": "UND",
-        "UNIDADES": "UND",
-        "METROS": "M",
-        "LITROS": "L",
-    }
     _DIGITS_ONLY_RE = re.compile(r"^\d+$")
 
     items: list[object] = []
@@ -533,12 +524,12 @@ def _parse_line_items(
             )
             continue
 
-        canonical_unit = _UNIT_MAP.get(unit_raw, unit_raw)
-
+        # Store the raw SUNAT unit string; normalisation to domain codes is the
+        # responsibility of _normalize_sunat_unit in the application pipeline.
         items.append(
             GreLineItem(
                 cantidad=qty,
-                unidad=canonical_unit,
+                unidad=unit_raw,
                 descripcion=desc_raw,
                 codigo_producto=code_raw,
             )

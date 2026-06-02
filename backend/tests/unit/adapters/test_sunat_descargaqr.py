@@ -260,7 +260,11 @@ class TestParsers:
         assert receptor is None
 
     def test_parse_line_items_sample_text(self) -> None:
-        """Single-item parse: real token-per-line format (R6 rewrite)."""
+        """Single-item parse: real token-per-line format (R6 rewrite).
+
+        The parser stores raw SUNAT unit strings (e.g. 'TONELADAS').
+        Normalisation to domain codes (TN/KG/etc.) is the pipeline's responsibility.
+        """
         from reconciliation.adapters.sunat.descargaqr import _parse_line_items
         from reconciliation.domain.models import GreLineItem
 
@@ -270,8 +274,8 @@ class TestParsers:
         assert len(items) == 1
         item = items[0]
         assert item.cantidad == Decimal("0.192")
-        # TONELADAS → TN after unit normalisation
-        assert item.unidad == "TN"
+        # Raw SUNAT unit string — normalisation is done by the pipeline
+        assert item.unidad == "TONELADAS"
         assert "BARRA" in item.descripcion
         assert item.codigo_producto == "407797"
 
@@ -294,13 +298,13 @@ class TestParsers:
 
         item1 = items[0]
         assert item1.cantidad == Decimal("2.500")
-        assert item1.unidad == "TN"  # TONELADAS → TN
+        assert item1.unidad == "TONELADAS"  # raw SUNAT unit; pipeline normalises to TN
         assert "BARRA" in item1.descripcion
         assert item1.codigo_producto == "111111"
 
         item2 = items[1]
         assert item2.cantidad == Decimal("750.000")
-        assert item2.unidad == "KG"  # KILOGRAMOS → KG
+        assert item2.unidad == "KILOGRAMOS"  # raw SUNAT unit; pipeline normalises to KG
         assert "ALAMBRE" in item2.descripcion
         assert item2.codigo_producto == "222222"
 
@@ -461,8 +465,8 @@ class TestAdapterParsedResult:
         assert result.ruc_receptor == "20613231871"
         assert len(result.lines) == 1
         assert result.lines[0].cantidad == Decimal("0.192")
-        # TONELADAS normalised → TN by the R6 parser
-        assert result.lines[0].unidad == "TN"
+        # Raw SUNAT unit string returned by parser; pipeline normalises downstream
+        assert result.lines[0].unidad == "TONELADAS"
         assert "BARRA" in result.lines[0].descripcion
         assert result.lines[0].codigo_producto == "407797"
 

@@ -913,13 +913,25 @@ class ReconciliationPipeline:
             from typing import Literal, cast  # noqa: PLC0415
 
             _DOMAIN_UNIT = Literal["KG", "TN", "RD", "Rollo"]
+            _VALID_UNITS: frozenset[str] = frozenset({"KG", "TN", "RD", "Rollo"})
             sunat_lines = []
             for item in official.lines:
+                normalized = _normalize_sunat_unit(item.unidad)
+                if normalized not in _VALID_UNITS:
+                    logger.warning(
+                        "_stage_sunat_fetch: block %r — SUNAT unit %r → %r not in domain set"
+                        "; skipping line item (descripcion=%r)",
+                        block.guia_id,
+                        item.unidad,
+                        normalized,
+                        item.descripcion,
+                    )
+                    continue
                 sunat_lines.append(
                     MaterialLine(
                         description_raw=item.descripcion,
                         description_canonical=item.descripcion,  # normalizer runs later
-                        unidad=cast(_DOMAIN_UNIT, _normalize_sunat_unit(item.unidad)),
+                        unidad=cast(_DOMAIN_UNIT, normalized),
                         cantidad=item.cantidad,
                         confidence=1.0,  # SUNAT data is authoritative (no OCR confidence)
                         source_page=block.first_page,

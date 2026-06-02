@@ -319,15 +319,9 @@ def edit_row(
     entry = _require_run(registry, run_id)
     review_service = _require_review_service(entry, run_id)
 
-    # Explicitly reject summed_qty as a direct write target (REC-C04 / S1.7)
-    if body.field == "summed_qty":
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Field 'summed_qty' is a computed property and cannot be edited directly. "
-                "Use PATCH /runs/{run_id}/guias/{guia_id}/lines to update a guía line quantity."
-            ),
-        )
+    # Note: field='summed_qty' is rejected by Pydantic before reaching here
+    # (RowEditRequest.field is Literal["fecha", "registro"]).  The ReviewService
+    # also guards it explicitly (REC-C04) in case the schema is relaxed later.
 
     try:
         updated_rows = review_service.apply_edit(

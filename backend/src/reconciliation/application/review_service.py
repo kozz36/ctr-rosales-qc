@@ -28,9 +28,7 @@ from typing import Any
 
 from reconciliation.domain.errors import ReconciliationError
 from reconciliation.domain.models import (
-    GuiaContribution,
     GuiaDeRemision,
-    MaterialLine,
     ReconciliationRow,
     Registro,
 )

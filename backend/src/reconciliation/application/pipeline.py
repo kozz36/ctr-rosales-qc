@@ -40,8 +40,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
-from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
 from reconciliation.domain.classifier import PageClassifier
@@ -519,7 +517,9 @@ class ReconciliationPipeline:
                     identity = self._identity.decode_identity(raw.image)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
-                        "assemble_blocks: identity decode failed for page %d: %s", raw.source_page, exc
+                        "assemble_blocks: identity decode failed page %d: %s",
+                        raw.source_page,
+                        exc,
                     )
 
             # Derive identity fields for this page

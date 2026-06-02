@@ -118,7 +118,8 @@ class ReconciliationService:
                     guia_id=g.guia_id,
                     source_pages=g.source_pages,
                     cantidad=total_qty,
-                    unidad=key.unidad,  # contribution MUST carry the group's unit (domain invariant)
+                    # contribution MUST carry the group's unit (domain invariant)
+                    unidad=key.unidad,
                     confidence=g.identity_confidence,
                     identity_source=g.identity_source,
                 )

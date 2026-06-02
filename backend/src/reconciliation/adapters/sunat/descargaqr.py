@@ -14,6 +14,8 @@ The adapter is:
 - **Cache-aware**: when ``cache=True`` (the default), the downloaded PDF is saved
   to ``<cache_dir>/{guia_id}.pdf`` and reused on subsequent calls within the same
   run.
+- **Retry-resilient**: read-timeouts on the first attempt are retried up to
+  ``_MAX_RETRIES`` times with exponential backoff before giving up.
 
 SUNAT endpoint (confirmed in spike #2750):
   GET https://e-factura.sunat.gob.pe/v1/contribuyente/gre/comprobantes/descargaqr
@@ -21,18 +23,46 @@ SUNAT endpoint (confirmed in spike #2750):
   Returns: HTTP 200, Content-Type: application/pdf, ~4 KB
   Content-Disposition: filename "{RUC}-{tipo}-{serie}-{numero}-PDF.pdf"
 
-Text layout in the returned PDF (full digital text; NOT a scan):
-  "N° T073 - 00680258" — guia serie and numero
-  "Fecha de emisión <date>" — GRE issue date
-  "Fecha de entrega de Bienes al transportista:<date>" — delivery date (lower bound)
-  "Cantidad / Unidad de medida / Descripción Detallada" (table header)
-  "<cantidad> / <unidad_code> / <description_text>" — per line item
-  "Código de identificación del Bien o Servicio <codigo>" — product code
-  RUC blocks for emisor and receptor
+Real text layout from PyMuPDF get_text() (R6 fix — verified against live SUNAT PDF):
+  "N° T073 - 00680258"
+  "Fecha de entrega de Bienes al  transportista:28/05/2026"
+  "Bienes por transportar:"
+  --- COLUMN HEADER TOKENS (one per line, no slashes) ---
+  "Cantidad"
+  "Bien"
+  "normalizado"
+  "Unidad de"
+  "medida"
+  "Código"
+  "GTIN"
+  "N°"
+  "Código de"
+  "Bien"
+  "Partida"
+  "arancelaria"
+  "Descripción Detallada"
+  "Código"
+  "producto"
+  "SUNAT"                        ← last header token
+  --- VALUE TOKENS per line item (6 tokens, one per line) ---
+  "BARRA A A615-G60 3/8\" X 9M"  ← descripcion
+  "407797"                        ← codigo_producto (digits only)
+  "TONELADAS"                     ← unidad (UoM text)
+  "1"                             ← N° (integer line-counter)
+  "NO"                            ← GTIN indicator
+  "0.192"                         ← cantidad (decimal)
+  --- END MARKER ---
+  "Indicador de traslado ..."    ← or "Datos del traslado:" / "Peso Bruto"
+
+  Multiple line items repeat the 6-token group sequentially.
+  The header tokens and value tokens are COMPLETELY SEPARATE — no slash separators.
 
 Parsing strategy (label-defensive, position-tolerant):
-  - Uses regex on the full ``get_text()`` output to find the labelled fields.
-  - Does not depend on exact whitespace or table column positions.
+  - Locates "Bienes por transportar:" section boundary.
+  - Skips all header tokens by finding the last known header anchor ("SUNAT").
+  - Groups the remaining tokens as 6-token repeating value blocks until an end marker.
+  - Within each block: token[0]=descripcion, token[1]=codigo(digits only), token[2]=unidad(text),
+    token[3]=numero(int), token[4]=indicator, token[5]=cantidad(decimal).
   - Falls back gracefully when a field is absent (None for optional fields).
 """
 
@@ -40,6 +70,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import date as datetime_date
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -48,6 +79,17 @@ if TYPE_CHECKING:
     from reconciliation.domain.models import OfficialGre
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Retry / timeout defaults (R6 resilience fix)
+# ---------------------------------------------------------------------------
+
+# Default HTTP timeout raised from 10 s → 30 s; burst SUNAT responses can be slow.
+_DEFAULT_TIMEOUT_S: float = 30.0
+# Maximum number of attempts before giving up (first attempt + retries).
+_MAX_RETRIES: int = 3
+# Base back-off in seconds; actual wait = _BACKOFF_BASE * (attempt_index + 1).
+_BACKOFF_BASE: float = 1.0
 
 # ---------------------------------------------------------------------------
 # Date patterns used by the SUNAT PDF text layout
@@ -71,17 +113,11 @@ _GRE_NUM_RE = re.compile(
     r"N[°º]\s*([A-Z]\d{3})\s*[-–]\s*(\d{5,8})",
     re.IGNORECASE,
 )
-# Line-item table row.  SUNAT formats each line as:
-# "<cantidad> / <unidad_code> / <description>"  (possibly with newlines)
-# The raw text from get_text() may have the fields on consecutive lines or
-# separated by slashes.  We try both patterns.
-_LINE_ITEM_RE = re.compile(
-    r"(\d+(?:[.,]\d+)?)\s*/\s*(\w+)\s*/\s*([^\n/]{5,}?)(?=\s*\d+(?:[.,]\d+)?\s*/|\Z|\n)",
-    re.DOTALL,
-)
-# Product code that may follow the description
-_PRODUCT_CODE_RE = re.compile(
-    r"[Cc][oó]digo\s+de\s+identificaci[oó]n\s+del\s+Bien\s+o\s+Servicio\s+(\d+)",
+# End-of-items markers that delimit the value block in the SUNAT GRE PDF.
+# When any of these strings appears (case-insensitive) the value block is over.
+_ITEMS_END_RE = re.compile(
+    r"Indicador\s+de\s+traslado|Datos\s+del\s+traslado|Peso\s+Bruto",
+    re.IGNORECASE,
 )
 # RUC patterns — 11 consecutive digits
 _RUC_EMISOR_RE = re.compile(
@@ -106,11 +142,13 @@ class SunatDescargaqrAdapter:
 
     def __init__(
         self,
-        timeout_s: float = 10.0,
+        timeout_s: float = _DEFAULT_TIMEOUT_S,
         cache_dir: Path | None = None,
+        max_retries: int = _MAX_RETRIES,
     ) -> None:
         self._timeout_s = timeout_s
         self._cache_dir = cache_dir
+        self._max_retries = max_retries
 
     # ------------------------------------------------------------------
     # SunatGreFetchPort interface
@@ -238,32 +276,50 @@ class SunatDescargaqrAdapter:
         return self._download_urllib(url)
 
     def _download_httpx(self, url: str, httpx_module: object) -> bytes | None:
-        """Download using httpx."""
+        """Download using httpx with exponential-backoff retry on read-timeouts."""
         import httpx  # noqa: PLC0415
 
-        try:
-            resp = httpx.get(url, timeout=self._timeout_s, follow_redirects=True)
-        except httpx.TimeoutException as exc:
-            logger.warning("SunatDescargaqrAdapter: request timeout: %s", exc)
-            return None
-        except httpx.RequestError as exc:
-            logger.warning("SunatDescargaqrAdapter: request error: %s", exc)
-            return None
+        for attempt in range(self._max_retries):
+            try:
+                resp = httpx.get(url, timeout=self._timeout_s, follow_redirects=True)
+            except httpx.TimeoutException as exc:
+                wait = _BACKOFF_BASE * (attempt + 1)
+                logger.warning(
+                    "SunatDescargaqrAdapter: request timeout (attempt %d/%d, retry in %.1fs): %s",
+                    attempt + 1,
+                    self._max_retries,
+                    wait,
+                    exc,
+                )
+                if attempt < self._max_retries - 1:
+                    time.sleep(wait)
+                continue
+            except httpx.RequestError as exc:
+                logger.warning("SunatDescargaqrAdapter: request error: %s", exc)
+                return None
 
-        if resp.status_code != 200:
-            logger.warning(
-                "SunatDescargaqrAdapter: HTTP %d for URL %s", resp.status_code, url
-            )
-            return None
+            if resp.status_code != 200:
+                logger.warning(
+                    "SunatDescargaqrAdapter: HTTP %d for URL %s", resp.status_code, url
+                )
+                return None
 
-        content_type = resp.headers.get("content-type", "")
-        if "application/pdf" not in content_type:
-            logger.warning(
-                "SunatDescargaqrAdapter: unexpected Content-Type %r (expected PDF)", content_type
-            )
-            return None
+            content_type = resp.headers.get("content-type", "")
+            if "application/pdf" not in content_type:
+                logger.warning(
+                    "SunatDescargaqrAdapter: unexpected Content-Type %r (expected PDF)",
+                    content_type,
+                )
+                return None
 
-        return resp.content
+            return resp.content
+
+        logger.warning(
+            "SunatDescargaqrAdapter: all %d attempts timed out for URL %s",
+            self._max_retries,
+            url,
+        )
+        return None
 
     def _download_urllib(self, url: str) -> bytes | None:
         """Download using stdlib urllib as fallback when httpx is absent."""
@@ -381,69 +437,110 @@ def _parse_line_items(
     Decimal: type,  # noqa: N803
     GreLineItem: type,  # noqa: N803
 ) -> list:  # type: ignore[type-arg]
-    """Parse line items from the SUNAT PDF text.
+    """Parse line items from the SUNAT GRE PDF text (R6 rewrite — token-block algorithm).
 
-    The SUNAT GRE PDF text layout for line items (as observed in spike #2750):
+    Real SUNAT PDF text layout (from PyMuPDF get_text()):
+        The "Bienes por transportar:" section contains multi-line column HEADERS
+        (one token per line, no slash separators) followed by VALUE BLOCKS.
+        The last column header token is the literal word "SUNAT".
 
-        Cantidad / Unidad de medida / Descripción Detallada
-        0.192 / TONELADAS / BARRA A A615-G60 3/8" X 9M
-        Código de identificación del Bien o Servicio 407797
+        After "SUNAT" comes a repeating 6-token group per line item:
+          token 0 — descripcion        (free text, e.g. 'BARRA A A615-G60 3/8" X 9M')
+          token 1 — codigo_producto    (digits only, e.g. '407797')
+          token 2 — unidad             (UoM word, e.g. 'TONELADAS')
+          token 3 — numero             (integer line counter, e.g. '1')
+          token 4 — gtin_indicator     ('NO' / 'SI')
+          token 5 — cantidad           (decimal string, e.g. '0.192')
 
-    The table may span multiple lines.  We use a combination of the header
-    anchor and per-row patterns.
+        Multiple items repeat this 6-token group sequentially.
+        The block ends when a line matches _ITEMS_END_RE
+        ('Indicador de traslado' / 'Datos del traslado' / 'Peso Bruto').
+
+    Unit normalisation (SUNAT raw → canonical):
+        TONELADAS → TN  |  KILOGRAMOS → KG  |  UNIDAD / UNIDADES → UND
+        METROS → M  |  LITROS → L
+        (Unknown units are stored as-is for downstream normaliser.)
 
     Returns a list of ``GreLineItem`` instances.
     """
-    import re as _re  # noqa: PLC0415
+    _UNIT_MAP = {
+        "TONELADAS": "TN",
+        "KILOGRAMOS": "KG",
+        "UNIDAD": "UND",
+        "UNIDADES": "UND",
+        "METROS": "M",
+        "LITROS": "L",
+    }
+    _DIGITS_ONLY_RE = re.compile(r"^\d+$")
 
-    items = []
+    items: list[object] = []
 
-    # Find the table header to anchor the search region
-    header_match = _re.search(
-        r"Cantidad\s*/\s*Unidad\s+de\s+medida\s*/\s*Descripci[oó]n",
-        text,
-        _re.IGNORECASE,
-    )
-    # Search region: from header onward (or the whole text if not found)
-    search_text = text[header_match.end():] if header_match else text
+    # Step 1 — Locate "Bienes por transportar:" section
+    section_start = re.search(r"Bienes\s+por\s+transportar\s*:", text, re.IGNORECASE)
+    if section_start is None:
+        logger.debug("_parse_line_items: 'Bienes por transportar' section not found")
+        return items
 
-    # Match rows: decimal / UNIT_CODE / description
-    # The description ends at next row OR end of section.
-    # Qty may use '.' or ',' as decimal separator.
-    row_re = _re.compile(
-        r"(\d+(?:[.,]\d+)?)\s*/\s*([A-Z]{2,15})\s*/\s*([^\n]{5,100})",
-        _re.IGNORECASE,
-    )
-    # Product codes follow descriptions (one per line item)
-    code_re = _re.compile(
-        r"[Cc][oó]digo\s+de\s+identificaci[oó]n\s+del\s+Bien\s+o\s+Servicio\s+(\d+)",
-    )
+    # Step 2 — Find the last header anchor ("SUNAT") within the section
+    # The header block always ends with the literal token "SUNAT" on its own line.
+    section_text = text[section_start.end():]
+    sunat_token = re.search(r"(?:^|\n)\s*SUNAT\s*(?:\n|$)", section_text)
+    if sunat_token is None:
+        logger.debug("_parse_line_items: 'SUNAT' header-end token not found in section")
+        return items
 
-    product_codes = code_re.findall(text)
-    code_iter = iter(product_codes)
+    # Step 3 — Collect value tokens until the end marker
+    value_text = section_text[sunat_token.end():]
 
-    for m in row_re.finditer(search_text):
-        qty_str = m.group(1).replace(",", ".")
-        unit_str = m.group(2).strip().upper()
-        desc_str = m.group(3).strip()
+    raw_lines: list[str] = []
+    for raw_line in value_text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if _ITEMS_END_RE.search(stripped):
+            break  # End of items block
+        raw_lines.append(stripped)
 
-        # Skip header-like rows
-        if unit_str in ("DE", "MEDIDA") or "DESCRIPCI" in desc_str.upper():
+    # Step 4 — Group into 6-token blocks (one item per group)
+    # Expected order: [descripcion, codigo, unidad, numero, indicator, cantidad]
+    TOKENS_PER_ITEM = 6
+    item_idx = 0
+    while item_idx + TOKENS_PER_ITEM <= len(raw_lines):
+        group = raw_lines[item_idx : item_idx + TOKENS_PER_ITEM]
+        item_idx += TOKENS_PER_ITEM
+
+        desc_raw = group[0]
+        code_raw = group[1]
+        unit_raw = group[2].upper()
+        # group[3] = N° (line counter, integer) — skip
+        # group[4] = GTIN indicator ('NO'/'SI') — skip
+        qty_raw = group[5]
+
+        # Validate token types defensively
+        if not _DIGITS_ONLY_RE.match(code_raw):
+            logger.debug(
+                "_parse_line_items: expected digits for codigo, got %r — skipping group",
+                code_raw,
+            )
             continue
 
+        qty_str = qty_raw.replace(",", ".")
         try:
             qty = Decimal(qty_str)
         except Exception:  # noqa: BLE001
+            logger.debug(
+                "_parse_line_items: could not parse cantidad %r — skipping group", qty_raw
+            )
             continue
 
-        code: str | None = next(code_iter, None)
+        canonical_unit = _UNIT_MAP.get(unit_raw, unit_raw)
 
         items.append(
             GreLineItem(
                 cantidad=qty,
-                unidad=unit_str,
-                descripcion=desc_str,
-                codigo_producto=code,
+                unidad=canonical_unit,
+                descripcion=desc_raw,
+                codigo_producto=code_raw,
             )
         )
 

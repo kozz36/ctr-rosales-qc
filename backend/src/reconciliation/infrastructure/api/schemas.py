@@ -133,6 +133,14 @@ class ReconciliationRowResponse(BaseModel):
             "reconstructed via bounded inference (EXT-021). Advisory only."
         ),
     )
+    # R8.12 (MAT-008, ADR-5): read-only provenance field (no POST/PATCH accepts it).
+    match_method: Literal["deterministic", "llm_inferred", "unresolved"] = Field(
+        default="deterministic",
+        description=(
+            "How the canonical material key was derived: "
+            "'deterministic' (regex), 'llm_inferred' (Ollama), or 'unresolved' (fallback)."
+        ),
+    )
 
 
 class ReconciliationTableResponse(BaseModel):

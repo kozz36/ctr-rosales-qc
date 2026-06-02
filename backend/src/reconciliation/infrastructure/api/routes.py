@@ -112,6 +112,7 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
         requires_review=row.requires_review,
         guias=guia_responses,
         any_year_inferred=row.any_year_inferred,
+        match_method=row.match_method,  # R8.12 (MAT-008)
     )
 
 

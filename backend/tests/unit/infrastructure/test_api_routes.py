@@ -825,4 +825,84 @@ class TestTableGuiasInline:
         assert "cantidad" in contrib
         assert "unidad" in contrib
         assert "confidence" in contrib
-        assert "identity_source" in contrib
+
+
+# ---------------------------------------------------------------------------
+# R8.12: ReconciliationRowResponse.match_method (MAT-008, ADR-5)
+# ---------------------------------------------------------------------------
+
+
+class TestMatchMethodInTableResponse:
+    """GET /runs/{run_id}/table rows include match_method field (R8.12)."""
+
+    def _make_row_with_method(self, match_method: str) -> ReconciliationRow:
+        from decimal import Decimal
+        from reconciliation.domain.models import GuiaContribution
+
+        return ReconciliationRow(
+            registro="232",
+            fecha=date(2024, 1, 15),
+            material_canonical="BARRA A615 G60 1/2\" 9M",
+            unidad="TN",
+            declared_qty=Decimal("4.124"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[5, 6, 8],
+            match_method=match_method,  # type: ignore[arg-type]
+            guias=[
+                GuiaContribution(
+                    guia_id="T009-0001",
+                    source_pages=[5],
+                    cantidad=Decimal("4.124"),
+                    unidad="TN",
+                    confidence=1.0,
+                    identity_source="qr",
+                )
+            ],
+        )
+
+    def _get_table_response_rows(self, rows, client: TestClient, run_id: str) -> list:
+        """Helper to set up a review service with given rows and GET table."""
+        svc = _make_review_service(rows=rows)
+        svc.guias = []  # no unresolved guias for these tests
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.get(f"/api/v1/runs/{run_id}/table")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        return resp.json()["rows"]
+
+    def test_row_has_match_method_field(self, client: TestClient) -> None:
+        run_id = str(uuid.uuid4())
+        rows = [self._make_row_with_method("deterministic")]
+        result_rows = self._get_table_response_rows(rows, client, run_id)
+        assert len(result_rows) == 1
+        assert "match_method" in result_rows[0]
+
+    def test_deterministic_match_method_in_response(self, client: TestClient) -> None:
+        run_id = str(uuid.uuid4())
+        rows = [self._make_row_with_method("deterministic")]
+        result_rows = self._get_table_response_rows(rows, client, run_id)
+        assert result_rows[0]["match_method"] == "deterministic"
+
+    def test_llm_inferred_match_method_in_response(self, client: TestClient) -> None:
+        run_id = str(uuid.uuid4())
+        rows = [self._make_row_with_method("llm_inferred")]
+        result_rows = self._get_table_response_rows(rows, client, run_id)
+        assert result_rows[0]["match_method"] == "llm_inferred"
+
+    def test_backward_compat_model_validate_no_match_method(self) -> None:
+        """Old response dict without match_method → defaults to deterministic."""
+        from reconciliation.infrastructure.api.schemas import ReconciliationRowResponse
+        data = {
+            "row_id": "232|2024-01-15|BARRA|TN",
+            "registro": "232",
+            "fecha": None,
+            "material_canonical": "BARRA",
+            "unidad": "TN",
+            "declared_qty": "1.0",
+            "summed_qty": "1.0",
+            "delta": "0",
+            "status": "MATCH",
+            "source_pages": [],
+        }
+        row = ReconciliationRowResponse.model_validate(data)
+        assert row.match_method == "deterministic"

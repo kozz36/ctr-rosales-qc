@@ -182,3 +182,19 @@ class SunatGreFetchPort(Protocol):
                         gre/comprobantes/descargaqr?hashqr=<BASE64>``).
         """
         ...
+
+    def fetch_many(
+        self, urls: list[str], concurrency: int = 5
+    ) -> dict[str, OfficialGre | None]:
+        """Optional batch fetch with bounded concurrency.
+
+        Default implementation loops ``fetch()`` sequentially — compatible with
+        all existing test doubles that only implement ``fetch()``.  Concrete adapters
+        MAY override this with an async-semaphore implementation for parallel fetching
+        (R10.7 / CONT-S09).
+
+        Returns a dict mapping each URL to its ``OfficialGre`` or ``None``.
+        The graceful-None contract is preserved: any URL whose fetch failed
+        appears in the result as ``None``.
+        """
+        return {url: self.fetch(url) for url in urls}

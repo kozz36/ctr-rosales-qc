@@ -173,6 +173,69 @@ class SunatDescargaqrAdapter:
     # SunatGreFetchPort interface
     # ------------------------------------------------------------------
 
+    async def fetch_many(
+        self,
+        urls: list[str],
+        concurrency: int = 5,
+    ) -> dict[str, OfficialGre | None]:
+        """Bounded-concurrency batch fetch (R10.7 / CONT-S09/S11).
+
+        Uses ``asyncio.Semaphore(concurrency)`` to limit parallel in-flight
+        requests.  Each slot runs ``self.fetch(url)`` in a thread via
+        ``asyncio.to_thread`` so the blocking HTTP call does not stall the
+        event loop.
+
+        Includes an N-shrink guard: when 3+ consecutive slots return ``None``
+        (indicating SUNAT rate-limiting / 429), ``concurrency`` is reduced by 1
+        (minimum 1) to ease back pressure.
+
+        The graceful-None contract from ``fetch()`` is preserved: a URL whose
+        fetch fails appears in the result as ``None`` — the pipeline continues.
+
+        Args:
+            urls:        List of hashqr URLs to fetch (may be empty).
+            concurrency: Maximum parallel in-flight requests.  Default 5.
+
+        Returns:
+            Dict mapping each URL to its ``OfficialGre`` or ``None``.
+        """
+        import asyncio  # noqa: PLC0415 — stdlib; lazy for consistency with module style
+
+        if not urls:
+            return {}
+
+        results: dict[str, OfficialGre | None] = {}
+        effective_concurrency = max(1, concurrency)
+        semaphore = asyncio.Semaphore(effective_concurrency)
+
+        # N-shrink guard state: consecutive None counter
+        consecutive_nones = 0
+        _lock = asyncio.Lock()
+
+        async def _fetch_one(url: str) -> None:
+            nonlocal effective_concurrency, consecutive_nones
+
+            async with semaphore:
+                result: OfficialGre | None = await asyncio.to_thread(self.fetch, url)
+                results[url] = result
+
+                async with _lock:
+                    if result is None:
+                        consecutive_nones += 1
+                        # N-shrink: after 3 consecutive None results, reduce concurrency
+                        if consecutive_nones >= 3 and effective_concurrency > 1:
+                            effective_concurrency = max(1, effective_concurrency - 1)
+                            logger.debug(
+                                "fetch_many: 3+ consecutive None results → "
+                                "shrinking concurrency to %d",
+                                effective_concurrency,
+                            )
+                    else:
+                        consecutive_nones = 0
+
+        await asyncio.gather(*(_fetch_one(url) for url in urls))
+        return results
+
     def fetch(self, hashqr_url: str) -> OfficialGre | None:
         """Fetch the official GRE PDF and return parsed ``OfficialGre``, or ``None``.
 

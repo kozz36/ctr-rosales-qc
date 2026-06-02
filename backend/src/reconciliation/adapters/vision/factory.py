@@ -66,6 +66,8 @@ def build_vision_adapter(cfg: "AppConfig") -> "VisionLLMPort":
             model=pcfg.model,
             base_url=pcfg.base_url,
             api_key=pcfg.api_key,
+            # R10.5: route config.vision.max_tokens into the adapter (env-tunable)
+            max_tokens=cfg.vision.max_tokens,
             supports_batch=True,
         )
 
@@ -81,6 +83,8 @@ def build_vision_adapter(cfg: "AppConfig") -> "VisionLLMPort":
             base_url=pcfg.base_url or "http://localhost:11434/v1",
             # Ollama accepts any api_key; use "ollama" as a placeholder
             api_key=pcfg.api_key or "ollama",
+            # R10.5: route config.vision.max_tokens into the adapter (env-tunable)
+            max_tokens=cfg.vision.max_tokens,
             supports_batch=False,
         )
 

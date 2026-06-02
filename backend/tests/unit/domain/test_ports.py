@@ -154,6 +154,9 @@ class _StubSunatGreFetch:
     def fetch(self, hashqr_url: str) -> None:
         return None
 
+    def fetch_many(self, urls: list[str], concurrency: int = 5) -> dict:
+        return {url: self.fetch(url) for url in urls}
+
 
 class TestIdentityExtractionPort:
     def test_isinstance_check_passes(self) -> None:
@@ -184,6 +187,18 @@ class TestSunatGreFetchPort:
     def test_fetch_returns_none_when_disabled(self) -> None:
         stub = _StubSunatGreFetch()
         assert stub.fetch("https://example.com/hashqr=XYZ") is None
+
+    def test_fetch_many_default_delegates_to_fetch(self) -> None:
+        """R10.7: SunatGreFetchPort.fetch_many default loops fetch() for each URL."""
+        stub = _StubSunatGreFetch()
+        urls = ["url-1", "url-2"]
+        result = stub.fetch_many(urls)
+        assert set(result.keys()) == {"url-1", "url-2"}
+        assert all(v is None for v in result.values())
+
+    def test_fetch_many_empty_urls(self) -> None:
+        stub = _StubSunatGreFetch()
+        assert stub.fetch_many([]) == {}
 
 
 # ---------------------------------------------------------------------------

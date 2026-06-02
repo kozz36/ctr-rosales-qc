@@ -57,6 +57,20 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+
+def asyncio_available() -> bool:
+    """Return True when asyncio.run() can be safely called (no running event loop)."""
+    try:
+        import asyncio  # noqa: PLC0415
+        asyncio.get_running_loop()
+        # A loop is already running — asyncio.run() would raise RuntimeError
+        return False
+    except RuntimeError:
+        # No running loop → asyncio.run() is safe
+        return True
+    except ImportError:  # pragma: no cover — asyncio is stdlib, but guard defensively
+        return False
+
 from reconciliation.application.config import AppConfig
 from reconciliation.application.run_context import RunContext
 from reconciliation.domain.classifier import PageClassifier
@@ -910,6 +924,7 @@ class ReconciliationPipeline:
             dict.  Callers (``_stage_normalize_dates``) use this map to extract
             ``fecha_entrega`` as the year-inference lower bound.
         """
+        from typing import Literal, cast  # noqa: PLC0415
         from reconciliation.domain.models import OfficialGre  # noqa: PLC0415 (avoid circular)
 
         sunat_map: dict[str, Any] = {}
@@ -918,66 +933,50 @@ class ReconciliationPipeline:
             logger.debug("_stage_sunat_fetch: disabled (air-gap default); skipping")
             return sunat_map
 
-        for block in blocks:
-            if not block.gre_hashqr_url:
-                continue
+        # R10.7: bounded-concurrency batch path (CONT-S09).
+        # When the adapter exposes fetch_many (async, semaphore-bounded), use it.
+        # Otherwise fall back to the sequential loop (graceful, covers test doubles).
+        # asyncio.run() is safe here because _stage_sunat_fetch is a sync method
+        # called from the sync pipeline — there is no outer event loop in this path.
+        url_to_block: dict[str, Any] = {
+            block.gre_hashqr_url: block
+            for block in blocks
+            if block.gre_hashqr_url
+        }
+        urls = list(url_to_block.keys())
 
+        if not urls:
+            return sunat_map
+
+        if hasattr(self._sunat, "fetch_many") and asyncio_available():
+            import asyncio  # noqa: PLC0415
             try:
-                official: OfficialGre | None = self._sunat.fetch(block.gre_hashqr_url)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "_stage_sunat_fetch: fetch raised for block %r: %s", block.guia_id, exc
+                raw_results: dict[str, OfficialGre | None] = asyncio.run(
+                    self._sunat.fetch_many(urls, concurrency=5)  # type: ignore[union-attr]
                 )
-                official = None
+            except RuntimeError:
+                # asyncio.run() raises RuntimeError if an event loop is already running
+                # (e.g. in Jupyter or certain async test runners).  Fall back gracefully.
+                logger.debug(
+                    "_stage_sunat_fetch: asyncio.run() unavailable (loop running); "
+                    "falling back to sequential fetch"
+                )
+                raw_results = {url: self._sunat.fetch(url) for url in urls}
+        else:
+            raw_results = {url: self._sunat.fetch(url) for url in urls}
 
+        _DOMAIN_UNIT = Literal["KG", "TN", "RD", "Rollo"]
+        _VALID_UNITS: frozenset[str] = frozenset({"KG", "TN", "RD", "Rollo"})
+
+        for url, official in raw_results.items():
+            block = url_to_block[url]
             if official is None:
                 logger.debug(
                     "_stage_sunat_fetch: fetch returned None for block %r; keeping OCR lines",
                     block.guia_id,
                 )
                 continue
-
-            # Replace OCR lines with SUNAT-authoritative line items (D3 precedence)
-            from typing import Literal, cast  # noqa: PLC0415
-
-            _DOMAIN_UNIT = Literal["KG", "TN", "RD", "Rollo"]
-            _VALID_UNITS: frozenset[str] = frozenset({"KG", "TN", "RD", "Rollo"})
-            sunat_lines = []
-            for item in official.lines:
-                normalized = _normalize_sunat_unit(item.unidad)
-                if normalized not in _VALID_UNITS:
-                    logger.warning(
-                        "_stage_sunat_fetch: block %r — SUNAT unit %r → %r not in domain set"
-                        "; skipping line item (descripcion=%r)",
-                        block.guia_id,
-                        item.unidad,
-                        normalized,
-                        item.descripcion,
-                    )
-                    continue
-                sunat_lines.append(
-                    MaterialLine(
-                        description_raw=item.descripcion,
-                        description_canonical=item.descripcion,  # normalizer runs later
-                        unidad=cast(_DOMAIN_UNIT, normalized),
-                        cantidad=item.cantidad,
-                        confidence=1.0,  # SUNAT data is authoritative (no OCR confidence)
-                        source_page=block.first_page,
-                    )
-                )
-            if sunat_lines:
-                block.lines = sunat_lines
-                logger.debug(
-                    "_stage_sunat_fetch: block %r → %d SUNAT lines (replaced OCR)",
-                    block.guia_id,
-                    len(sunat_lines),
-                )
-            else:
-                logger.warning(
-                    "_stage_sunat_fetch: OfficialGre for %r has no line items; keeping OCR",
-                    block.guia_id,
-                )
-
+            self._apply_sunat_result(block, official, _VALID_UNITS, _DOMAIN_UNIT, cast)
             sunat_map[block.guia_id] = official
 
         logger.debug(
@@ -986,6 +985,55 @@ class ReconciliationPipeline:
             len(blocks),
         )
         return sunat_map
+
+    def _apply_sunat_result(
+        self,
+        block: Any,
+        official: Any,
+        valid_units: frozenset[str],
+        domain_unit_type: Any,
+        cast_fn: Any,
+    ) -> None:
+        """Apply SUNAT-authoritative line items to a guía block (D3 precedence).
+
+        Replaces the block's OCR-extracted lines with SUNAT line items.
+        Filters out items whose unit cannot be normalised to the domain set.
+        """
+        sunat_lines = []
+        for item in official.lines:
+            normalized = _normalize_sunat_unit(item.unidad)
+            if normalized not in valid_units:
+                logger.warning(
+                    "_stage_sunat_fetch: block %r — SUNAT unit %r → %r not in domain set"
+                    "; skipping line item (descripcion=%r)",
+                    block.guia_id,
+                    item.unidad,
+                    normalized,
+                    item.descripcion,
+                )
+                continue
+            sunat_lines.append(
+                MaterialLine(
+                    description_raw=item.descripcion,
+                    description_canonical=item.descripcion,  # normalizer runs later
+                    unidad=cast_fn(domain_unit_type, normalized),
+                    cantidad=item.cantidad,
+                    confidence=1.0,  # SUNAT data is authoritative (no OCR confidence)
+                    source_page=block.first_page,
+                )
+            )
+        if sunat_lines:
+            block.lines = sunat_lines
+            logger.debug(
+                "_stage_sunat_fetch: block %r → %d SUNAT lines (replaced OCR)",
+                block.guia_id,
+                len(sunat_lines),
+            )
+        else:
+            logger.warning(
+                "_stage_sunat_fetch: OfficialGre for %r has no line items; keeping OCR",
+                block.guia_id,
+            )
 
     def _stage_extract_vision(
         self,

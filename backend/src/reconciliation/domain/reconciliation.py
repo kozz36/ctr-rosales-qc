@@ -1,7 +1,12 @@
 """ReconciliationService — pure domain engine.
 
 Invariants (spec REC-001 through REC-010):
-- Groups by (registro, fecha, material_canonical, unidad) — four-field key.
+- Groups by (registro, material_canonical, unidad) — three-field key (MAT-001).
+  ``fecha`` is NOT a grouping axis: a Registro N° = one reception event = one
+  date, so ``registro`` disambiguates. Declared reception date and guía
+  handwritten date can diverge (misfiled / vision-date noise); folding fecha
+  into the key would split a true MATCH into DECLARED_MISSING + GUIA_MISSING.
+  fecha-divergence detection is a deferred rev-4 feature, out of scope here.
 - Sums quantities with Decimal arithmetic; NO cross-unit addition.
 - MATCH tolerance is EXACT(0): any nonzero delta is MISMATCH (REC-010, locked).
 - No I/O, no framework deps, no adapter imports (REC-008).
@@ -31,12 +36,11 @@ _MATCH_METHOD_PRIORITY: dict[str, int] = {
     "unresolved": 2,
 }
 
-# Internal grouping key type
+# Internal grouping key type (MAT-001: fecha intentionally excluded — see module docstring)
 _GroupKey = NamedTuple(
     "_GroupKey",
     [
         ("registro", str),
-        ("fecha", object),  # date | None
         ("material_canonical", str),
         ("unidad", str),
     ],
@@ -55,7 +59,7 @@ class ReconciliationService:
         declared: list[Registro],
         guias: list[GuiaDeRemision],
     ) -> list[ReconciliationRow]:
-        """Produce one ``ReconciliationRow`` per (registro, fecha, material, unidad) group.
+        """Produce one ``ReconciliationRow`` per (registro, material, unidad) group.
 
         Spec: REC-001 through REC-010, REC-C02, REC-C05, REC-C07.
 
@@ -73,16 +77,19 @@ class ReconciliationService:
             Guías with ``registro=None`` surface in ``unresolved_guias`` (REC-C05).
         """
         # Build declared index: key -> declared_qty
+        # Also remember the declared reception date per group (MAT-001): fecha is no
+        # longer a grouping axis, but the output row still carries it for display.
         declared_index: dict[_GroupKey, Decimal] = {}
+        declared_fecha: dict[_GroupKey, object] = {}  # key -> date | None
         for registro in declared:
             for line in registro.declared_lines:
                 key = _GroupKey(
                     registro=registro.numero,
-                    fecha=registro.fecha_declarada,
                     material_canonical=line.description_canonical,
                     unidad=line.unidad,
                 )
                 declared_index[key] = declared_index.get(key, Decimal(0)) + line.cantidad
+                declared_fecha.setdefault(key, registro.fecha_declarada)
 
         # Build guía index: key -> list of _GuiaEntry (contribution + meta)
         # Each entry carries the GuiaDeRemision reference for building GuiaContribution objects.
@@ -98,7 +105,6 @@ class ReconciliationService:
             for line in guia.lines:
                 key = _GroupKey(
                     registro=effective_registro,
-                    fecha=guia.fecha,
                     material_canonical=line.description_canonical,
                     unidad=line.unidad,
                 )
@@ -206,10 +212,20 @@ class ReconciliationService:
                 # EXACT(0) tolerance — REC-010
                 status = "MATCH" if delta == Decimal(0) else "MISMATCH"
 
+            # Display fecha (MAT-001): no longer a grouping axis. Prefer the
+            # declared reception date for declared-bearing groups; for guía-only
+            # groups fall back to a contributing guía's handwritten fecha.
+            row_fecha = declared_fecha.get(key)
+            if row_fecha is None:
+                row_fecha = next(
+                    (g.fecha for g in contributing_guias_list if g.fecha is not None),
+                    None,
+                )
+
             rows.append(
                 ReconciliationRow(
                     registro=key.registro,
-                    fecha=key.fecha,  # type: ignore[arg-type]
+                    fecha=row_fecha,  # type: ignore[arg-type]
                     material_canonical=key.material_canonical,
                     unidad=key.unidad,
                     declared_qty=declared_qty,
@@ -264,13 +280,11 @@ class ReconciliationService:
     @staticmethod
     def _build_line_key(
         registro: str,
-        fecha: object,
         line: MaterialLine,
     ) -> _GroupKey:
-        """Derive a group key from a registry entry and a material line."""
+        """Derive a group key from a registry entry and a material line (MAT-001: no fecha)."""
         return _GroupKey(
             registro=registro,
-            fecha=fecha,
             material_canonical=line.description_canonical,
             unidad=line.unidad,
         )

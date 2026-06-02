@@ -531,6 +531,51 @@ class TestRequiresReview:
         assert rows[0].requires_review is False
 
 
+class TestFechaDivergence:
+    """MAT-S12 / MAT-001: fecha is NOT a grouping axis.
+
+    A Registro N° = one reception event = one date, so registro disambiguates.
+    When the declared reception date differs from a guía's handwritten date
+    (misfiled scenario / vision-date noise), declared + guía MUST still MATCH on
+    (registro, material, unidad). Before this fix they landed in separate groups
+    → DECLARED_MISSING + GUIA_MISSING.
+    """
+
+    def test_match_across_divergent_fechas(self, svc: ReconciliationService) -> None:
+        declared = [
+            _registro("232", date(2025, 3, 15), [
+                _line("barra corrugada 1/2", "KG", "1250.00"),
+            ])
+        ]
+        guias = [
+            # Guía handwritten date differs from the declared reception date.
+            _guia("T001-0001", "232", date(2025, 3, 18), [
+                _line("barra corrugada 1/2", "KG", "1250.00", confidence=0.95, page=10),
+            ], pages=[10]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        # Exactly one group: registro+material+unidad — NOT split by fecha.
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.status == "MATCH"
+        assert row.delta == Decimal("0")
+        # Row carries the DECLARED reception date for display, not the guía date.
+        assert row.fecha == date(2025, 3, 15)
+
+    def test_guia_only_group_carries_guia_fecha(self, svc: ReconciliationService) -> None:
+        """A guía-only group (no declared counterpart) surfaces a contributing guía fecha."""
+        declared: list[Registro] = []
+        guias = [
+            _guia("T001-0001", "232", date(2025, 3, 18), [
+                _line("alambre n16", "KG", "200.0", page=20),
+            ], pages=[20]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        assert len(rows) == 1
+        assert rows[0].status == "DECLARED_MISSING"
+        assert rows[0].fecha == date(2025, 3, 18)
+
+
 class TestPurity:
     def test_no_io_possible_by_design(self, svc: ReconciliationService) -> None:
         """REC-008: reconcile is pure — calling it cannot trigger I/O by design.

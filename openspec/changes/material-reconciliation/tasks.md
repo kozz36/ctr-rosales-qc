@@ -283,7 +283,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 >
 > Maps design delta §A (identity port + QR adapter), §B (block grouping), §C (authoritative fecha), §D (guía-contribution model), §E (UNRESOLVED fallback), §F (fixture correction).
 
-### [ ] S1.1 — `IdentityExtractionPort` + `GuiaIdentity` domain types
+### [x] S1.1 — `IdentityExtractionPort` + `GuiaIdentity` domain types
 
 **Spec refs**: EXT-011, EXT-012, EXT-013.
 **Depends on**: 1.5 (existing ports.py), 1.1 (existing models.py).
@@ -304,7 +304,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 **Parallelism**: independent of S1.2–S1.6; proceed to S1.2 immediately after.
 **Completable in**: one session.
 
-### [ ] S1.2 — `QrBarcodeExtractionAdapter` (local decode)
+### [x] S1.2 — `QrBarcodeExtractionAdapter` (local decode)
 
 **Spec refs**: EXT-011, EXT-012, EXT-013.
 **Depends on**: S1.1 (`IdentityExtractionPort`, `GuiaIdentity`).
@@ -329,7 +329,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session.
 
-### [ ] S1.3 — `SectionIdPredicate` (section-ID guard)
+### [x] S1.3 — `SectionIdPredicate` (section-ID guard)
 
 **Spec refs**: EXT-018, REC-C07, design §E.
 **Depends on**: S1.1 (domain layer stable).
@@ -346,7 +346,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 **Parallelism**: can be developed alongside S1.2 (no dependency between them).
 **Completable in**: one session (small).
 
-### [ ] S1.4 — `_derive_numero` / `build_page_to_registro_map` UNRESOLVED fix
+### [x] S1.4 — `_derive_numero` / `build_page_to_registro_map` UNRESOLVED fix
 
 **Spec refs**: EXT-018, EXT-S19, EXT-S20, REC-C05, REC-C06, REC-C07, design §E.
 **Depends on**: S1.1 (models), S1.3 (section-ID predicate).

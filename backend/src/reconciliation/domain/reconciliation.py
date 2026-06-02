@@ -6,7 +6,10 @@ Invariants (spec REC-001 through REC-010):
   date, so ``registro`` disambiguates. Declared reception date and guía
   handwritten date can diverge (misfiled / vision-date noise); folding fecha
   into the key would split a true MATCH into DECLARED_MISSING + GUIA_MISSING.
-  fecha-divergence detection is a deferred rev-4 feature, out of scope here.
+  fecha-divergence detection (r9 / ADR-4) is a pure side-channel: each guía's
+  handwritten reception date is compared (day-month only) against the registro's
+  authoritative declared date; a divergence flags the contribution and OR-sets
+  ``requires_review`` but NEVER alters status, delta, summed_qty, or the key.
 - Sums quantities with Decimal arithmetic; NO cross-unit addition.
 - MATCH tolerance is EXACT(0): any nonzero delta is MISMATCH (REC-010, locked).
 - No I/O, no framework deps, no adapter imports (REC-008).
@@ -18,6 +21,7 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import NamedTuple
 
+from reconciliation.domain.date_divergence import check_fecha_divergence
 from reconciliation.domain.material_key import MatchMethod
 from reconciliation.domain.models import (
     GuiaContribution,
@@ -81,7 +85,11 @@ class ReconciliationService:
         # longer a grouping axis, but the output row still carries it for display.
         declared_index: dict[_GroupKey, Decimal] = {}
         declared_fecha: dict[_GroupKey, object] = {}  # key -> date | None
+        # R9.4 (ADR-2): per-registro authoritative declared date (handwritten-first,
+        # electronic fallback). Single read-point honouring decision #2709.
+        authoritative_fecha: dict[str, object] = {}  # registro numero -> date | None
         for registro in declared:
+            authoritative_fecha.setdefault(registro.numero, registro.fecha_authoritative)
             for line in registro.declared_lines:
                 key = _GroupKey(
                     registro=registro.numero,
@@ -89,7 +97,8 @@ class ReconciliationService:
                     unidad=line.unidad,
                 )
                 declared_index[key] = declared_index.get(key, Decimal(0)) + line.cantidad
-                declared_fecha.setdefault(key, registro.fecha_declarada)
+                # ADR-2: display fecha is the authoritative (handwritten-first) date.
+                declared_fecha.setdefault(key, registro.fecha_authoritative)
 
         # Build guía index: key -> list of _GuiaEntry (contribution + meta)
         # Each entry carries the GuiaDeRemision reference for building GuiaContribution objects.
@@ -140,6 +149,9 @@ class ReconciliationService:
                     identity_source=g.identity_source,
                     # Rev-3 D5 (REC-C07): propagate year_inferred provenance.
                     year_inferred=g.year_inferred,
+                    # R9.4 (ADR-4): carry the guía's handwritten reception date for
+                    # display and the day-month divergence compare.
+                    fecha=g.fecha,
                 )
                 for g, total_qty in contrib_map.values()
             ]
@@ -194,6 +206,27 @@ class ReconciliationService:
             # Additive: requires_review is True when match_method != deterministic OR
             # any other review condition already flagged.
             if row_match_method != "deterministic":
+                row_requires_review = True
+
+            # R9.4 (FDR-003/004/009/011, ADR-4): per-guía fecha-divergence check.
+            # Pure side-channel — reads the registro's authoritative declared date and
+            # each guía's handwritten date, compares day-month only, and flags the
+            # contribution. NEVER touches the group key, status, delta, or summed_qty.
+            # ``requires_review`` is only OR-set, never cleared (FDR-011 guard).
+            row_declared_authoritative = authoritative_fecha.get(key.registro)
+            contributions = [
+                c.model_copy(
+                    update={
+                        "fecha_divergence": result.diverges,
+                        "divergence_reason": result.reason,
+                    }
+                )
+                for c in contributions
+                for result in (
+                    check_fecha_divergence(row_declared_authoritative, c.fecha),  # type: ignore[arg-type]
+                )
+            ]
+            if any(c.fecha_divergence for c in contributions):
                 row_requires_review = True
 
             if declared_qty is None:

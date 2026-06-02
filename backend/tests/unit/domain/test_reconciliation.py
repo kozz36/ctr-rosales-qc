@@ -56,8 +56,14 @@ def _registro(
     numero: str,
     fecha: date | None,
     lines: list[MaterialLine],
+    handwritten: date | None = None,
 ) -> Registro:
-    return Registro(numero=numero, fecha_declarada=fecha, declared_lines=lines)
+    return Registro(
+        numero=numero,
+        fecha_declarada=fecha,
+        declared_lines=lines,
+        fecha_declarada_handwritten=handwritten,
+    )
 
 
 @pytest.fixture()
@@ -574,6 +580,178 @@ class TestFechaDivergence:
         assert len(rows) == 1
         assert rows[0].status == "DECLARED_MISSING"
         assert rows[0].fecha == date(2025, 3, 18)
+
+
+class TestR9DivergenceWiring:
+    """R9.4 (FDR-003..006/009/011, ADR-4): per-guía divergence side-channel.
+
+    Divergence rides GuiaContribution; it OR-sets requires_review but NEVER
+    touches status/delta/summed_qty or the group key.  Day-month equality only.
+    """
+
+    def test_match_same_day_month_no_divergence(self, svc: ReconciliationService) -> None:
+        """FDR-S08/S09: matching dates → no divergence, status MATCH unchanged."""
+        declared = [
+            _registro("232", date(2026, 5, 20), [
+                _line("barra a615 1/2", "KG", "1000.00"),
+            ], handwritten=date(2026, 5, 28))
+        ]
+        guias = [
+            _guia("T001-0001", "232", date(2026, 5, 28), [
+                _line("barra a615 1/2", "KG", "1000.00", confidence=0.95, page=10),
+            ], pages=[10]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        row = rows[0]
+        assert row.status == "MATCH"
+        assert row.guias[0].fecha_divergence is False
+        assert row.guias[0].divergence_reason is None
+        assert row.has_fecha_divergence is False
+        # Display fecha sourced from fecha_authoritative (handwritten wins).
+        assert row.fecha == date(2026, 5, 28)
+
+    def test_divergent_day_month_flags_guia_status_unchanged(
+        self, svc: ReconciliationService
+    ) -> None:
+        """FDR-S09: diverging day-month flags the guía but status stays MATCH."""
+        declared = [
+            _registro("232", date(2026, 5, 28), [
+                _line("barra a615 1/2", "KG", "1000.00"),
+            ], handwritten=date(2026, 5, 28))
+        ]
+        guias = [
+            _guia("T001-0001", "232", date(2026, 4, 15), [
+                _line("barra a615 1/2", "KG", "1000.00", confidence=0.95, page=10),
+            ], pages=[10]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        row = rows[0]
+        assert row.status == "MATCH"
+        assert row.delta == Decimal("0")
+        assert row.guias[0].fecha_divergence is True
+        assert row.guias[0].divergence_reason == "fecha_divergence"
+        assert row.has_fecha_divergence is True
+        assert row.requires_review is True
+
+    def test_contribution_carries_guia_fecha(self, svc: ReconciliationService) -> None:
+        declared = [
+            _registro("232", date(2026, 5, 28), [
+                _line("barra a615 1/2", "KG", "1000.00"),
+            ], handwritten=date(2026, 5, 28))
+        ]
+        guias = [
+            _guia("T001-0001", "232", date(2026, 4, 15), [
+                _line("barra a615 1/2", "KG", "1000.00", page=10),
+            ], pages=[10]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        assert rows[0].guias[0].fecha == date(2026, 4, 15)
+
+    def test_null_authoritative_baseline_no_false_red(
+        self, svc: ReconciliationService
+    ) -> None:
+        """FDR-S10: fecha_authoritative None → no contribution flagged divergent."""
+        declared = [
+            _registro("232", None, [
+                _line("barra a615 1/2", "KG", "1000.00"),
+            ], handwritten=None)
+        ]
+        guias = [
+            _guia("T001-0001", "232", date(2026, 4, 15), [
+                _line("barra a615 1/2", "KG", "1000.00", page=10),
+            ], pages=[10]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        assert all(c.fecha_divergence is False for c in rows[0].guias)
+        assert rows[0].has_fecha_divergence is False
+
+    def test_null_guia_fecha_not_divergent(self, svc: ReconciliationService) -> None:
+        """FDR-S11: guía fecha None → not divergent for that contribution."""
+        declared = [
+            _registro("232", date(2026, 5, 28), [
+                _line("barra a615 1/2", "KG", "1000.00"),
+            ], handwritten=date(2026, 5, 28))
+        ]
+        guias = [
+            _guia("T001-0001", "232", None, [
+                _line("barra a615 1/2", "KG", "1000.00", page=10),
+            ], pages=[10]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        assert rows[0].guias[0].fecha_divergence is False
+
+    def test_year_only_divergence_not_flagged(self, svc: ReconciliationService) -> None:
+        """FDR-S04 (CRITICAL): same day-month, different year → NOT divergent."""
+        declared = [
+            _registro("232", date(2026, 5, 28), [
+                _line("barra a615 1/2", "KG", "1000.00"),
+            ], handwritten=date(2026, 5, 28))
+        ]
+        guias = [
+            _guia("T001-0001", "232", date(2025, 5, 28), [
+                _line("barra a615 1/2", "KG", "1000.00", page=10),
+            ], pages=[10]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        assert rows[0].guias[0].fecha_divergence is False
+        assert rows[0].has_fecha_divergence is False
+
+    def test_mismatch_with_divergence_status_still_mismatch(
+        self, svc: ReconciliationService
+    ) -> None:
+        """FDR-S09 generalised: divergence is additive; MISMATCH stays MISMATCH."""
+        declared = [
+            _registro("232", date(2026, 5, 28), [
+                _line("barra a615 1/2", "KG", "1000.00"),
+            ], handwritten=date(2026, 5, 28))
+        ]
+        guias = [
+            _guia("T001-0001", "232", date(2026, 4, 15), [
+                _line("barra a615 1/2", "KG", "900.00", page=10),
+            ], pages=[10]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        row = rows[0]
+        assert row.status == "MISMATCH"
+        assert row.guias[0].fecha_divergence is True
+
+    def test_mixed_contributions_only_diverging_flagged(
+        self, svc: ReconciliationService
+    ) -> None:
+        declared = [
+            _registro("232", date(2026, 5, 28), [
+                _line("barra a615 1/2", "KG", "2000.00"),
+            ], handwritten=date(2026, 5, 28))
+        ]
+        guias = [
+            _guia("T001-0001", "232", date(2026, 5, 28), [
+                _line("barra a615 1/2", "KG", "1000.00", page=10),
+            ], pages=[10]),
+            _guia("T001-0002", "232", date(2026, 4, 15), [
+                _line("barra a615 1/2", "KG", "1000.00", page=11),
+            ], pages=[11]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        by_id = {c.guia_id: c for c in rows[0].guias}
+        assert by_id["T001-0001"].fecha_divergence is False
+        assert by_id["T001-0002"].fecha_divergence is True
+        assert rows[0].has_fecha_divergence is True
+
+    def test_display_fecha_uses_authoritative(self, svc: ReconciliationService) -> None:
+        """ADR-2: declared-bearing group display fecha is fecha_authoritative."""
+        declared = [
+            _registro("232", date(2026, 5, 20), [
+                _line("barra a615 1/2", "KG", "1000.00"),
+            ], handwritten=date(2026, 5, 28))
+        ]
+        guias = [
+            _guia("T001-0001", "232", date(2026, 5, 28), [
+                _line("barra a615 1/2", "KG", "1000.00", page=10),
+            ], pages=[10]),
+        ]
+        rows = svc.reconcile(declared, guias)
+        # handwritten (28th) wins over electronic (20th)
+        assert rows[0].fecha == date(2026, 5, 28)
 
 
 class TestPurity:

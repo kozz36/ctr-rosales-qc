@@ -2,8 +2,9 @@
 
 Hierarchy (highest wins):
   1. Environment variables (prefixed RECONCILIATION__)
-  2. config.yaml (loaded via AppConfig.from_yaml)
-  3. Coded defaults
+  2. .env file (loaded via pydantic-settings env_file; default: backend/.env)
+  3. config.yaml (loaded via AppConfig.from_yaml)
+  4. Coded defaults
 
 Secrets (api_key) are intentionally env-only; they are never written to config.yaml.
 """
@@ -131,6 +132,10 @@ class AppConfig(BaseSettings):
         env_prefix="RECONCILIATION__",
         env_nested_delimiter="__",
         extra="allow",
+        # Load .env automatically so local developers only need to copy .env.example → .env.
+        # Shell env vars always take priority over .env (pydantic-settings guarantee).
+        env_file=".env",
+        env_file_encoding="utf-8",
     )
 
     vision: VisionConfig = Field(default_factory=VisionConfig)
@@ -172,6 +177,8 @@ class AppConfig(BaseSettings):
                 env_prefix="RECONCILIATION__",
                 env_nested_delimiter="__",
                 extra="allow",
+                env_file=".env",
+                env_file_encoding="utf-8",
                 # yaml_file is consumed by YamlConfigSettingsSource.
                 yaml_file=str(yaml_path) if yaml_path else None,
             )

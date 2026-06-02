@@ -84,12 +84,12 @@ class CompositeExtractionAdapter:
 
     def __init__(self) -> None:
         # DigitalTextExtractionAdapter has no heavy deps — safe to import now.
-        from reconciliation.adapters.pdf.digital_text_extractor import (  # noqa: PLC0415
-            DigitalTextExtractionAdapter,
-        )
         # PrintedTableAdapter defers PaddleOCR load until first OCR call.
         from reconciliation.adapters.ocr.paddle_table import (  # noqa: PLC0415
             PrintedTableAdapter,
+        )
+        from reconciliation.adapters.pdf.digital_text_extractor import (  # noqa: PLC0415
+            DigitalTextExtractionAdapter,
         )
 
         self._declared_adapter = DigitalTextExtractionAdapter()
@@ -419,7 +419,35 @@ def build_pipeline(
         run_id=run_id,
     )
 
-    # --- Pipeline (C-4 + H-5 fix: pass page_to_registro and deskew) ---
+    # --- SUNAT descargaqr adapter (opt-in; OFF by default for air-gap — D3/EXT-023) ---
+    sunat_adapter: object | None = None
+    if config.sunat.enabled:
+        try:
+            from reconciliation.adapters.sunat.descargaqr import (  # noqa: PLC0415
+                SunatDescargaqrAdapter,
+            )
+
+            sunat_cache_dir = ctx.run_dir / "sunat" if config.sunat.cache else None
+            sunat_adapter = SunatDescargaqrAdapter(
+                timeout_s=config.sunat.timeout_s,
+                cache_dir=sunat_cache_dir,
+            )
+            logger.info(
+                "build_pipeline: SUNAT fetch ENABLED (timeout=%.1fs, cache_dir=%s) — "
+                "AIR-GAP IS BROKEN; network calls to e-factura.sunat.gob.pe will be made",
+                config.sunat.timeout_s,
+                sunat_cache_dir,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "build_pipeline: SunatDescargaqrAdapter import failed (%s); "
+                "SUNAT fetch disabled",
+                exc,
+            )
+    else:
+        logger.debug("build_pipeline: SUNAT fetch disabled (air-gap default)")
+
+    # --- Pipeline (C-4 + H-5 fix: pass page_to_registro and deskew; D3: pass sunat) ---
     pipeline = ReconciliationPipeline(
         doc_source=doc_source,
         extractor=extractor,
@@ -427,6 +455,7 @@ def build_pipeline(
         config=config,
         page_to_registro=page_to_registro,
         deskew=deskew,  # type: ignore[arg-type]
+        sunat=sunat_adapter,  # type: ignore[arg-type]
     )
 
     return pipeline, ctx, page_to_registro
@@ -434,7 +463,7 @@ def build_pipeline(
 
 def build_review_service(
     ctx: RunContext,
-    pipeline_result: "ReconciliationPipeline | None" = None,
+    pipeline_result: ReconciliationPipeline | None = None,
 ) -> ReviewService:
     """Build a ReviewService from a completed pipeline result or sidecar.
 

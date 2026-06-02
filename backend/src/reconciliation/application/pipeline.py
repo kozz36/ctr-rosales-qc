@@ -17,12 +17,19 @@ Stage sequence (rev-3, fixed, non-negotiable per design D1):
                           REUSES cached rendered bytes from decode_identities (no re-render).
   5b. assemble_blocks   — group per-page _RawGuia objects into multi-page GuiaBlocks;
                           REUSES cached DecodeOutcome map (no QR re-scan).
+  5c. sunat_fetch       — OPT-IN (rev-3 / EXT-023 / D3): when sunat.enabled, fetch the
+                          official GRE PDF via hashqr_url and replace OCR lines with
+                          SUNAT-authoritative quantities.  OFF BY DEFAULT (air-gap).
   6. extract_vision     — read handwritten dates on block FIRST pages (VisionLLMPort);
                           abort if cost cap exceeded.
-  7. normalize          — canonicalize material descriptions (MaterialNormalizer)
-  8. reconcile          — group + compare via ReconciliationService
-  9. persist_sidecar    — write extraction cache + initial review sidecar via RunContext
-  10. return            — yield PipelineResult
+  7. normalize_dates    — bounded year inference (D5 / EXT-021): always reconstructs
+                          the year from day/month + SUNAT fecha_entrega lower bound.
+                          FOLDED FIX: applies even when vision returned a full date with
+                          a wrong year (trust only day-month from vision).
+  8. normalize          — canonicalize material descriptions (MaterialNormalizer)
+  9. reconcile          — group + compare via ReconciliationService
+  10. persist_sidecar   — write extraction cache + initial review sidecar via RunContext
+  11. return            — yield PipelineResult
 
 No concrete adapter is imported here.  All I/O is injected as Port implementations.
 
@@ -69,6 +76,7 @@ from reconciliation.domain.ports import (
     DocumentSourcePort,
     ExtractionPort,
     IdentityExtractionPort,
+    SunatGreFetchPort,
     VisionLLMPort,
 )
 from reconciliation.domain.reconciliation import ReconciliationService
@@ -240,6 +248,7 @@ class ReconciliationPipeline:
         page_to_registro: dict[int, str | None] | None = None,
         deskew: DeskewPort | None = None,
         identity: IdentityExtractionPort | None = None,
+        sunat: SunatGreFetchPort | None = None,
     ) -> None:
         self._doc = doc_source
         self._extractor = extractor
@@ -248,6 +257,7 @@ class ReconciliationPipeline:
         self._page_to_registro: dict[int, str | None] = page_to_registro or {}
         self._deskew = deskew
         self._identity = identity
+        self._sunat = sunat  # None when sunat.enabled is False (air-gap default)
         self._classifier = PageClassifier()
         self._normalizer = MaterialNormalizer()
         self._reconciler = ReconciliationService()
@@ -298,6 +308,12 @@ class ReconciliationPipeline:
         # Stage 5b: assemble multi-page guía blocks; reuses cached DecodeOutcome map.
         blocks = self._stage_assemble_blocks(raw_guias, classifications, decode_map=decode_map)
 
+        # Stage 5c: SUNAT descargaqr opt-in fetch (rev-3 / EXT-023 / D3).
+        # When sunat.enabled=True, fetches official GRE PDFs for blocks that have a
+        # hashqr_url; replaces OCR line items with SUNAT-authoritative quantities.
+        # sunat_fetch_map maps guia_id → OfficialGre; empty when disabled (air-gap).
+        sunat_fetch_map = self._stage_sunat_fetch(blocks)
+
         # Stage 6: extract vision dates (handwritten) — one call per block (first page).
         # D4: feeds the stamp-region crop (lower-right quadrant default) or >=300dpi
         # full-page fallback when cropping is disabled (EXT-020).
@@ -305,7 +321,9 @@ class ReconciliationPipeline:
         vision_calls_made = 0
         vision_cap_reached = False
         try:
-            guias, vision_calls_made, warnings = self._stage_extract_vision(blocks)
+            guias, vision_calls_made, warnings = self._stage_extract_vision(
+                blocks, sunat_fetch_map=sunat_fetch_map
+            )
         except Exception:
             vision_cap_reached = True
             raise
@@ -317,9 +335,11 @@ class ReconciliationPipeline:
                 "cap_reached": vision_cap_reached,
             }
 
-        # Stage 6b: normalize dates — bounded year inference (D5 / EXT-021).
-        # Runs after vision, before material normalize so guias carry full dates.
-        guias = self._stage_normalize_dates(guias)
+        # Stage 7: normalize dates — bounded year inference (D5 / EXT-021 + folded year-fix).
+        # FOLDED FIX (#2753): always reconstructs the year from day/month regardless of
+        # whether vision returned a full date — vision year is NEVER trusted directly.
+        # Runs after vision, before material normalize so guias carry correct dates.
+        guias = self._stage_normalize_dates(guias, sunat_fetch_map=sunat_fetch_map)
 
         # Stage 7: normalize descriptions
         declared, guias = self._stage_normalize(declared, guias)
@@ -817,8 +837,95 @@ class ReconciliationPipeline:
         logger.debug("assemble_blocks: %d blocks from %d pages", len(blocks), len(raw_guias))
         return blocks
 
-    def _stage_extract_vision(
+    def _stage_sunat_fetch(
         self, blocks: list[_GuiaBlock]
+    ) -> dict[str, Any]:
+        """Stage 5c (rev-3 / EXT-023 / D3): OPT-IN SUNAT descargaqr fetch.
+
+        When ``sunat.enabled`` is False (default / air-gap), returns an empty
+        dict immediately — no network call is made and no block is mutated.
+
+        When enabled, iterates over blocks that have a ``gre_hashqr_url`` and
+        fetches the official GRE PDF via ``SunatGreFetchPort.fetch()``.  On
+        success, replaces the block's OCR-extracted ``lines`` with the SUNAT
+        line items (SUNAT > OCR precedence per D3).  On failure (adapter returns
+        ``None``), the block's OCR lines remain unchanged (graceful fallback).
+
+        Returns:
+            Dict mapping ``guia_id`` → ``OfficialGre`` for blocks where fetch
+            succeeded.  Blocks with failed/absent fetches are absent from the
+            dict.  Callers (``_stage_normalize_dates``) use this map to extract
+            ``fecha_entrega`` as the year-inference lower bound.
+        """
+        from reconciliation.domain.models import OfficialGre  # noqa: PLC0415 (avoid circular)
+
+        sunat_map: dict[str, Any] = {}
+
+        if not self._config.sunat.enabled or self._sunat is None:
+            logger.debug("_stage_sunat_fetch: disabled (air-gap default); skipping")
+            return sunat_map
+
+        for block in blocks:
+            if not block.gre_hashqr_url:
+                continue
+
+            try:
+                official: OfficialGre | None = self._sunat.fetch(block.gre_hashqr_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "_stage_sunat_fetch: fetch raised for block %r: %s", block.guia_id, exc
+                )
+                official = None
+
+            if official is None:
+                logger.debug(
+                    "_stage_sunat_fetch: fetch returned None for block %r; keeping OCR lines",
+                    block.guia_id,
+                )
+                continue
+
+            # Replace OCR lines with SUNAT-authoritative line items (D3 precedence)
+            from typing import Literal, cast  # noqa: PLC0415
+
+            _DOMAIN_UNIT = Literal["KG", "TN", "RD", "Rollo"]
+            sunat_lines = []
+            for item in official.lines:
+                sunat_lines.append(
+                    MaterialLine(
+                        description_raw=item.descripcion,
+                        description_canonical=item.descripcion,  # normalizer runs later
+                        unidad=cast(_DOMAIN_UNIT, _normalize_sunat_unit(item.unidad)),
+                        cantidad=item.cantidad,
+                        confidence=1.0,  # SUNAT data is authoritative (no OCR confidence)
+                        source_page=block.first_page,
+                    )
+                )
+            if sunat_lines:
+                block.lines = sunat_lines
+                logger.debug(
+                    "_stage_sunat_fetch: block %r → %d SUNAT lines (replaced OCR)",
+                    block.guia_id,
+                    len(sunat_lines),
+                )
+            else:
+                logger.warning(
+                    "_stage_sunat_fetch: OfficialGre for %r has no line items; keeping OCR",
+                    block.guia_id,
+                )
+
+            sunat_map[block.guia_id] = official
+
+        logger.debug(
+            "_stage_sunat_fetch: %d/%d blocks enriched from SUNAT",
+            len(sunat_map),
+            len(blocks),
+        )
+        return sunat_map
+
+    def _stage_extract_vision(
+        self,
+        blocks: list[_GuiaBlock],
+        sunat_fetch_map: dict[str, Any] | None = None,
     ) -> tuple[list[GuiaDeRemision], int, list[str]]:
         """Stage 6: attach handwritten dates to guía blocks via VisionLLMPort.
 
@@ -910,67 +1017,95 @@ class ReconciliationPipeline:
     def _stage_normalize_dates(
         self,
         guias: list[GuiaDeRemision],
+        sunat_fetch_map: dict[str, Any] | None = None,
     ) -> list[GuiaDeRemision]:
-        """Stage 6b: bounded year inference for guías whose vision-read year is absent.
+        """Stage 7: bounded year inference — always reconstruct year from day/month.
 
-        Implements D5 / EXT-021.
+        Implements D5 / EXT-021 + folded fix (#2753).
 
-        Runs after vision, before material normalization.  For each guía whose
-        ``fecha`` is None OR whose ``fecha`` lacks a plausible year (i.e. the
-        vision model returned a date but year was a known-bad sentinel), applies
-        ``infer_reception_year`` with:
-          - ``lower`` = None in R2 (SUNAT fetch is R3; OCR delivery-date extraction
-            is not yet wired here — lower bound is omitted until R3 lands).
-          - ``upper`` = today's date (run date, conservative safe upper bound).
+        FOLDED FIX (R3): the R2 implementation trusted vision's full date when
+        ``fecha is not None``, leaving the year uncorrected.  Local vision models
+        (qwen3.5:9b et al.) frequently return parseable dates with the WRONG year
+        (e.g. 2016-05-28 instead of 2026-05-28 — engram #2753).  This fix always
+        reconstructs the year from the day/month using the bounds:
 
-        When a guía's ``fecha`` is already a full ``date`` object from vision,
-        we leave it unchanged (``year_inferred`` stays ``False``).  The
-        inference is applied ONLY when ``fecha`` is ``None``.
+          lower = SUNAT ``fecha_entrega`` when the fetch succeeded (D3); else None.
+          upper = today's date (run date — conservative safe upper bound).
 
-        In R2, the lower bound is intentionally omitted (``None``) because:
-          - SUNAT fetch (R3) is the deterministic source of ``fecha_entrega``.
-          - OCR-reading the printed GRE date is not implemented in this slice.
-          - Upper-bound-only inference is still correct and safe (EXT-S28).
+        ``year_inferred`` is set to True whenever the year was reconstructed
+        or changed.  It is left False ONLY when vision's year already equals
+        the most-recent candidate within bounds (rare case: vision was exactly
+        right the first time).
+
+        Algorithm (per guía):
+        1. Extract day/month from vision raw string (``fecha_raw``).
+        2. Determine lower bound from sunat_fetch_map[guia_id].fecha_entrega if available.
+        3. Call ``infer_reception_year(day, month, lower, upper)``.
+        4. If the reconstructed year equals the vision year → keep original fecha,
+           year_inferred=False.
+        5. If different (or fecha was None) → update fecha and set year_inferred=True.
 
         Returns a new list of GuiaDeRemision (no mutation).
         """
         from datetime import date as _date  # noqa: PLC0415
 
+
         today = _date.today()
+        _sunat = sunat_fetch_map or {}
         result: list[GuiaDeRemision] = []
 
         for guia in guias:
-            if guia.fecha is not None:
-                # Vision returned a full date — trust it, no inference needed.
-                result.append(guia)
-                continue
+            # Extract day/month from raw vision string — this is ALWAYS the trusted source.
+            # Even when vision returned a full date (guia.fecha is not None), we use only
+            # the day/month from guia.fecha_raw (or from guia.fecha itself as fallback).
+            raw_str = guia.fecha_raw or (
+                guia.fecha.strftime("%d/%m/%Y") if guia.fecha is not None else None
+            )
+            day, month = _parse_day_month(guia.fecha_confidence, raw_str)
 
-            # fecha is None — try to infer from raw vision output (day/month).
-            # Parse DD/MM or DD-MM from the raw vision string stored on the guía.
-            day, month = _parse_day_month(guia.fecha_confidence, guia.fecha_raw or None)
             if day is None or month is None:
-                # Cannot infer without at least day and month — leave as None.
+                # Cannot infer without day+month — leave unchanged.
+                # This happens when vision returned no raw string and fecha is None.
                 result.append(guia)
                 continue
 
-            inferred_date, year_inferred = infer_reception_year(
+            # Determine lower bound from SUNAT fetch result (D3 deterministic lower bound)
+            official: Any | None = _sunat.get(guia.guia_id)
+            lower: _date | None = None
+            if official is not None and hasattr(official, "fecha_entrega"):
+                lower = official.fecha_entrega
+
+            inferred_date, _ = infer_reception_year(
                 day=day,
                 month=month,
-                lower=None,  # R2: no lower bound; SUNAT lower bound lands in R3
+                lower=lower,
                 upper=today,
             )
 
-            if inferred_date is not None:
+            if inferred_date is None:
+                # No valid candidate in window — leave existing fecha as-is (may be None).
+                result.append(guia)
+                continue
+
+            # Determine whether the year actually changed
+            vision_year = guia.fecha.year if guia.fecha is not None else None
+            year_changed = (vision_year != inferred_date.year) or (guia.fecha is None)
+
+            if year_changed:
                 result.append(
-                    guia.model_copy(update={"fecha": inferred_date, "year_inferred": year_inferred})
+                    guia.model_copy(
+                        update={"fecha": inferred_date, "year_inferred": True}
+                    )
                 )
                 logger.debug(
-                    "normalize_dates: guia %r fecha inferred %s (year_inferred=%s)",
+                    "normalize_dates: guia %r fecha %s → %s (year_inferred=True, lower=%s)",
                     guia.guia_id,
+                    guia.fecha,
                     inferred_date,
-                    year_inferred,
+                    lower,
                 )
             else:
+                # Vision year was already correct — keep original, mark year_inferred=False.
                 result.append(guia)
 
         return result
@@ -1211,6 +1346,32 @@ def _prepare_vision_image(image: bytes, config: AppConfig) -> bytes:
             "_prepare_vision_image: crop failed (%s); falling back to full-page image", exc
         )
         return image
+
+
+def _normalize_sunat_unit(sunat_unit: str) -> str:
+    """Normalize a SUNAT unit code to the domain unit enum.
+
+    SUNAT uses long-form unit names (TONELADAS, KILOGRAMOS, etc.) while the
+    domain uses short codes (TN, KG, RD, Rollo).  This mapping is best-effort;
+    unknown codes are passed through unchanged and will surface as unmatched
+    during reconciliation (the human reviewer can then assign them).
+
+    The MaterialNormalizer handles description canonicalization separately;
+    this function only handles the unit code normalisation.
+    """
+    mapping: dict[str, str] = {
+        "TONELADAS": "TN",
+        "TNE": "TN",
+        "TN": "TN",
+        "KILOGRAMOS": "KG",
+        "KGM": "KG",
+        "KG": "KG",
+        "ROLLO": "Rollo",
+        "ROL": "Rollo",
+        "VARILLA": "RD",  # "Varilla" — rod in Peru usage
+        "RD": "RD",
+    }
+    return mapping.get(sunat_unit.upper(), sunat_unit)
 
 
 def _parse_day_month(

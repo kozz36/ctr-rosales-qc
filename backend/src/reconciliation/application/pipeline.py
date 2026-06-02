@@ -361,6 +361,18 @@ class ReconciliationPipeline:
         # reconciliation gate never asserts a wrong baseline.
         declared = self._stage_extract_declared_date(declared)
 
+        # R10.6: log aggregate token consumption after all vision calls complete (CONT-S08).
+        # Duck-typed: only reads .meter if present — no coupling to the specific adapter.
+        if hasattr(self._vision, "meter"):
+            _m = self._vision.meter  # type: ignore[union-attr]
+            logger.info(
+                "vision aggregate: calls=%d prompt=%d completion=%d total=%d",
+                _m.calls,
+                _m.prompt_tokens,
+                _m.completion_tokens,
+                _m.total_tokens,
+            )
+
         # Stage 8: reconcile
         rows = self._stage_reconcile(declared, guias)
 

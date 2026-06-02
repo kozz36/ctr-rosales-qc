@@ -24,6 +24,7 @@ never raises from public methods.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import logging
 import re
@@ -46,6 +47,37 @@ _SYSTEM_PROMPT = (
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # Matches <think>…</think> blocks emitted by extended-thinking models (e.g. qwen3.5).
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+@dataclasses.dataclass
+class _TokenMeter:
+    """Accumulates token consumption across all vision calls on this adapter instance.
+
+    Invariant: all fields are additive — never reset between calls.
+    Call ``record(usage)`` after each API response; read aggregate via ``total_tokens``.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    calls: int = 0
+
+    def record(self, usage: object | None) -> None:
+        """Accumulate token counts from an API usage object.
+
+        Args:
+            usage: OpenAI-compatible usage object with ``prompt_tokens`` and
+                   ``completion_tokens`` attributes, or ``None`` (no-op).
+        """
+        if usage is None:
+            return
+        self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+        self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+        self.calls += 1
+
+    @property
+    def total_tokens(self) -> int:
+        """Sum of prompt and completion tokens across all recorded calls."""
+        return self.prompt_tokens + self.completion_tokens
 
 
 def _parse_vision_json(raw: str) -> VisionResult:
@@ -148,6 +180,13 @@ class OpenAICompatibleVisionAdapter:
         self._max_tokens = max_tokens
         self.supports_batch = supports_batch
         self._client = client
+        # R10.6: per-instance token-consumption meter (CONT-S08)
+        self._meter = _TokenMeter()
+
+    @property
+    def meter(self) -> _TokenMeter:
+        """Read-only reference to the token-consumption meter for this adapter instance."""
+        return self._meter
 
     # ------------------------------------------------------------------
     # VisionLLMPort interface
@@ -175,6 +214,16 @@ class OpenAICompatibleVisionAdapter:
                 model=self._model,
                 max_tokens=self._max_tokens,
                 messages=messages,  # type: ignore[arg-type]
+            )
+            # R10.6: record token consumption from the response usage field (CONT-S08)
+            self._meter.record(getattr(response, "usage", None))
+            logger.debug(
+                "vision meter: call=%d prompt=%d completion=%d total=%d (model=%s)",
+                self._meter.calls,
+                self._meter.prompt_tokens,
+                self._meter.completion_tokens,
+                self._meter.total_tokens,
+                self._model,
             )
             raw: str = response.choices[0].message.content or ""  # type: ignore[index]
             return _parse_vision_json(raw)

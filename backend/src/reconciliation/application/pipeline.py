@@ -71,6 +71,8 @@ from reconciliation.domain.models import (
     Registro,
     VisionResult,
 )
+from reconciliation.domain.material_key_normalizer import MaterialKeyNormalizer
+from reconciliation.domain.material_key_resolver import MaterialKeyResolver
 from reconciliation.domain.normalizer import MaterialNormalizer
 from reconciliation.domain.ports import (
     DocumentSourcePort,
@@ -249,6 +251,7 @@ class ReconciliationPipeline:
         deskew: DeskewPort | None = None,
         identity: IdentityExtractionPort | None = None,
         sunat: SunatGreFetchPort | None = None,
+        key_resolver: MaterialKeyResolver | None = None,
     ) -> None:
         self._doc = doc_source
         self._extractor = extractor
@@ -261,6 +264,13 @@ class ReconciliationPipeline:
         self._classifier = PageClassifier()
         self._normalizer = MaterialNormalizer()
         self._reconciler = ReconciliationService()
+        # R8.9 (ADR-6): canonical key resolver.  Defensive default: deterministic-only
+        # (no inference port) so existing direct-construction tests pass without change.
+        self._key_resolver: MaterialKeyResolver = (
+            key_resolver
+            if key_resolver is not None
+            else MaterialKeyResolver(MaterialKeyNormalizer())
+        )
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -1151,11 +1161,25 @@ class ReconciliationPipeline:
         declared: list[Registro],
         guias: list[GuiaDeRemision],
     ) -> tuple[list[Registro], list[GuiaDeRemision]]:
-        """Stage 7: canonicalize material descriptions in all lines."""
+        """Stage 8: canonicalize material descriptions via MaterialKeyResolver.
+
+        R8.9 (ADR-6): Upgraded from MaterialNormalizer.canonicalize() (NFC+lowercase)
+        to MaterialKeyResolver.resolve() which produces a structured CanonicalKey.
+        The group_token from the key is written to description_canonical (the existing
+        reconciliation grouping axis — engine and export are unchanged).
+
+        Defensive default: if key_resolver was not injected, the constructor provides
+        a deterministic-only resolver (MaterialKeyResolver(MaterialKeyNormalizer()))
+        so existing direct-construction tests pass without passing key_resolver.
+        """
 
         def _norm_line(line: MaterialLine) -> MaterialLine:
-            canonical = self._normalizer.canonicalize(line.description_raw)
-            return line.model_copy(update={"description_canonical": canonical})
+            key = self._key_resolver.resolve(line.description_raw, line.unidad)
+            return line.model_copy(update={
+                "description_canonical": key.group_token,
+                "match_method": key.method,
+                "requires_review": line.requires_review or key.requires_review,
+            })
 
         normalised_declared = [
             registro.model_copy(

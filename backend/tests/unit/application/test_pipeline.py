@@ -895,3 +895,144 @@ class TestDeskewTitleOcrSeam:
         assert deskew.extract_title_calls == 0, (
             "extract_title should NOT be called for pages with meaningful digital text"
         )
+
+
+# ---------------------------------------------------------------------------
+# R8.9: _stage_normalize upgrade + key_resolver defensive default (ADR-6)
+# ---------------------------------------------------------------------------
+
+
+from decimal import Decimal as _Decimal
+from unittest.mock import MagicMock
+
+from reconciliation.domain.material_key import CanonicalKey
+from reconciliation.domain.material_key_normalizer import MaterialKeyNormalizer
+from reconciliation.domain.material_key_resolver import MaterialKeyResolver
+
+
+class TestKeyResolverDefensive:
+    """Pipeline instantiated without key_resolver → deterministic-only mode."""
+
+    def _build_minimal_pipeline(self):
+        """Build a pipeline without key_resolver (defensive default path)."""
+        doc = FakeDocumentSource([
+            {"text": None, "image": b"\x89PNG\r\n"},
+        ])
+        extractor = FakeExtractor()
+        vision = FakeVisionSerial()
+        config = AppConfig()
+        return ReconciliationPipeline(
+            doc_source=doc,
+            extractor=extractor,
+            vision=vision,
+            config=config,
+        )
+
+    def test_pipeline_without_key_resolver_has_default(self) -> None:
+        """key_resolver is populated with the defensive default."""
+        pipeline = self._build_minimal_pipeline()
+        assert pipeline._key_resolver is not None
+
+    def test_default_resolver_inference_is_none(self) -> None:
+        """Defensive default uses deterministic-only resolver (no inference port)."""
+        pipeline = self._build_minimal_pipeline()
+        assert pipeline._key_resolver._inference is None
+
+    def test_stage_normalize_populates_description_canonical(self, tmp_path) -> None:
+        """_stage_normalize fills description_canonical using the resolver."""
+        from datetime import date
+
+        pipeline = self._build_minimal_pipeline()
+
+        declared_line = MaterialLine(
+            description_raw='BARRA AG615/A706 G60 1/2" x 9M',
+            description_canonical="",  # empty before normalize
+            unidad="TN",
+            cantidad=_Decimal("4.124"),
+        )
+        from reconciliation.domain.models import Registro
+        declared = [Registro(
+            numero="232",
+            fecha_declarada=date(2024, 1, 15),
+            declared_lines=[declared_line],
+        )]
+        guias = []
+        norm_declared, norm_guias = pipeline._stage_normalize(declared, guias)
+        assert norm_declared[0].declared_lines[0].description_canonical != ""
+        assert norm_declared[0].declared_lines[0].match_method == "deterministic"
+
+    def test_stage_normalize_with_llm_inferred_resolver(self, tmp_path) -> None:
+        """Pipeline with mock resolver returning llm_inferred sets match_method correctly."""
+        from datetime import date
+
+        mock_resolver = MagicMock()
+        mock_resolver.resolve.return_value = CanonicalKey(
+            familia="BARRA",
+            grado="A615 G60",
+            diametro='1/2"',
+            presentacion="9M",
+            unidad="TN",
+            method="llm_inferred",
+        )
+
+        doc = FakeDocumentSource([{"text": None, "image": b"\x89PNG\r\n"}])
+        extractor = FakeExtractor()
+        vision = FakeVisionSerial()
+        pipeline = ReconciliationPipeline(
+            doc_source=doc,
+            extractor=extractor,
+            vision=vision,
+            config=AppConfig(),
+            key_resolver=mock_resolver,
+        )
+
+        declared_line = MaterialLine(
+            description_raw="ambiguous description",
+            description_canonical="",
+            unidad="TN",
+            cantidad=_Decimal("1.0"),
+        )
+        from reconciliation.domain.models import Registro
+        declared = [Registro(
+            numero="100",
+            fecha_declarada=date(2024, 1, 1),
+            declared_lines=[declared_line],
+        )]
+        norm_declared, _ = pipeline._stage_normalize(declared, [])
+        assert norm_declared[0].declared_lines[0].match_method == "llm_inferred"
+        assert norm_declared[0].declared_lines[0].requires_review is True
+
+    def test_stage_normalize_with_unresolved_resolver(self, tmp_path) -> None:
+        """Pipeline with mock resolver returning unresolved sets UNRESOLVED:: prefix."""
+        from datetime import date
+
+        mock_resolver = MagicMock()
+        raw = "some unresolvable text"
+        mock_resolver.resolve.return_value = CanonicalKey.unresolved(raw, "TN")
+
+        doc = FakeDocumentSource([{"text": None, "image": b"\x89PNG\r\n"}])
+        extractor = FakeExtractor()
+        vision = FakeVisionSerial()
+        pipeline = ReconciliationPipeline(
+            doc_source=doc,
+            extractor=extractor,
+            vision=vision,
+            config=AppConfig(),
+            key_resolver=mock_resolver,
+        )
+
+        declared_line = MaterialLine(
+            description_raw=raw,
+            description_canonical="",
+            unidad="TN",
+            cantidad=_Decimal("1.0"),
+        )
+        from reconciliation.domain.models import Registro
+        declared = [Registro(
+            numero="100",
+            fecha_declarada=date(2024, 1, 1),
+            declared_lines=[declared_line],
+        )]
+        norm_declared, _ = pipeline._stage_normalize(declared, [])
+        assert norm_declared[0].declared_lines[0].description_canonical.startswith("UNRESOLVED::")
+        assert norm_declared[0].declared_lines[0].requires_review is True

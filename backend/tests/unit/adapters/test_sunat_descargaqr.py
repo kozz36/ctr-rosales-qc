@@ -431,6 +431,95 @@ class TestAdapterCache:
 
 
 # ---------------------------------------------------------------------------
+# Adapter: structured httpx.Timeout + inter-request pacing (R-resilience fix)
+# ---------------------------------------------------------------------------
+
+class TestDownloadResilience:
+    """Structured httpx.Timeout + pacing to survive SUNAT burst rate-limiting.
+
+    Root cause (verified live): a scalar httpx timeout is a TOTAL request budget;
+    under SUNAT rate-limiting the 2nd/3rd consecutive fetches exhaust it and the
+    parser never runs → false "no line items".  The fix uses a structured
+    httpx.Timeout (bounded connect, generous read) plus a small inter-request
+    pause so consecutive fetches don't trip the rate-limiter.
+    """
+
+    def test_download_uses_structured_timeout(self) -> None:
+        from unittest.mock import MagicMock
+
+        import httpx
+
+        from reconciliation.adapters.sunat.descargaqr import SunatDescargaqrAdapter
+
+        adapter = SunatDescargaqrAdapter(timeout_s=10.0, cache_dir=None)
+
+        captured: dict[str, object] = {}
+
+        def _fake_get(url: str, timeout: object = None, follow_redirects: bool = False):
+            captured["timeout"] = timeout
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.headers = {"content-type": "application/pdf"}
+            resp.content = b"%PDF-1.4"
+            return resp
+
+        with patch.object(httpx, "get", side_effect=_fake_get):
+            adapter._download_httpx("https://example.com/descargaqr?hashqr=X", httpx)
+
+        timeout = captured["timeout"]
+        # MUST be a structured httpx.Timeout, not a bare float.
+        assert isinstance(timeout, httpx.Timeout)
+        # connect is bounded by the configured timeout (min(10, 10) == 10).
+        assert timeout.connect == 10.0
+        # read is generous (60s) so burst rate-limiting doesn't false-fail the parse.
+        assert timeout.read == 60.0
+
+    def test_connect_timeout_bounded_at_10s(self) -> None:
+        from unittest.mock import MagicMock
+
+        import httpx
+
+        from reconciliation.adapters.sunat.descargaqr import SunatDescargaqrAdapter
+
+        adapter = SunatDescargaqrAdapter(timeout_s=30.0, cache_dir=None)
+        captured: dict[str, object] = {}
+
+        def _fake_get(url: str, timeout: object = None, follow_redirects: bool = False):
+            captured["timeout"] = timeout
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.headers = {"content-type": "application/pdf"}
+            resp.content = b"%PDF-1.4"
+            return resp
+
+        with patch.object(httpx, "get", side_effect=_fake_get):
+            adapter._download_httpx("https://example.com/descargaqr?hashqr=X", httpx)
+
+        timeout = captured["timeout"]
+        # connect = min(timeout_s, 10.0) → bounded even when configured higher.
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.connect == 10.0
+
+    def test_sequential_fetches_are_paced(self) -> None:
+        """Two consecutive network downloads incur an inter-request pause."""
+        from reconciliation.adapters.sunat.descargaqr import SunatDescargaqrAdapter
+
+        adapter = SunatDescargaqrAdapter(timeout_s=5.0, cache_dir=None)
+        sleeps: list[float] = []
+
+        with patch(
+            "reconciliation.adapters.sunat.descargaqr.time.sleep",
+            side_effect=sleeps.append,
+        ), patch.object(adapter, "_download_httpx", return_value=b"%PDF"), \
+           patch.object(adapter, "_download_urllib", return_value=b"%PDF"):
+            adapter._download("https://example.com/descargaqr?hashqr=A")
+            adapter._download("https://example.com/descargaqr?hashqr=B")
+
+        # The 2nd consecutive download must have paced (slept ~0.5s).
+        assert any(s >= 0.4 for s in sleeps), f"expected an inter-request pause, got {sleeps}"
+
+
+# ---------------------------------------------------------------------------
 # Full parse round-trip (using sample text bypassing fitz)
 # ---------------------------------------------------------------------------
 

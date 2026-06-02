@@ -85,11 +85,23 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Default HTTP timeout raised from 10 s → 30 s; burst SUNAT responses can be slow.
+# NOTE (resilience fix): with the structured httpx.Timeout, ``timeout_s`` now bounds
+# only the CONNECT phase (capped at _MAX_CONNECT_S); the read phase uses _READ_TIMEOUT_S.
 _DEFAULT_TIMEOUT_S: float = 30.0
 # Maximum number of attempts before giving up (first attempt + retries).
 _MAX_RETRIES: int = 3
 # Base back-off in seconds; actual wait = _BACKOFF_BASE * (attempt_index + 1).
 _BACKOFF_BASE: float = 1.0
+# Structured-timeout phase budgets (resilience fix). A scalar timeout is a TOTAL
+# request budget; under SUNAT burst rate-limiting the read phase needs its own,
+# generous allowance so the parse stage actually runs.
+_MAX_CONNECT_S: float = 10.0   # upper bound for the connect phase
+_READ_TIMEOUT_S: float = 60.0  # generous read budget to survive rate-limiting
+_WRITE_TIMEOUT_S: float = 10.0
+_POOL_TIMEOUT_S: float = 10.0
+# Inter-request pause between consecutive network downloads (seconds) to avoid
+# tripping SUNAT rate-limiting on sequential guía fetches.
+_FETCH_PACING_S: float = 0.5
 
 # ---------------------------------------------------------------------------
 # Date patterns used by the SUNAT PDF text layout
@@ -135,7 +147,11 @@ class SunatDescargaqrAdapter:
     """Fetches and parses the official SUNAT GRE PDF for a guía via descargaqr.
 
     Args:
-        timeout_s:  HTTP request timeout in seconds (default 10).
+        timeout_s:  CONNECT-phase timeout in seconds (default 30, capped at 10s
+                    by the structured ``httpx.Timeout``).  The READ phase uses a
+                    separate, generous budget (``_READ_TIMEOUT_S``) so SUNAT
+                    burst rate-limiting does not exhaust a single total budget
+                    and falsely yield "no line items".
         cache_dir:  Directory to cache downloaded GRE PDFs.  ``None`` disables
                     caching (useful in tests).  When ``None``, no file is written.
     """
@@ -149,6 +165,9 @@ class SunatDescargaqrAdapter:
         self._timeout_s = timeout_s
         self._cache_dir = cache_dir
         self._max_retries = max_retries
+        # Monotonic timestamp of the last completed network download; used to
+        # pace consecutive fetches (None until the first network download).
+        self._last_download_monotonic: float | None = None
 
     # ------------------------------------------------------------------
     # SunatGreFetchPort interface
@@ -263,7 +282,13 @@ class SunatDescargaqrAdapter:
             logger.warning("SunatDescargaqrAdapter: cache write failed: %s", exc)
 
     def _download(self, url: str) -> bytes | None:
-        """Perform HTTP GET; validate Content-Type; return PDF bytes or None."""
+        """Perform HTTP GET; validate Content-Type; return PDF bytes or None.
+
+        Paces consecutive network downloads (``_FETCH_PACING_S``) to avoid
+        tripping SUNAT burst rate-limiting on sequential guía fetches.  Cache
+        hits never reach this method, so no pause is incurred for cached PDFs.
+        """
+        self._pace_request()
         try:
             import httpx  # noqa: PLC0415
             _http_client = httpx
@@ -271,17 +296,44 @@ class SunatDescargaqrAdapter:
             # Fallback to stdlib urllib when httpx is absent
             _http_client = None  # type: ignore[assignment]
 
-        if _http_client is not None:
-            return self._download_httpx(url, _http_client)
-        return self._download_urllib(url)
+        try:
+            if _http_client is not None:
+                return self._download_httpx(url, _http_client)
+            return self._download_urllib(url)
+        finally:
+            self._last_download_monotonic = time.monotonic()
+
+    def _pace_request(self) -> None:
+        """Sleep so consecutive network downloads are spaced by ``_FETCH_PACING_S``."""
+        if self._last_download_monotonic is None:
+            return
+        elapsed = time.monotonic() - self._last_download_monotonic
+        remaining = _FETCH_PACING_S - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
 
     def _download_httpx(self, url: str, httpx_module: object) -> bytes | None:
-        """Download using httpx with exponential-backoff retry on read-timeouts."""
+        """Download using httpx with exponential-backoff retry on read-timeouts.
+
+        Uses a STRUCTURED ``httpx.Timeout`` instead of a scalar value.  A scalar
+        timeout is a TOTAL request budget; under SUNAT burst rate-limiting the
+        2nd/3rd consecutive fetches exhaust it and the parser never runs (false
+        "no line items").  The structured timeout bounds the connect phase
+        (``min(timeout_s, _MAX_CONNECT_S)``) while granting a generous read
+        budget (``_READ_TIMEOUT_S``).
+        """
         import httpx  # noqa: PLC0415
+
+        timeout = httpx.Timeout(
+            connect=min(self._timeout_s, _MAX_CONNECT_S),
+            read=_READ_TIMEOUT_S,
+            write=_WRITE_TIMEOUT_S,
+            pool=_POOL_TIMEOUT_S,
+        )
 
         for attempt in range(self._max_retries):
             try:
-                resp = httpx.get(url, timeout=self._timeout_s, follow_redirects=True)
+                resp = httpx.get(url, timeout=timeout, follow_redirects=True)
             except httpx.TimeoutException as exc:
                 wait = _BACKOFF_BASE * (attempt + 1)
                 logger.warning(

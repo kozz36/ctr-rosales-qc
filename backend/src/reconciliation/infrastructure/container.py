@@ -457,16 +457,29 @@ def build_pipeline(
                 SunatDescargaqrAdapter,
             )
 
-            sunat_cache_dir = ctx.run_dir / "sunat" if config.sunat.cache else None
+            # R10.8: cache_dir resolution — D4 stable cross-run cache (CONT-S10).
+            # Priority: stable configured path > per-run dir > None (cache disabled).
+            if config.sunat.cache:
+                if config.sunat.cache_dir is not None:
+                    # Stable cross-run cache (e.g. /data/sunat-cache mounted volume).
+                    sunat_cache_dir = config.sunat.cache_dir
+                    sunat_cache_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    # Default: per-run cache (existing behavior — no cross-run reuse).
+                    sunat_cache_dir = ctx.run_dir / "sunat"
+            else:
+                sunat_cache_dir = None
+
             sunat_adapter = SunatDescargaqrAdapter(
                 timeout_s=config.sunat.timeout_s,
                 cache_dir=sunat_cache_dir,
             )
             logger.info(
-                "build_pipeline: SUNAT fetch ENABLED (timeout=%.1fs, cache_dir=%s) — "
+                "build_pipeline: SUNAT fetch ENABLED (timeout=%.1fs, cache_dir=%s, cross_run=%s) — "
                 "AIR-GAP IS BROKEN; network calls to e-factura.sunat.gob.pe will be made",
                 config.sunat.timeout_s,
                 sunat_cache_dir,
+                config.sunat.cache_dir is not None,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(

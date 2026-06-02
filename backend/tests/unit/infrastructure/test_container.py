@@ -562,3 +562,85 @@ class TestBuildPipelineOcrWiring:
         pipeline = self._patched_build_pipeline_ocr_enabled(config)
         # The DeskewAdapter is patched with a MagicMock; it must be non-None.
         assert pipeline._deskew is not None
+
+
+# ---------------------------------------------------------------------------
+# R10.8: SunatConfig.cache_dir wiring in build_pipeline (CONT-S10)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPipelineSunatCacheDir:
+    """Verify container.py routes SunatConfig.cache_dir to the adapter correctly."""
+
+    def _build_with_sunat(self, config: "AppConfig", tmp_path: Path) -> tuple:
+        """Build pipeline with SUNAT enabled; patch heavy imports; return (pipeline, captured_cache_dir)."""
+        from reconciliation.infrastructure.container import build_pipeline
+
+        captured: dict = {}
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        class FakeSunatAdapter:
+            def __init__(self, timeout_s: float, cache_dir: Path | None) -> None:
+                captured["cache_dir"] = cache_dir
+
+            def fetch(self, url: str) -> None:
+                return None
+
+            def fetch_many(self, urls: list, concurrency: int = 5) -> dict:
+                return {}
+
+        with (
+            patch(
+                "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+                return_value=fake_pdf,
+            ),
+            patch(
+                "reconciliation.adapters.vision.factory.build_vision_adapter",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "reconciliation.adapters.sunat.descargaqr.SunatDescargaqrAdapter",
+                FakeSunatAdapter,
+            ),
+        ):
+            pipeline, ctx, _ = build_pipeline(tmp_path / "dummy.pdf", config=config)
+
+        return pipeline, captured.get("cache_dir")
+
+    def test_cache_true_cache_dir_none_uses_per_run_dir(self, tmp_path: Path) -> None:
+        """sunat.cache=True, cache_dir=None → per-run dir (ctx.run_dir / sunat)."""
+        from reconciliation.application.config import AppConfig, SunatConfig
+
+        config = AppConfig(
+            sunat=SunatConfig(enabled=True, cache=True, cache_dir=None)
+        )
+        _, cache_dir = self._build_with_sunat(config, tmp_path)
+        assert cache_dir is not None
+        assert str(cache_dir).endswith("sunat")
+
+    def test_cache_true_stable_cache_dir_uses_config_path(self, tmp_path: Path) -> None:
+        """sunat.cache=True, cache_dir=/data/sunat-cache → adapter receives that path."""
+        from reconciliation.application.config import AppConfig, SunatConfig
+
+        stable_dir = tmp_path / "sunat-cache"
+        config = AppConfig(
+            sunat=SunatConfig(enabled=True, cache=True, cache_dir=stable_dir)
+        )
+        _, cache_dir = self._build_with_sunat(config, tmp_path)
+        assert cache_dir == stable_dir
+
+    def test_cache_false_adapter_receives_none(self, tmp_path: Path) -> None:
+        """sunat.cache=False → adapter receives cache_dir=None."""
+        from reconciliation.application.config import AppConfig, SunatConfig
+
+        config = AppConfig(
+            sunat=SunatConfig(enabled=True, cache=False, cache_dir=None)
+        )
+        _, cache_dir = self._build_with_sunat(config, tmp_path)
+        assert cache_dir is None

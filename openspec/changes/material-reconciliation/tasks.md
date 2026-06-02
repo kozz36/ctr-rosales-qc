@@ -364,7 +364,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session.
 
-### [ ] S1.5 — Multi-page guía block grouping (pipeline stage §B)
+### [x] S1.5 — Multi-page guía block grouping (pipeline stage §B)
 
 **Spec refs**: EXT-015, EXT-S15, EXT-S16, EXT-S17, EXT-S18, design §B.
 **Depends on**: S1.2 (QR adapter), S1.4 (UNRESOLVED fix), S1.1 (updated models).
@@ -390,7 +390,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session (longer — modifies pipeline).
 
-### [ ] S1.6 — `ReconciliationService` rev-2 update (`guias[]` inline + UNRESOLVED)
+### [x] S1.6 — `ReconciliationService` rev-2 update (`guias[]` inline + UNRESOLVED)
 
 **Spec refs**: REC-C01, REC-C02, REC-C03, REC-C04, REC-C05, REC-C06, REC-S01 (modified), REC-C01–REC-C07.
 **Depends on**: S1.1 (updated models with `GuiaContribution`), S1.4 (UNRESOLVED).
@@ -413,7 +413,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session.
 
-### [ ] S1.7 — `ReviewService` + API surface rev-2 update
+### [x] S1.7 — `ReviewService` + API surface rev-2 update
 
 **Spec refs**: REC-C04, REC-C06, REV-C02, REV-C03, design §D, design §F (API additions).
 **Depends on**: S1.6 (updated reconciliation), 4.2 (existing FastAPI routes).
@@ -446,7 +446,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session.
 
-### [ ] S1.8 — Thumbnail backend endpoint
+### [x] S1.8 — Thumbnail backend endpoint
 
 **Spec refs**: REV-005, design §6.
 **Depends on**: 4.2 (existing FastAPI routes), 2.2 (RunContext, pages_dir).

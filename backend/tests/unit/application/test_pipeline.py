@@ -18,7 +18,7 @@ from reconciliation.application.config import AppConfig
 from reconciliation.application.pipeline import PipelineResult, ReconciliationPipeline
 from reconciliation.application.run_context import RunContext
 from reconciliation.domain.errors import VisionCapExceededError
-from reconciliation.domain.models import MaterialLine, VisionResult
+from reconciliation.domain.models import GuiaIdentity, MaterialLine, VisionResult
 from reconciliation.domain.ports import DocumentSourcePort, ExtractionPort, VisionLLMPort
 
 
@@ -112,6 +112,32 @@ class FakeVisionBatch:
         return [self._result] * len(images)
 
 
+class FakeIdentityPerPage:
+    """Fake IdentityExtractionPort that returns a unique GuiaIdentity per call.
+
+    Each call returns a different guia_id (``T001-{seq}``), simulating distinct
+    QR codes on every page.  This forces the block assembler to create one block
+    per page — useful for testing cost-cap semantics where N pages → N blocks →
+    N vision calls.
+    """
+
+    def __init__(self) -> None:
+        self._seq = 0
+
+    def decode_identity(self, image: bytes) -> GuiaIdentity:
+        seq = self._seq
+        self._seq += 1
+        return GuiaIdentity(
+            serie="T001",
+            numero=str(seq),
+            ruc_emisor="12345678901",
+            ruc_receptor="10987654321",
+            tipo="09",
+            hashqr_url=None,
+            confidence=1.0,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -154,6 +180,7 @@ def _build_pipeline(
     vision: VisionLLMPort | None = None,
     max_vision_calls: int = 500,
     tmp_path: Path | None = None,
+    identity: Any | None = None,
 ) -> tuple[ReconciliationPipeline, RunContext]:
     cfg = AppConfig()
     # Override max_vision_calls without touching frozen fields
@@ -171,6 +198,7 @@ def _build_pipeline(
         extractor=extractor,
         vision=vis,
         config=cfg,
+        identity=identity,
     )
     base = tmp_path or Path(".")
     ctx = RunContext(pdf_path=base / "input.pdf", output_base=base / "runs")
@@ -232,24 +260,37 @@ class TestPipelineStageSequencing:
         assert result.guias[0].fecha_confidence == 0.99
 
     def test_vision_calls_counted_sequential(self, tmp_path: Path) -> None:
-        """Sequential path: one vision call per GUIA page."""
+        """Sequential path: one vision call per BLOCK.
+
+        With FakeIdentityPerPage each GUIA page gets a unique guia_id → each
+        page becomes its own block → 2 pages = 2 blocks = 2 vision calls.
+        Without an identity adapter, all same-section pages merge into one block
+        (OCR fallback) → only 1 call.  The test uses per-page identity to verify
+        the vision-call counter is incremented per block.
+        """
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
-        pipeline, ctx = _build_pipeline(pages=pages, tmp_path=tmp_path)
+        pipeline, ctx = _build_pipeline(
+            pages=pages, tmp_path=tmp_path, identity=FakeIdentityPerPage()
+        )
         result = pipeline.run(ctx)
         assert result.vision_calls_made == 2
 
     def test_batch_vision_uses_batch_path(self, tmp_path: Path) -> None:
-        """Batch path: single batch call for all GUIA pages."""
+        """Batch path: single batch call for all BLOCKS.
+
+        With FakeIdentityPerPage, 2 pages = 2 blocks → one batch call covering
+        both blocks.  vision_calls_made counts blocks (images sent), not API calls.
+        """
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
         vision = FakeVisionBatch()
         pipeline, ctx = _build_pipeline(
-            pages=pages, vision=vision, tmp_path=tmp_path
+            pages=pages, vision=vision, tmp_path=tmp_path, identity=FakeIdentityPerPage()
         )
         result = pipeline.run(ctx)
         assert vision.batch_calls == 1
@@ -326,7 +367,7 @@ class TestPipelineStageSequencing:
 
 class TestVisionCostCap:
     def test_cap_zero_raises_immediately_sequential(self, tmp_path: Path) -> None:
-        """Cap=0 means NO vision calls allowed; raises before first call."""
+        """Cap=0 means NO vision calls allowed; raises before first block."""
         pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
         pipeline, ctx = _build_pipeline(
             pages=pages, max_vision_calls=0, tmp_path=tmp_path
@@ -336,14 +377,18 @@ class TestVisionCostCap:
         assert exc_info.value.detail["cap"] == 0
 
     def test_cap_exceeded_mid_run_sequential(self, tmp_path: Path) -> None:
-        """Cap=1 with 3 GUIA pages → raises after first call, preserves sidecar."""
+        """Cap=1 with 3 distinct-QR blocks → raises after first call.
+
+        FakeIdentityPerPage ensures each page is a separate block (unique guia_id).
+        """
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
         pipeline, ctx = _build_pipeline(
-            pages=pages, max_vision_calls=1, tmp_path=tmp_path
+            pages=pages, max_vision_calls=1, tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         with pytest.raises(VisionCapExceededError) as exc_info:
             pipeline.run(ctx)
@@ -352,19 +397,20 @@ class TestVisionCostCap:
         assert detail["cap"] == 1
 
     def test_cap_exact_match_does_not_raise(self, tmp_path: Path) -> None:
-        """Cap=2 with 2 GUIA pages → completes without error."""
+        """Cap=2 with 2 distinct-QR blocks → completes without error."""
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
         pipeline, ctx = _build_pipeline(
-            pages=pages, max_vision_calls=2, tmp_path=tmp_path
+            pages=pages, max_vision_calls=2, tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         result = pipeline.run(ctx)  # must not raise
         assert result.vision_calls_made == 2
 
     def test_cap_exceeded_batch_path(self, tmp_path: Path) -> None:
-        """Batch path: cap=1 with 3 pages → raises after partial batch."""
+        """Batch path: cap=1 with 3 distinct-QR blocks → raises after partial batch."""
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
@@ -372,7 +418,8 @@ class TestVisionCostCap:
         ]
         vision = FakeVisionBatch()
         pipeline, ctx = _build_pipeline(
-            pages=pages, vision=vision, max_vision_calls=1, tmp_path=tmp_path
+            pages=pages, vision=vision, max_vision_calls=1, tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         with pytest.raises(VisionCapExceededError) as exc_info:
             pipeline.run(ctx)

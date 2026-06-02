@@ -1,17 +1,22 @@
-"""ReconciliationPipeline — deterministic 10-stage orchestrator.
+"""ReconciliationPipeline — deterministic 11-stage orchestrator.
 
 Stage sequence (fixed, non-negotiable per design):
-  1. split       — count pages via DocumentSourcePort
-  2. classify    — classify each page by title rules (PageClassifier);
-                   scanned pages (empty digital text) receive an ocr_title
-                   from the deskew/title-OCR stage when a DeskewPort is wired.
-  3. deskew      — correct orientation of GUIA pages (optional DeskewPort)
+  1. split          — count pages via DocumentSourcePort
+  2. classify       — classify each page by title rules (PageClassifier);
+                      scanned pages (empty digital text) receive an ocr_title
+                      from the deskew/title-OCR stage when a DeskewPort is wired.
+  3. deskew         — correct orientation of GUIA pages (optional DeskewPort)
   4. extract_declared — parse digital text from DECLARED pages using real
                         parsers (DigitalTextExtractionAdapter); dedupe
                         protocolo+detail into ONE Registro per numero
                         (protocolo is canonical source per decision 2026-05-31).
-  5. extract_ocr      — OCR material tables from GUIA pages (ExtractionPort.extract_printed_table)
-  6. extract_vision   — read handwritten dates (VisionLLMPort); abort if cost cap exceeded
+  5. extract_ocr      — OCR material tables from GUIA pages (ExtractionPort.extract_printed_table);
+                        produces per-page _RawGuia objects (no guia_id assignment here).
+  5b. assemble_blocks — group per-page _RawGuia objects into multi-page GuiaBlocks using
+                        IdentityExtractionPort (QR decode); section-boundary and new-QR-id
+                        triggers start new blocks; OCR fallback when decode returns None.
+  6. extract_vision   — read handwritten dates on block FIRST pages (VisionLLMPort);
+                        abort if cost cap exceeded.
   7. normalize        — canonicalize material descriptions (MaterialNormalizer)
   8. reconcile        — group + compare via ReconciliationService
   9. persist_sidecar  — write extraction cache + initial review sidecar via RunContext
@@ -23,6 +28,12 @@ Cost cap policy (locked):
   Before each VisionLLMPort call the pipeline checks ``calls_made < cap``.
   On cap exhaustion, VisionCapExceededError is raised immediately, preserving
   any partial results already written to the extraction cache.
+
+Block grouping invariants (S1.5 / EXT-015):
+  - guia_id MUST come from IdentityExtractionPort or OCR-fallback; never f"guia_page_{n}".
+  - identity_source="qr" when QR decode succeeded; "ocr_fallback" otherwise.
+  - fecha MUST come from VisionLLMPort (handwritten stamp); never electronic/SUNAT date.
+  - Section boundary always starts a new block (even if same guia_id).
 """
 
 from __future__ import annotations
@@ -47,6 +58,7 @@ from reconciliation.domain.normalizer import MaterialNormalizer
 from reconciliation.domain.ports import (
     DocumentSourcePort,
     ExtractionPort,
+    IdentityExtractionPort,
     VisionLLMPort,
 )
 from reconciliation.domain.reconciliation import ReconciliationService
@@ -177,6 +189,7 @@ class ReconciliationPipeline:
         config: AppConfig,
         page_to_registro: dict[int, str | None] | None = None,
         deskew: DeskewPort | None = None,
+        identity: IdentityExtractionPort | None = None,
     ) -> None:
         self._doc = doc_source
         self._extractor = extractor
@@ -184,6 +197,7 @@ class ReconciliationPipeline:
         self._config = config
         self._page_to_registro: dict[int, str | None] = page_to_registro or {}
         self._deskew = deskew
+        self._identity = identity
         self._classifier = PageClassifier()
         self._normalizer = MaterialNormalizer()
         self._reconciler = ReconciliationService()
@@ -224,8 +238,11 @@ class ReconciliationPipeline:
         # Stage 5: extract OCR tables from guia pages; tag with registro numero
         raw_guias = self._stage_extract_ocr(classifications)
 
-        # Stage 6: extract vision dates (handwritten)
-        guias, vision_calls_made, warnings = self._stage_extract_vision(raw_guias)
+        # Stage 5b: assemble multi-page guía blocks via QR identity (or OCR fallback)
+        blocks = self._stage_assemble_blocks(raw_guias, classifications)
+
+        # Stage 6: extract vision dates (handwritten) — one call per block (first page)
+        guias, vision_calls_made, warnings = self._stage_extract_vision(blocks)
 
         # Stage 7: normalize descriptions
         declared, guias = self._stage_normalize(declared, guias)
@@ -451,7 +468,8 @@ class ReconciliationPipeline:
             registro_numero = self._page_to_registro.get(cls.page)
             raw_guias.append(
                 _RawGuia(
-                    guia_id=f"guia_page_{cls.page}",
+                    # guia_id intentionally left empty here; assigned during block assembly (S1.5)
+                    guia_id="",
                     source_page=cls.page,
                     image=image,
                     lines=lines,
@@ -466,13 +484,127 @@ class ReconciliationPipeline:
             )
         return raw_guias
 
+    def _stage_assemble_blocks(
+        self,
+        raw_guias: list[_RawGuia],
+        classifications: list[PageClassification],
+    ) -> list[_GuiaBlock]:
+        """Stage 5b: group per-page _RawGuia objects into multi-page GuiaBlocks.
+
+        Algorithm (S1.5 / EXT-015):
+        1. Iterate raw_guias in order (already sorted by page index from _stage_extract_ocr).
+        2. For each page, attempt IdentityExtractionPort.decode_identity(image) if wired.
+        3. Start a new block on:
+           (a) Run-start (first page).
+           (b) Section boundary cross: page's registro differs from current block's registro.
+           (c) Successful QR decode with a guia_id different from the current block's guia_id.
+        4. Within a block: propagate identity fields from the first page to all pages.
+        5. Append OCR lines from each page to the block's accumulated lines.
+        6. OCR fallback: when decode returns None → identity_source="ocr_fallback";
+           guia_id derived from page index (unique per page, no QR data).
+
+        Returns a list of _GuiaBlock objects ready for vision date extraction.
+        """
+        if not raw_guias:
+            return []
+
+        blocks: list[_GuiaBlock] = []
+        current_block: _GuiaBlock | None = None
+
+        for raw in raw_guias:
+            # Attempt QR decode when the identity adapter is wired
+            identity = None
+            if self._identity is not None:
+                try:
+                    identity = self._identity.decode_identity(raw.image)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "assemble_blocks: identity decode failed for page %d: %s", raw.source_page, exc
+                    )
+
+            # Derive identity fields for this page
+            if identity is not None:
+                page_guia_id = identity.guia_id
+                page_identity_source: str = "qr"
+                page_ruc_emisor = identity.ruc_emisor
+                page_ruc_receptor = identity.ruc_receptor
+                page_tipo = identity.tipo
+                page_hashqr_url = identity.hashqr_url
+                page_identity_confidence = identity.confidence
+            else:
+                # OCR fallback: unique per page until a QR is found
+                page_guia_id = f"ocr_{raw.source_page}"
+                page_identity_source = "ocr_fallback"
+                page_ruc_emisor = None
+                page_ruc_receptor = None
+                page_tipo = None
+                page_hashqr_url = None
+                page_identity_confidence = 0.0
+
+            # Determine whether to start a new block
+            start_new_block = current_block is None  # (a) run-start
+
+            if not start_new_block and current_block is not None:
+                # (b) Section boundary: registro differs from current block's registro
+                if raw.registro != current_block.registro:
+                    start_new_block = True
+                # (c) New QR identity: successful decode with different guia_id
+                elif (
+                    identity is not None
+                    and page_guia_id != current_block.guia_id
+                ):
+                    start_new_block = True
+
+            if start_new_block:
+                # Finalise current block (if any) and push to list
+                if current_block is not None:
+                    blocks.append(current_block)
+                current_block = _GuiaBlock(
+                    guia_id=page_guia_id,
+                    first_page=raw.source_page,
+                    source_pages=[raw.source_page],
+                    first_page_image=raw.image,
+                    lines=list(raw.lines),
+                    registro=raw.registro,
+                    identity_source=page_identity_source,  # type: ignore[arg-type]
+                    ruc_emisor=page_ruc_emisor,
+                    ruc_receptor=page_ruc_receptor,
+                    tipo=page_tipo,
+                    gre_hashqr_url=page_hashqr_url,
+                    identity_confidence=page_identity_confidence,
+                )
+            else:
+                # Continuation page: append lines; identity propagated from first page
+                assert current_block is not None
+                current_block.source_pages.append(raw.source_page)
+                current_block.lines.extend(raw.lines)
+
+            logger.debug(
+                "assemble_blocks: page %d → block guia_id=%r, source=%r, start_new=%s",
+                raw.source_page,
+                current_block.guia_id if current_block else None,
+                page_identity_source,
+                start_new_block,
+            )
+
+        # Finalise the last block
+        if current_block is not None:
+            blocks.append(current_block)
+
+        logger.debug("assemble_blocks: %d blocks from %d pages", len(blocks), len(raw_guias))
+        return blocks
+
     def _stage_extract_vision(
-        self, raw_guias: list[_RawGuia]
+        self, blocks: list[_GuiaBlock]
     ) -> tuple[list[GuiaDeRemision], int, list[str]]:
-        """Stage 6: attach handwritten dates to guías via VisionLLMPort.
+        """Stage 6: attach handwritten dates to guía blocks via VisionLLMPort.
+
+        Vision is called once per BLOCK (on the first page's image) — not once
+        per raw page.  This preserves the cost cap semantics while correctly
+        handling multi-page guías.
 
         Respects the vision cost cap.  Raises VisionCapExceededError if the
-        cap is exhausted before all guías are processed.
+        cap is exhausted before all blocks are processed.
 
         Returns:
             (guias, calls_made, warnings)
@@ -482,30 +614,28 @@ class ReconciliationPipeline:
         warnings: list[str] = []
         guias: list[GuiaDeRemision] = []
 
-        if not raw_guias:
+        if not blocks:
             return guias, calls_made, warnings
 
         if self._vision.supports_batch:
-            # Batch path: one call per batch of images
+            # Batch path: one call per batch of first-page images
             remaining = cap - calls_made
             if remaining <= 0:
                 raise VisionCapExceededError(
                     "Vision cost cap reached before processing started.",
-                    detail={"calls_made": calls_made, "cap": cap, "pages_remaining": len(raw_guias)},
+                    detail={"calls_made": calls_made, "cap": cap, "pages_remaining": len(blocks)},
                 )
-            # Send all images in one batch call
-            images = [rg.image for rg in raw_guias]
+            images = [b.first_page_image for b in blocks]
             if len(images) > remaining:
                 # Partial batch up to cap
-                to_process = raw_guias[:remaining]
-                skipped = raw_guias[remaining:]
+                to_process = blocks[:remaining]
+                skipped = blocks[remaining:]
                 results = self._vision.read_handwritten_date_batch(
-                    [rg.image for rg in to_process]
+                    [b.first_page_image for b in to_process]
                 )
                 calls_made += len(to_process)
-                for rg, vr in zip(to_process, results):
-                    guias.append(_build_guia(rg, vr))
-                # Raise for the skipped portion
+                for blk, vr in zip(to_process, results):
+                    guias.append(_build_guia_from_block(blk, vr))
                 raise VisionCapExceededError(
                     f"Vision cost cap ({cap}) reached after {calls_made} calls.",
                     detail={
@@ -517,28 +647,28 @@ class ReconciliationPipeline:
             else:
                 results = self._vision.read_handwritten_date_batch(images)
                 calls_made += len(images)
-                for rg, vr in zip(raw_guias, results):
-                    guias.append(_build_guia(rg, vr))
+                for blk, vr in zip(blocks, results):
+                    guias.append(_build_guia_from_block(blk, vr))
         else:
             # Sequential path (Ollama / non-batch)
-            for rg in raw_guias:
+            for blk in blocks:
                 if calls_made >= cap:
                     raise VisionCapExceededError(
                         f"Vision cost cap ({cap}) reached after {calls_made} calls.",
                         detail={
                             "calls_made": calls_made,
                             "cap": cap,
-                            "pages_remaining": len(raw_guias) - calls_made,
+                            "pages_remaining": len(blocks) - calls_made,
                         },
                     )
-                vr = self._vision.read_handwritten_date(rg.image)
+                vr = self._vision.read_handwritten_date(blk.first_page_image)
                 calls_made += 1
-                guia = _build_guia(rg, vr)
+                guia = _build_guia_from_block(blk, vr)
                 guias.append(guia)
                 if vr.confidence < self._config.confidence.threshold:
                     warnings.append(
                         f"Low vision confidence ({vr.confidence:.2f}) "
-                        f"on page {rg.source_page}."
+                        f"on first page {blk.first_page} of block {blk.guia_id!r}."
                     )
 
         return guias, calls_made, warnings
@@ -619,22 +749,65 @@ def _has_meaningful_text(text: str | None) -> bool:
 
 @dataclass
 class _RawGuia:
-    """Intermediate object holding a guía's OCR data before date extraction."""
+    """Intermediate object holding a single page's OCR data before block assembly.
 
-    guia_id: str
+    ``guia_id`` is intentionally left empty at OCR time; it is assigned by
+    ``_stage_assemble_blocks`` (S1.5) using QR identity or OCR fallback.
+    The naming scheme ``guia_page_{n}`` MUST NOT appear after this stage.
+    """
+
+    guia_id: str  # set to "" by _stage_extract_ocr; filled in by _stage_assemble_blocks
     source_page: int
     image: bytes
     lines: list[MaterialLine]
     registro: str | None = None  # section registro numero from page_to_registro map
 
 
-def _build_guia(raw: _RawGuia, vision_result: VisionResult) -> GuiaDeRemision:
-    """Assemble a GuiaDeRemision from OCR lines and a VisionResult date."""
+@dataclass
+class _GuiaBlock:
+    """Multi-page guía block assembled from consecutive _RawGuia pages (S1.5 / EXT-015).
+
+    Represents one logical Guía de Remisión document that may span multiple
+    physical pages.  Identity fields (guia_id, ruc_*, tipo, etc.) come from
+    the FIRST page's QR decode or OCR fallback; they are propagated to all
+    continuation pages.  Lines are accumulated across all pages.
+
+    ``first_page_image`` is used for the VisionLLMPort call in stage 6 to
+    read the handwritten reception date stamp.
+    """
+
+    guia_id: str
+    first_page: int
+    source_pages: list[int]
+    first_page_image: bytes
+    lines: list[MaterialLine]
+    registro: str | None
+    identity_source: str  # Literal["qr", "ocr_fallback"]
+    ruc_emisor: str | None = None
+    ruc_receptor: str | None = None
+    tipo: str | None = None
+    gre_hashqr_url: str | None = None
+    identity_confidence: float = 0.0
+
+
+def _build_guia_from_block(block: _GuiaBlock, vision_result: VisionResult) -> GuiaDeRemision:
+    """Assemble a GuiaDeRemision from a _GuiaBlock and a VisionResult date.
+
+    The ``fecha`` MUST come from VisionLLMPort (handwritten stamp on the first
+    page) — never from SUNAT/electronic date (EXT-017, REC-C01 invariant).
+    """
     return GuiaDeRemision(
-        guia_id=raw.guia_id,
-        registro=raw.registro,  # set from page_to_registro map (C-4 fix)
+        guia_id=block.guia_id,
+        registro=block.registro,
         fecha=vision_result.date,
         fecha_confidence=vision_result.confidence,
-        lines=raw.lines,
-        source_pages=[raw.source_page],
+        lines=block.lines,
+        source_pages=block.source_pages,
+        ruc_emisor=block.ruc_emisor,
+        ruc_receptor=block.ruc_receptor,
+        tipo=block.tipo,
+        gre_hashqr_url=block.gre_hashqr_url,
+        identity_confidence=block.identity_confidence,
+        identity_source=block.identity_source,  # type: ignore[arg-type]
+        first_page=block.first_page,
     )

@@ -57,6 +57,7 @@ function makeRow(overrides: Partial<ReconciliationRowResponse> = {}): Reconcilia
     status: 'MATCH',
     source_pages: [1, 2],
     min_confidence: 0.92,
+    requires_review: false,
     guias: [] as GuiaContributionResponse[],
     ...overrides,
   }

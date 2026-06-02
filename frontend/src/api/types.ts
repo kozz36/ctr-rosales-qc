@@ -90,6 +90,8 @@ export interface ReconciliationRowResponse {
   status: RowStatus
   source_pages: number[]
   min_confidence: number | null
+  /** True when OCR confidence < 0.85 or vision returned null date (task 7.3 / REV-004). */
+  requires_review: boolean // server always sends this; default false
   guias: GuiaContributionResponse[] // rev-2: inline contributions
 }
 

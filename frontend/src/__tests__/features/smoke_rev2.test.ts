@@ -53,6 +53,7 @@ const { MOCK_TABLE_DATA, MOCK_STATUS } = vi.hoisted(() => {
     status: 'MISMATCH',
     source_pages: [3],
     min_confidence: 0.9,
+    requires_review: false,
     guias: [GUIA_A],
   }
   const ROW_MISMATCH_2: ReconciliationRowResponse = {
@@ -67,6 +68,7 @@ const { MOCK_TABLE_DATA, MOCK_STATUS } = vi.hoisted(() => {
     status: 'MISMATCH',
     source_pages: [5],
     min_confidence: 0.85,
+    requires_review: false,
     guias: [GUIA_B],
   }
   const UNRESOLVED = {

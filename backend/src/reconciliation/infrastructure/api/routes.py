@@ -105,6 +105,7 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
         status=row.status,
         source_pages=row.source_pages,
         min_confidence=row.min_confidence,
+        requires_review=row.requires_review,
         guias=guia_responses,
     )
 

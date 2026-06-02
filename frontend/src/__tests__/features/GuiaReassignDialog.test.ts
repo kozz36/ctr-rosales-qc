@@ -47,6 +47,7 @@ function makeRow(): ReconciliationRowResponse {
     status: 'MISMATCH',
     source_pages: [3],
     min_confidence: 0.88,
+    requires_review: false,
     guias: [],
   }
 }

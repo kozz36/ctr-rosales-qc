@@ -467,6 +467,70 @@ class TestRecC07SectionIdGuard:
         assert registros == {"232", "231", "233"}
 
 
+class TestRequiresReview:
+    """Task 7.3 / REV-004 / EXT-S08, EXT-S08b: requires_review propagation."""
+
+    def test_false_when_no_flags(self, svc: ReconciliationService) -> None:
+        """Normal guía (date present, high confidence) → requires_review=False."""
+        declared = [_registro("232", date(2025, 3, 15), [_line("mat", "KG", "100.0")])]
+        guias = [_guia("T001-0001", "232", date(2025, 3, 15), [
+            MaterialLine(
+                description_raw="MAT",
+                description_canonical="mat",
+                unidad="KG",
+                cantidad=Decimal("100.0"),
+                confidence=0.95,
+                requires_review=False,
+            )
+        ])]
+        rows = svc.reconcile(declared, guias)
+        assert len(rows) == 1
+        assert rows[0].requires_review is False
+
+    def test_true_when_line_requires_review(self, svc: ReconciliationService) -> None:
+        """OCR line with requires_review=True → propagated to row (EXT-S08)."""
+        declared = [_registro("232", date(2025, 3, 15), [_line("mat", "KG", "100.0")])]
+        guias = [_guia("T001-0001", "232", date(2025, 3, 15), [
+            MaterialLine(
+                description_raw="MAT",
+                description_canonical="mat",
+                unidad="KG",
+                cantidad=Decimal("100.0"),
+                confidence=0.75,  # below threshold
+                requires_review=True,
+            )
+        ])]
+        rows = svc.reconcile(declared, guias)
+        assert len(rows) == 1
+        assert rows[0].requires_review is True
+
+    def test_true_when_guia_fecha_is_none(self, svc: ReconciliationService) -> None:
+        """Vision returned null date → requires_review=True (EXT-S08b)."""
+        declared = [_registro("232", None, [_line("mat", "KG", "100.0")])]
+        guias = [_guia("T001-0001", "232", None, [  # fecha=None = vision failed
+            MaterialLine(
+                description_raw="MAT",
+                description_canonical="mat",
+                unidad="KG",
+                cantidad=Decimal("100.0"),
+                confidence=0.90,
+                requires_review=False,
+            )
+        ])]
+        rows = svc.reconcile(declared, guias)
+        assert len(rows) == 1
+        assert rows[0].requires_review is True
+
+    def test_guia_missing_no_requires_review(self, svc: ReconciliationService) -> None:
+        """GUIA_MISSING row has no contributing guías → requires_review=False."""
+        declared = [_registro("232", date(2025, 3, 15), [_line("mat", "KG", "100.0")])]
+        guias: list[GuiaDeRemision] = []
+        rows = svc.reconcile(declared, guias)
+        assert len(rows) == 1
+        assert rows[0].status == "GUIA_MISSING"
+        assert rows[0].requires_review is False
+
+
 class TestPurity:
     def test_no_io_possible_by_design(self, svc: ReconciliationService) -> None:
         """REC-008: reconcile is pure — calling it cannot trigger I/O by design.

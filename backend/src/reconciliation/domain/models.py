@@ -104,6 +104,13 @@ class PageClassification(BaseModel):
     kind: Literal["GUIA", "DECLARED", "IGNORED", "UNCLASSIFIED"]
     title_matched: str | None
     confidence: float
+    # Flagging surface (task 7.3 / INJ-007 / INJ-S04, INJ-S05)
+    orientation_fallback_failed: bool = False
+    """True when the deskew adapter attempted correction but returned a failure result."""
+    orientation_low_confidence: bool = False
+    """True when deskew orientation confidence is below the threshold (adapter-level)."""
+    ocr_empty_after_deskew: bool = False
+    """True when OCR returned no text after a deskew+title-extract pass."""
 
 
 class ReconciliationRow(BaseModel):
@@ -126,6 +133,9 @@ class ReconciliationRow(BaseModel):
     status: Literal["MATCH", "MISMATCH", "DECLARED_MISSING", "GUIA_MISSING", "UNCLASSIFIED"]
     source_pages: list[int]
     min_confidence: float | None = None
+    # Flagging surface (task 7.3 / REV-004, EXT-S08, EXT-S08b)
+    requires_review: bool = False
+    """True when any contributing line or guia date has low confidence or null date."""
     # Rev-2: inline guía contributions (populated by ReconciliationService.reconcile)
     guias: list[GuiaContribution] = []
 

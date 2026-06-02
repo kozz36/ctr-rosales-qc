@@ -78,9 +78,19 @@
       </span>
     </td>
 
-    <!-- Col 9: Confianza mín -->
+    <!-- Col 9: Confianza mín + review flags (REV-004: icon+label, not color-only) -->
     <td class="recon-row__cell recon-row__cell--confidence">
       <ConfidenceBadge :value="row.min_confidence" compact />
+      <span
+        v-if="row.requires_review"
+        class="recon-row__flag recon-row__flag--review"
+        role="img"
+        aria-label="Requiere revisión manual"
+        title="Requiere revisión: baja confianza OCR o fecha sin leer"
+      >
+        <span class="recon-row__flag-icon" aria-hidden="true">⚠</span>
+        <span class="recon-row__flag-label">Revisar</span>
+      </span>
     </td>
 
     <!-- Col 10: Páginas origen -->
@@ -378,5 +388,31 @@ const rowClass = computed(() => ({
 .recon-row__cell--actions {
   width: 40px;
   padding: var(--space-1) var(--space-2);
+}
+
+/* Flagging badges (REV-004: icon + label, not color-only) */
+.recon-row__flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: var(--space-1);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.recon-row__flag--review {
+  color: var(--status-mismatch-fg);
+  background-color: var(--status-mismatch-bg);
+}
+
+.recon-row__flag-icon {
+  font-size: 0.6rem;
+}
+
+.recon-row__flag-label {
+  font-size: var(--text-xs);
 }
 </style>

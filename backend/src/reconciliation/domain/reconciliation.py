@@ -133,6 +133,20 @@ class ReconciliationService:
             confidences = [conf for _g, _qty, conf, _page in guia_entries if conf is not None]
             min_confidence = min(confidences) if confidences else None
 
+            # Propagate requires_review from contributing guías (EXT-S08, EXT-S08b, REV-004):
+            # True when any contributing guía has a null fecha (vision returned no date),
+            # OR any line on a contributing guía has requires_review=True.
+            # Use guia_id-keyed dict for dedup (GuiaDeRemision is not hashable).
+            seen_ids: dict[str, GuiaDeRemision] = {}
+            for entry_guia, _qty, _conf, _page in guia_entries:
+                seen_ids.setdefault(entry_guia.guia_id, entry_guia)
+            contributing_guias_list = list(seen_ids.values())
+            row_requires_review = any(g.fecha is None for g in contributing_guias_list) or any(
+                line.requires_review
+                for g in contributing_guias_list
+                for line in g.lines
+            )
+
             if declared_qty is None:
                 # Guía exists but no declared counterpart
                 status: str = "DECLARED_MISSING"
@@ -160,6 +174,7 @@ class ReconciliationService:
                     status=status,  # type: ignore[arg-type]
                     source_pages=source_pages,
                     min_confidence=min_confidence,
+                    requires_review=row_requires_review,
                     guias=contributions,
                 )
             )

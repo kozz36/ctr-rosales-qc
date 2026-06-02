@@ -103,6 +103,14 @@ class ReconciliationRowResponse(BaseModel):
     status: Literal["MATCH", "MISMATCH", "DECLARED_MISSING", "GUIA_MISSING", "UNCLASSIFIED"]
     source_pages: list[int]
     min_confidence: float | None = None
+    # Flagging surface (task 7.3 / REV-004, EXT-S08, EXT-S08b)
+    requires_review: bool = Field(
+        default=False,
+        description=(
+            "True when any contributing line has low OCR confidence, "
+            "or when the guía reception date could not be read by vision."
+        ),
+    )
     # Rev-2: inline guía contributions (REC-C02 / design §D)
     guias: list[GuiaContributionResponse] = Field(
         default_factory=list,

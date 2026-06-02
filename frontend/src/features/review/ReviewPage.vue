@@ -47,15 +47,16 @@
       :pending-edits="reconciliationStore.pendingEdits"
       :active-filter="reconciliationStore.statusFilter"
       @edit="onEdit"
-      @reassign="onReassignRequest"
+      @open-reassign="onReassignRequest"
       @page-click="onPageClick"
       @filter-change="reconciliationStore.setFilter"
       @retry="void tableQuery.refetch()"
     />
 
-    <!-- Reassign dialog -->
+    <!-- Reassign dialog (rev-2: uses guiaId instead of row_id proxy) -->
     <GuiaReassignDialog
       v-model="showReassignDialog"
+      :guia-id="reassignGuiaId"
       :row="reassignTarget"
       :is-pending="reassignMutation.isPending.value"
       :api-error="reassignError"
@@ -187,11 +188,15 @@ function onEdit(rowId: string, _guiaId: string, value: string): void {
 
 const reassignMutation = useReassignGuia(runIdRef)
 const showReassignDialog = ref(false)
+const reassignGuiaId = ref<string>('')
 const reassignTarget = ref<ReconciliationRowResponse | null>(null)
 const reassignError = ref<string | null>(null)
 
-function onReassignRequest(row: ReconciliationRowResponse): void {
-  reassignTarget.value = row
+function onReassignRequest(payload: { guia_id: string }): void {
+  reassignGuiaId.value = payload.guia_id
+  // Find the row that currently owns this guía for context display in the dialog
+  reassignTarget.value =
+    rows.value.find((r) => r.guias?.some((g) => g.guia_id === payload.guia_id)) ?? null
   reassignError.value = null
   showReassignDialog.value = true
 }

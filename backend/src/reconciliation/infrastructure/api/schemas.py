@@ -61,6 +61,31 @@ class RunStatusResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Unresolved guía (REV-C04 — surfaces guías that could not be assigned to a registro)
+# ---------------------------------------------------------------------------
+
+
+class UnresolvedGuiaResponse(BaseModel):
+    """An unresolved GuiaDeRemision — one whose registro could not be determined.
+
+    These appear in the ``unresolved_guias`` bucket of ``ReconciliationTableResponse``
+    and MUST NOT appear as rows in the main reconciliation grid (REC-C05 / REV-C04).
+    """
+
+    guia_id: str = Field(description="Deterministic identifier: {serie}-{numero}.")
+    identity_source: str = Field(
+        description="How the guía identity was determined: 'qr' or 'ocr_fallback'."
+    )
+    source_pages: list[int] = Field(
+        description="Physical page indices contributing to this guía."
+    )
+    first_page: int | None = Field(
+        default=None,
+        description="First page index of this guía block (0-based).",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Reconciliation table
 # ---------------------------------------------------------------------------
 
@@ -87,10 +112,18 @@ class ReconciliationRowResponse(BaseModel):
 
 
 class ReconciliationTableResponse(BaseModel):
-    """Response for GET /runs/{run_id}/table."""
+    """Response for GET /runs/{run_id}/table.
+
+    Rev-2: ``unresolved_guias`` carries guías that could not be assigned to a
+    registro (REC-C05 / REV-C04).  They are NEVER included in ``rows``.
+    """
 
     run_id: str
     rows: list[ReconciliationRowResponse]
+    unresolved_guias: list[UnresolvedGuiaResponse] = Field(
+        default_factory=list,
+        description="Guías whose registro could not be determined (REV-C04).",
+    )
 
 
 # ---------------------------------------------------------------------------

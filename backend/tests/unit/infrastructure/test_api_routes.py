@@ -297,6 +297,60 @@ class TestGetTable:
         assert resp.status_code == 200
         assert resp.json()["rows"] == []
 
+    def test_table_includes_unresolved_guias_field(self, client: TestClient) -> None:
+        """GET /table always returns an ``unresolved_guias`` field (REV-C04 / REC-C05)."""
+        run_id = str(uuid.uuid4())
+        svc = _make_review_service(rows=[_make_row()])
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.get(f"/api/v1/runs/{run_id}/table")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "unresolved_guias" in body
+        # Default mock guía has registro="R001" (not None) → unresolved_guias is empty
+        assert body["unresolved_guias"] == []
+
+    def test_table_unresolved_guias_populated_for_none_registro(self, client: TestClient) -> None:
+        """A guía with ``registro=None`` appears in ``unresolved_guias``, NOT in ``rows``."""
+        run_id = str(uuid.uuid4())
+
+        # Build a review service mock that has one unresolved guía (registro=None)
+        unresolved_guia = _make_guia(guia_id="T009-UNRESOLVED", registro=None)  # type: ignore[arg-type]
+        rows: list[ReconciliationRow] = []  # no reconciled rows
+        svc = MagicMock()
+        svc.rows = rows
+        svc.guias = [unresolved_guia]
+        svc.get_audit_trail.return_value = []
+
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.get(f"/api/v1/runs/{run_id}/table")
+        assert resp.status_code == 200
+        body = resp.json()
+
+        # rows must be empty — unresolved guías MUST NOT appear in rows (REC-C05)
+        assert body["rows"] == []
+
+        # unresolved_guias must contain the guía
+        assert len(body["unresolved_guias"]) == 1
+        unresolved = body["unresolved_guias"][0]
+        assert unresolved["guia_id"] == "T009-UNRESOLVED"
+        assert unresolved["identity_source"] == "ocr_fallback"
+        assert unresolved["source_pages"] == [5]
+
+    def test_table_resolved_guias_not_in_unresolved(self, client: TestClient) -> None:
+        """A guía with a non-None registro MUST NOT appear in ``unresolved_guias``."""
+        run_id = str(uuid.uuid4())
+        resolved_guia = _make_guia(guia_id="T009-RESOLVED", registro="R001")
+        svc = MagicMock()
+        svc.rows = [_make_row("R001")]
+        svc.guias = [resolved_guia]
+        svc.get_audit_trail.return_value = []
+
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.get(f"/api/v1/runs/{run_id}/table")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["unresolved_guias"] == []
+
 
 # ---------------------------------------------------------------------------
 # PATCH /runs/{run_id}/rows/{row_id}

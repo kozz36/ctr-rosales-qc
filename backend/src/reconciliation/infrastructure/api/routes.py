@@ -40,6 +40,7 @@ from reconciliation.infrastructure.api.schemas import (
     RowEditResponse,
     RunCreateResponse,
     RunStatusResponse,
+    UnresolvedGuiaResponse,
     _row_id,
 )
 from reconciliation.domain.models import ReconciliationRow
@@ -290,11 +291,29 @@ def get_run_status(run_id: str, registry: RunRegistry) -> RunStatusResponse:
     summary="Fetch the reconciliation table for a completed run.",
 )
 def get_table(run_id: str, registry: RunRegistry) -> ReconciliationTableResponse:
-    """Return all reconciliation rows for the run."""
+    """Return reconciliation rows and unresolved guías for the run.
+
+    Spec: REC-C05 / REV-C04 — guías whose ``registro`` is ``None`` surface in
+    ``unresolved_guias`` and are NEVER included in ``rows``.
+    """
     entry = _require_run(registry, run_id)
     review_service = _require_review_service(entry, run_id)
     rows = [_row_to_response(r) for r in review_service.rows]
-    return ReconciliationTableResponse(run_id=run_id, rows=rows)
+
+    # Populate unresolved_guias: any guía in the service whose registro is None
+    # was excluded from reconciliation rows (domain invariant REC-C05).
+    unresolved_guias = [
+        UnresolvedGuiaResponse(
+            guia_id=g.guia_id,
+            identity_source=g.identity_source,
+            source_pages=g.source_pages,
+            first_page=g.first_page if g.first_page != 0 else (g.source_pages[0] if g.source_pages else None),
+        )
+        for g in review_service.guias
+        if g.registro is None
+    ]
+
+    return ReconciliationTableResponse(run_id=run_id, rows=rows, unresolved_guias=unresolved_guias)
 
 
 @router.patch(

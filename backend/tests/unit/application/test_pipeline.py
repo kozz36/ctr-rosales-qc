@@ -247,6 +247,16 @@ class TestPipelineStageSequencing:
         assert len(result.guias) == 1
 
     def test_guia_page_vision_date_attached(self, tmp_path: Path) -> None:
+        """Vision date is attached to guía; year is reconstructed via bounded inference.
+
+        Folded fix (#2753 / R3): _stage_normalize_dates always reconstructs the year
+        from day/month even when vision returned a full date.  When vision returns
+        2024-03-10 (raw="10/03/2024"), the inference picks the most-recent March 10
+        within the ±5-year window (2026-03-10 as of the 2026 run date), correcting
+        the wrong year and setting year_inferred=True.
+
+        The confidence from vision is preserved on the GuiaDeRemision.
+        """
         pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
         line = _make_line()
         vision = FakeVisionSerial(
@@ -256,7 +266,10 @@ class TestPipelineStageSequencing:
             pages=pages, table_lines=[line], vision=vision, tmp_path=tmp_path
         )
         result = pipeline.run(ctx)
-        assert result.guias[0].fecha == date(2024, 3, 10)
+        # Year-fix: vision returned 2024-03-10 but inference reconstructs to the most
+        # recent valid March 10 (2026-03-10 given today's run date is 2026-06-02).
+        assert result.guias[0].fecha == date(2026, 3, 10)
+        assert result.guias[0].year_inferred is True
         assert result.guias[0].fecha_confidence == 0.99
 
     def test_vision_calls_counted_sequential(self, tmp_path: Path) -> None:

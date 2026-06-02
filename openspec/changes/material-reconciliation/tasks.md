@@ -902,37 +902,37 @@ Chain strategy: stacked-to-main
 > propagation), D4 (stamp-crop), D5 (pure domain fn + normalize stage), scenarios EXT-S26–EXT-S28,
 > REC-C08, REC-C09.
 
-- [ ] R2.1 — Stamp-crop logic in `_stage_extract_vision`; add `vision.stamp_crop` config
+- [x] R2.1 — Stamp-crop logic in `_stage_extract_vision`; add `vision.stamp_crop` config
   **Spec/Design**: D4, EXT-020. Option A: crop lower-right quadrant (`x∈[0.5,1.0], y∈[0.55,1.0]`) at render DPI from `vision.stamp_crop` config. Fallback to Option B: `render_page(idx, dpi=300)` when crop yields empty/too-small image. Port `read_handwritten_date(image)` unchanged.
   **Files**: `backend/src/reconciliation/application/pipeline.py`, `backend/src/reconciliation/application/config.py`.
   **Dependency**: R1 done (pipeline structure stable).
 
-- [ ] R2.2 — Implement `domain/date_inference.py`: pure `infer_reception_year(day, month, lower, upper) → tuple[date | None, bool]`
+- [x] R2.2 — Implement `domain/date_inference.py`: pure `infer_reception_year(day, month, lower, upper) → tuple[date | None, bool]`
   **Spec/Design**: D5, EXT-021. Rule: Y where `lower <= date(Y,MM,DD) <= upper`; one → use; multiple → most recent; none → `(None, False)`. No IO. Pure stdlib `datetime`.
   **Files**: `backend/src/reconciliation/domain/date_inference.py`.
   **Dependency**: independent; parallel with R2.1.
 
-- [ ] R2.3 — Add `year_inferred: bool = False` to `VisionResult` and `GuiaContribution`; add `any_year_inferred` computed property to `ReconciliationRow`
+- [x] R2.3 — Add `year_inferred: bool = False` to `VisionResult` and `GuiaContribution`; add `any_year_inferred` computed property to `ReconciliationRow`
   **Spec/Design**: D5, REC-C07. `any_year_inferred = any(g.year_inferred for g in guias)`. Default `False` = backward compat.
   **Files**: `backend/src/reconciliation/domain/models.py`.
   **Dependency**: independent; parallel with R2.1/R2.2.
 
-- [ ] R2.4 — Implement `_stage_normalize_dates` pipeline stage (after vision, before material normalization)
+- [x] R2.4 — Implement `_stage_normalize_dates` pipeline stage (after vision, before material normalization)
   **Spec/Design**: D5, EXT-021. For each guía with day-month from vision and absent/garbled year: call `infer_reception_year`; lower bound = SUNAT `fecha_entrega` else OCR-printed GRE date else omitted; upper = PDF doc date else run date. Set `guia.fecha`; set `year_inferred=True` on `VisionResult`; propagate to `GuiaContribution.year_inferred`. `requires_review` when no valid year.
   **Files**: `backend/src/reconciliation/application/pipeline.py`.
   **Dependency**: R2.2 + R2.3 done; R2.1 done.
 
-- [ ] R2.5 — Update `ReconciliationService.reconcile` to propagate `year_inferred` and compute `any_year_inferred`
+- [x] R2.5 — Update `ReconciliationService.reconcile` to propagate `year_inferred` and compute `any_year_inferred`
   **Spec/Design**: REC-C07, REC-C08, REC-C09. No MATCH/MISMATCH logic change.
   **Files**: `backend/src/reconciliation/domain/reconciliation.py`.
   **Dependency**: R2.3 done.
 
-- [ ] R2.6 — Surface `year_inferred` / `any_year_inferred` in API schemas and export audit
+- [x] R2.6 — Surface `year_inferred` / `any_year_inferred` in API schemas and export audit
   **Spec/Design**: REC-C07, D5. Add fields to `schemas.py`; include `any_year_inferred` in xlsx audit sheet.
   **Files**: `backend/src/reconciliation/infrastructure/api/schemas.py`, `backend/src/reconciliation/adapters/report/excel.py`.
   **Dependency**: R2.3 + R2.5 done.
 
-- [ ] R2.7 — Tests for R2.1–R2.6
+- [x] R2.7 — Tests for R2.1–R2.6
   **Spec refs**: EXT-S26, EXT-S27, EXT-S28, REC-C08, REC-C09.
   **Deliverables**:
   - `tests/unit/domain/test_date_inference.py` — lower+upper (EXT-S27); upper-only (EXT-S28); no valid year → `(None, False)`; multiple valid → most recent.
@@ -942,7 +942,7 @@ Chain strategy: stacked-to-main
   **Files**: `tests/unit/domain/test_date_inference.py`, `tests/unit/domain/test_models.py`, `tests/unit/application/test_pipeline.py`, `tests/unit/domain/test_reconciliation.py`.
   **Dependency**: R2.2–R2.5 done.
 
-- [ ] R2.8 — Real-data e2e assertion for R2
+- [x] R2.8 — Real-data e2e assertion for R2
   **Spec refs**: EXT-020, EXT-021, REC-C07.
   **Deliverables** (append to `tests/integration/test_pipeline_e2e_rev3.py`):
   - Assert at least one guía has non-null `fecha` after vision (EXT-S26 gate).

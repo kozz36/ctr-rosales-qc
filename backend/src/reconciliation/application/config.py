@@ -113,6 +113,29 @@ class VisionConfig(BaseSettings):
         return self
 
 
+class InferenceConfig(BaseSettings):
+    """LLM material inference settings (R8.8, MAT-007, ADR-2).
+
+    OFF BY DEFAULT — enabling this falls back to local Ollama only (air-gap preserved).
+    The Ollama base_url defaults to localhost so no network egress occurs unless
+    explicitly changed.
+
+    Mirrors the SunatConfig pattern: off-by-default, separate from vision config
+    (ISP/SoC: vision reads images→date, inference reads text→tuple; ADR-2).
+    """
+
+    model_config = SettingsConfigDict(extra="allow")
+
+    enabled: bool = False
+    provider: Literal["ollama", "openai"] = "ollama"
+    model: str = "qwen3.5:9b"
+    base_url: str | None = "http://localhost:11434/v1"
+    # api_key is env-only; never serialise to disk (mirrors VisionProviderConfig pattern)
+    api_key: str | None = Field(default=None, exclude=True)
+    temperature: float = 0.0
+    timeout_s: float = 30.0
+
+
 class SunatConfig(BaseSettings):
     """SUNAT descargaqr opt-in fetch settings (rev-3, EXT-023 / D3).
 
@@ -194,6 +217,8 @@ class AppConfig(BaseSettings):
     deskew: DeskewConfig = Field(default_factory=DeskewConfig)
     confidence: ConfidenceConfig = Field(default_factory=ConfidenceConfig)
     sunat: SunatConfig = Field(default_factory=SunatConfig)
+    # R8.8 (ADR-2): LLM inference for ambiguous material descriptions. Off by default.
+    inference: InferenceConfig = Field(default_factory=InferenceConfig)
 
     # Base directory under which per-run directories are created.
     output_dir: Path = Field(default=Path("runs"))

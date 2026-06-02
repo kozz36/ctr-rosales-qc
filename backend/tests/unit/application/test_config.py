@@ -16,6 +16,7 @@ from reconciliation.application.config import (
     AppConfig,
     ConfidenceConfig,
     DeskewConfig,
+    InferenceConfig,
     VisionConfig,
 )
 
@@ -177,4 +178,44 @@ class TestApiKeyEnvInjection:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         cfg = AppConfig()
         assert cfg.vision.anthropic.api_key is None
+
+
+# ---------------------------------------------------------------------------
+# R8.8: InferenceConfig (MAT-007, ADR-2)
+# ---------------------------------------------------------------------------
+
+
+class TestInferenceConfig:
+    def test_default_inference_disabled(self) -> None:
+        """Default AppConfig has inference.enabled=False (air-gap safe default)."""
+        cfg = AppConfig()
+        assert cfg.inference.enabled is False
+
+    def test_default_model(self) -> None:
+        cfg = AppConfig()
+        assert cfg.inference.model == "qwen3.5:9b"
+
+    def test_default_base_url(self) -> None:
+        cfg = AppConfig()
+        assert cfg.inference.base_url == "http://localhost:11434/v1"
+
+    def test_default_temperature(self) -> None:
+        cfg = AppConfig()
+        assert cfg.inference.temperature == 0.0
+
+    def test_custom_inference_config(self) -> None:
+        cfg = AppConfig(
+            inference=InferenceConfig(enabled=True, model="custom-model")
+        )
+        assert cfg.inference.enabled is True
+        assert cfg.inference.model == "custom-model"
+
+    def test_api_key_excluded_from_model_dump(self) -> None:
+        """api_key must not appear in model_dump() (secret exclusion)."""
+        cfg = AppConfig(
+            inference=InferenceConfig(enabled=True, model="qwen3.5:9b")
+        )
+        # The full AppConfig inference block must not leak api_key
+        dumped = cfg.inference.model_dump()
+        assert "api_key" not in dumped
         assert cfg.vision.openai.api_key is None

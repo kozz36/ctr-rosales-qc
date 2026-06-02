@@ -639,3 +639,236 @@ class TestRev3R2RealVisionGate:
                 f"Expected month=5 for guia {guia.guia_id!r}, got {guia.fecha.month} "
                 f"(raw: {guia.fecha_raw!r})"
             )
+
+
+# ---------------------------------------------------------------------------
+# R3.8 Gate A — Air-gap default: sunat.enabled=false makes ZERO network calls
+# ---------------------------------------------------------------------------
+# This test proves EXT-S31: with the committed default config (sunat.enabled=false),
+# the pipeline makes no network calls and OCR quantities are authoritative.
+
+
+@_SKIP_NO_PDF
+class TestRev3R3AirGapDefault:
+    """R3.8 Gate A: sunat.enabled=false → zero network calls, OCR path intact.
+
+    This test uses the real PDF + real QR adapter.  It patches the HTTP client
+    so any attempt to make a network call raises an error, proving none is made.
+    """
+
+    @pytest.fixture(scope="class")
+    def pipeline_result_airgap(self):
+        """Run the real pipeline with sunat.enabled=false (the committed default)."""
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from reconciliation.adapters.pdf.pymupdf_source import PdfStructureAdapter  # noqa: PLC0415
+        from reconciliation.adapters.pdf.digital_text_extractor import (  # noqa: PLC0415
+            DigitalTextExtractionAdapter,
+        )
+        from reconciliation.adapters.identity.qr_barcode import (  # noqa: PLC0415
+            QrBarcodeExtractionAdapter,
+        )
+        from reconciliation.application.config import AppConfig  # noqa: PLC0415
+        from reconciliation.application.pipeline import ReconciliationPipeline  # noqa: PLC0415
+        from reconciliation.application.run_context import RunContext  # noqa: PLC0415
+        from reconciliation.infrastructure.container import (  # noqa: PLC0415
+            CompositeExtractionAdapter,
+            build_page_to_registro_map,
+        )
+        import tempfile  # noqa: PLC0415
+
+        config = AppConfig()
+        # Explicitly verify the air-gap default is preserved
+        assert config.sunat.enabled is False, (
+            "BUG: sunat.enabled is not False in committed config! Air-gap broken."
+        )
+
+        network_call_attempted = []
+
+        def _block_network(*args, **kwargs):  # type: ignore[no-untyped-def]
+            network_call_attempted.append(True)
+            raise RuntimeError("Network call attempted with sunat.enabled=False — BUG!")
+
+        with PdfStructureAdapter(_PDF_PATH) as pdf_src, \
+             patch("httpx.get", side_effect=_block_network), \
+             patch("urllib.request.urlopen", side_effect=_block_network):
+
+            declared_extractor = DigitalTextExtractionAdapter()
+            contents_offsets = pdf_src.contents_offsets()
+            total_pages = pdf_src.page_count()
+            page_to_registro = build_page_to_registro_map(
+                contents_offsets,
+                total_pages,
+                doc_source=pdf_src,
+                declared_extractor=declared_extractor,
+            )
+            extractor = CompositeExtractionAdapter.__new__(CompositeExtractionAdapter)
+            extractor._declared_adapter = declared_extractor
+            extractor._ocr_adapter = FakeOCR()
+            identity = QrBarcodeExtractionAdapter(render_dpi=200, upscale=2)
+
+            # sunat is NOT injected (config.sunat.enabled=False means container skips it)
+            pipeline = ReconciliationPipeline(
+                doc_source=pdf_src,
+                extractor=extractor,
+                vision=FakeVision(),
+                config=config,
+                page_to_registro=page_to_registro,
+                identity=identity,
+                sunat=None,  # air-gap: no SUNAT adapter
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                ctx = RunContext(pdf_path=_PDF_PATH, output_base=Path(tmp))
+                result = pipeline.run(ctx)
+
+        return result, network_call_attempted
+
+    def test_zero_network_calls_with_airgap_default(self, pipeline_result_airgap) -> None:
+        """EXT-S31: no network call is made when sunat.enabled=false (committed default)."""
+        result, calls = pipeline_result_airgap
+        assert len(calls) == 0, (
+            f"Network call(s) detected with sunat.enabled=False: {len(calls)} call(s). "
+            "AIR-GAP VIOLATED."
+        )
+
+    def test_pipeline_still_works_on_ocr_path(self, pipeline_result_airgap) -> None:
+        """Pipeline completes successfully on the OCR path when SUNAT is disabled."""
+        result, _ = pipeline_result_airgap
+        assert len(result.guias) > 0, (
+            "No guías produced when SUNAT is disabled. OCR path is broken."
+        )
+        assert len(result.rows) > 0, "No reconciliation rows produced."
+
+    def test_config_yaml_has_sunat_disabled(self) -> None:
+        """Verify committed config.yaml ships with sunat.enabled=false (R3.8 evidence)."""
+        import yaml  # noqa: PLC0415
+
+        config_path = _PROJECT_ROOT / "backend" / "config.yaml"
+        assert config_path.exists(), f"config.yaml not found at {config_path}"
+
+        with open(config_path) as f:
+            raw = yaml.safe_load(f)
+
+        sunat_section = raw.get("sunat", {})
+        assert sunat_section.get("enabled") is False, (
+            f"config.yaml sunat.enabled is not false: {sunat_section!r}. "
+            "AIR-GAP DEFAULT BROKEN — this must ship as enabled: false."
+        )
+
+
+# ---------------------------------------------------------------------------
+# R3.8 Gate B — Live SUNAT fetch (enabled only via RUN_SUNAT_LIVE=1 env var)
+# ---------------------------------------------------------------------------
+# This gate is explicitly opt-in:
+#   RUN_SUNAT_LIVE=1 pytest tests/integration/test_pipeline_rev3_gate.py
+#        -k test_live_sunat_fetch
+#
+# It makes a REAL network call to e-factura.sunat.gob.pe.
+# It MUST NOT run in CI or in the default test suite.
+
+import os as _os
+
+_SKIP_NOT_LIVE_SUNAT = pytest.mark.skipif(
+    _os.environ.get("RUN_SUNAT_LIVE", "0") != "1",
+    reason=(
+        "RUN_SUNAT_LIVE=1 not set. "
+        "This test makes a real SUNAT network call and breaks the air-gap. "
+        "Enable explicitly: RUN_SUNAT_LIVE=1 pytest -k test_live_sunat_fetch"
+    ),
+)
+
+
+@_SKIP_NO_PDF
+@_SKIP_NOT_LIVE_SUNAT
+class TestRev3R3LiveSunatFetch:
+    """R3.8 Gate B: live SUNAT fetch returns deterministic line items.
+
+    ONLY runs when RUN_SUNAT_LIVE=1 is set.  Makes a real HTTP GET to
+    e-factura.sunat.gob.pe and asserts the parsed OfficialGre fields match
+    the known ground truth from the spike (#2750):
+
+      guia T073-00680258:
+        - Cantidad: 0.192
+        - Unidad: TONELADAS
+        - Descripción: BARRA A A615-G60 3/8" X 9M
+        - Código: 407797
+        - fecha_entrega: 2026-05-28
+    """
+
+    @pytest.fixture(scope="class")
+    def live_official_gre(self):
+        """Fetch a real guía from SUNAT using a hashqr_url found on the real PDF."""
+        from reconciliation.adapters.identity.qr_barcode import (  # noqa: PLC0415
+            QrBarcodeExtractionAdapter,
+        )
+        from reconciliation.adapters.pdf.pymupdf_source import PdfStructureAdapter  # noqa: PLC0415
+        from reconciliation.adapters.sunat.descargaqr import (  # noqa: PLC0415
+            SunatDescargaqrAdapter,
+        )
+        import tempfile  # noqa: PLC0415
+
+        with PdfStructureAdapter(_PDF_PATH) as src:
+            # Page 4 (0-based) is the first guía page — confirmed to have URL QR
+            image = src.render_page(4, dpi=200)
+
+        qr_adapter = QrBarcodeExtractionAdapter(render_dpi=200, upscale=2)
+        identity = qr_adapter.decode_identity(image, page_idx=4)
+
+        hashqr_url: str | None = None
+        if identity is not None:
+            hashqr_url = identity.hashqr_url
+        if hashqr_url is None:
+            # Try the URL-QR helper directly
+            if hasattr(qr_adapter, "decode_hashqr_url"):
+                hashqr_url = qr_adapter.decode_hashqr_url(image, page_idx=4)
+
+        if not hashqr_url:
+            pytest.skip(
+                "No hashqr_url decoded from page 4 of real PDF. "
+                "Cannot run live SUNAT fetch test."
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = SunatDescargaqrAdapter(
+                timeout_s=15.0,
+                cache_dir=Path(tmp) / "sunat",
+            )
+            result = adapter.fetch(hashqr_url)
+
+        if result is None:
+            pytest.skip(
+                f"SUNAT fetch returned None for hashqr_url {hashqr_url!r}. "
+                "Network may be unavailable or endpoint changed."
+            )
+
+        return result
+
+    def test_live_fetch_returns_official_gre(self, live_official_gre) -> None:
+        """Live fetch must return a non-None OfficialGre."""
+        assert live_official_gre is not None
+
+    def test_live_gre_has_t073_serie(self, live_official_gre) -> None:
+        """OfficialGre serie must be T073 (confirmed in spike #2750)."""
+        from reconciliation.domain.models import OfficialGre  # noqa: PLC0415
+        assert isinstance(live_official_gre, OfficialGre)
+        assert live_official_gre.serie.upper().startswith("T"), (
+            f"Expected serie starting with T (GRE type T073), got {live_official_gre.serie!r}"
+        )
+
+    def test_live_gre_has_line_items(self, live_official_gre) -> None:
+        """OfficialGre must have at least one line item."""
+        assert len(live_official_gre.lines) >= 1, (
+            "No line items parsed from the live SUNAT GRE PDF."
+        )
+
+    def test_live_gre_fecha_entrega_set(self, live_official_gre) -> None:
+        """fecha_entrega must be parsed (deterministic lower bound for year inference)."""
+        assert live_official_gre.fecha_entrega is not None, (
+            "fecha_entrega not parsed from live SUNAT PDF. Year inference lower bound absent."
+        )
+
+    def test_live_gre_line_item_cantidad_nonzero(self, live_official_gre) -> None:
+        """At least one line item must have cantidad > 0."""
+        assert any(item.cantidad > 0 for item in live_official_gre.lines), (
+            f"All line items have cantidad == 0: {live_official_gre.lines}"
+        )

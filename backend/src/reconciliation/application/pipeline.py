@@ -303,7 +303,8 @@ class ReconciliationPipeline:
         declared = self._stage_extract_declared(classifications)
 
         # Stage 5: extract OCR tables from guia pages; reuses cached rendered bytes.
-        raw_guias = self._stage_extract_ocr(classifications, decode_map=decode_map)
+        # Returns (raw_guias, ocr_warnings) — ocr_warnings non-empty on graceful degradation.
+        raw_guias, ocr_warnings = self._stage_extract_ocr(classifications, decode_map=decode_map)
 
         # Stage 5b: assemble multi-page guía blocks; reuses cached DecodeOutcome map.
         blocks = self._stage_assemble_blocks(raw_guias, classifications, decode_map=decode_map)
@@ -357,7 +358,7 @@ class ReconciliationPipeline:
             guias=guias,
             rows=rows,
             vision_calls_made=vision_calls_made,
-            warnings=warnings,
+            warnings=ocr_warnings + warnings,
         )
 
     # ------------------------------------------------------------------
@@ -655,7 +656,7 @@ class ReconciliationPipeline:
         self,
         classifications: list[PageClassification],
         decode_map: dict[int, DecodeOutcome] | None = None,
-    ) -> list[_RawGuia]:
+    ) -> tuple[list[_RawGuia], list[str]]:
         """Stage 5: OCR material tables from GUIA pages; tag with registro numero.
 
         Rev-3 render-cache: reuses the rendered bytes stored in ``decode_map``
@@ -666,9 +667,22 @@ class ReconciliationPipeline:
         pre-computed ``page_to_registro`` map.  If the page is not in the map
         (outside all known section ranges), ``registro`` remains None and the
         guia surfaces as UNCLASSIFIED in reconciliation.
+
+        **Graceful degradation**: ``extract_printed_table`` never raises (as of
+        the paddleocr-3.x compat fix); it returns ``[]`` and sets
+        ``_ocr_failed`` on load/predict failure.  When that happens, this stage
+        appends a human-readable warning to the returned warnings list and
+        continues — the run still completes with empty guía quantities flagged
+        for review.
+
+        Returns:
+            Tuple of (raw_guias, ocr_warnings).  ``ocr_warnings`` is non-empty
+            when any page's OCR degraded gracefully.
         """
         _decode = decode_map or {}
         raw_guias: list[_RawGuia] = []
+        ocr_warnings: list[str] = []
+
         for cls in classifications:
             if cls.kind != "GUIA":
                 continue
@@ -688,7 +702,18 @@ class ReconciliationPipeline:
                     logger.warning(
                         "extract_ocr: deskew failed for page %d: %s", cls.page, exc
                     )
+
             lines = self._extractor.extract_printed_table(image)
+
+            # Detect graceful-degradation flag set by PrintedTableAdapter on failure.
+            if not lines and getattr(self._extractor, "_ocr_failed", False):
+                msg = (
+                    f"OCR unavailable for page {cls.page}: quantities empty, "
+                    "guía will be flagged for human review"
+                )
+                logger.warning("extract_ocr: %s", msg)
+                ocr_warnings.append(msg)
+
             registro_numero = self._page_to_registro.get(cls.page)
             raw_guias.append(
                 _RawGuia(
@@ -706,7 +731,7 @@ class ReconciliationPipeline:
                 len(lines),
                 registro_numero,
             )
-        return raw_guias
+        return raw_guias, ocr_warnings
 
     def _stage_assemble_blocks(
         self,

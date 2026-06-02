@@ -789,3 +789,301 @@ All completed across PR-1, PR-2a, PR-2b-1, PR-2b-2, PR-4, Hotfix-E2E, PR-5a, PR-
 Each PR is independently reviewable. PR-6 (domain types + QR adapter) has zero side effects on the running pipeline and is the safest merge-first candidate.
 
 **`Decision needed before apply: Yes`** — confirm this PR chain or accept `size:exception` for a single-PR delivery before launching sdd-apply.
+
+---
+
+## Rev-3 Slices
+
+> All prior tasks (Phases 0–7, Slice 1, Slice 2) are complete (50/50, [x]). Rev-3 adds 4 new slices
+> (R1–R4) driven by real-pipeline findings: hybrid classifier gap, dual-QR miss, year inference, SUNAT
+> opt-in, first_page sentinel, and frontend provenance surfaces. All tasks below are unchecked.
+>
+> Delivery strategy: stacked-to-main (PR-12 → PR-13 → PR-14 → PR-15). Strict TDD NOT active.
+
+### Rev-3 Review Workload Forecast
+
+| Field | Value |
+|-------|-------|
+| Estimated changed lines (rev-3 only) | ~1,300–1,550 |
+| 400-line budget risk (R1) | **High** |
+| 400-line budget risk (R2) | **High** |
+| 400-line budget risk (R3) | **High** |
+| 400-line budget risk (R4) | **Medium** |
+| Chained PRs recommended | **Yes** |
+| Suggested split | PR-12 (R1) → PR-13 (R2) → PR-14 (R3) → PR-15 (R4) |
+| Delivery strategy | stacked-to-main |
+| Chain strategy | stacked-to-main |
+
+Decision needed before apply: No
+Chained PRs recommended: Yes
+Chain strategy: stacked-to-main
+400-line budget risk: High
+
+#### Rev-3 Work Units
+
+| Unit | Goal | PR | Est. lines | Notes |
+|------|------|----|------------|-------|
+| R1 | Hybrid classifier + decode_identities pre-pass + dual-QR + first_page sentinel | PR-12 | ~400–450 | CRITICAL unblock; real guías now reach OCR/vision; base = main |
+| R2 | Vision adequacy + bounded year inference + provenance | PR-13 | ~350–400 | Pure domain fn + pipeline stage; base = PR-12 merged |
+| R3 | SUNAT descargaqr opt-in adapter + pipeline stage (off by default) | PR-14 | ~350–400 | Network egress, off by default; base = PR-13 merged |
+| R4 | Frontend year_inferred advisory + first_page=None panel safety | PR-15 | ~200–250 | Vue/vitest only; base = PR-12 merged (can parallel with R2/R3) |
+
+---
+
+### Slice R1 — Hybrid classifier + decode_identities pre-pass + dual-QR + first_page sentinel (UNBLOCK)
+
+> **PR-12 (base: main). Sequential within R1.** This is the critical unblock: without it, scanned guías
+> never enter OCR/vision/block-grouping on real input. R2–R4 depend on R1 merged.
+>
+> Spec refs: EXT-019 (hybrid classifier), EXT-022 (first_page None), D1 (decode_identities pre-pass +
+> PageClassifier hybrid OR-gate), D2 (dual-QR multi-res COLOR decode), D6 (first_page sentinel).
+
+- [ ] R1.1 — Add `DecodeOutcome` application-layer dataclass to `application/pipeline.py`
+  **Spec/Design**: D1 (Decode location). Fields: `identity: GuiaIdentity | None`, `hashqr_url: str | None`, `decoded: bool`. No domain import — pure application dataclass.
+  **Files**: `backend/src/reconciliation/application/pipeline.py`.
+  **Dependency**: independent; start immediately.
+
+- [ ] R1.2 — Implement `_stage_decode_identities(page_count) → dict[int, DecodeOutcome]` in `ReconciliationPipeline`
+  **Spec/Design**: D1, EXT-019 (Condition A must reuse the identity already decoded — no second scan). Renders each page once via `DocumentSourcePort.render_page`, calls `self._identity.decode_identity(image, page_idx)` when adapter wired; stores outcome in page→DecodeOutcome map. Graceful: when `self._identity is None`, returns empty map (classifier falls back to Condition B/C only).
+  **Files**: `backend/src/reconciliation/application/pipeline.py`.
+  **Dependency**: R1.1 done.
+
+- [ ] R1.3 — Add `image_coverage_ratio(idx: int) → float` optional method to `DocumentSourcePort`; implement in `PdfStructureAdapter`
+  **Spec/Design**: D1 (`image_dominant` signal). Returns ratio 0.0–1.0 of page area covered by raster images. `image_dominant = ratio >= 0.5` computed in pipeline (not domain). Default 0.0 when not supported (graceful).
+  **Files**: `backend/src/reconciliation/domain/ports.py`, `backend/src/reconciliation/adapters/pdf/pdf_structure.py`.
+  **Dependency**: independent; parallel with R1.1/R1.2.
+
+- [ ] R1.4 — Extend `PageClassifier.classify_page` with `qr_is_guia: bool` and `image_dominant: bool`; implement hybrid OR-gate
+  **Spec/Design**: D1 §3, EXT-019. Eval order: declared/protocolo title first → Condition A (`qr_is_guia`) → Condition C (digital/ocr title) → Condition B (body < 200 AND Forma-header AND `image_dominant`). `title_matched="QR_IDENTITY"` / `"FORMA_HEADER_HEURISTIC"`. Guard: Condition B MUST NOT fire when body >= 200 chars (EXT-S25).
+  **Files**: `backend/src/reconciliation/domain/classifier.py`.
+  **Dependency**: independent; parallel with R1.1–R1.3.
+
+- [ ] R1.5 — Wire `_stage_decode_identities` into pipeline before `_stage_classify`; pass booleans to classifier; reuse cached decode map in `assemble_blocks`
+  **Spec/Design**: D1 — pipeline orchestrates pre-pass, computes `qr_is_guia` + `image_dominant` per page from cached map, feeds into `classify_page`. `assemble_blocks` reads SAME cached map (no re-scan). Render cache: reuse rendered bytes from decode_identities in extract_ocr/assemble_blocks.
+  **Files**: `backend/src/reconciliation/application/pipeline.py`.
+  **Dependency**: R1.2 + R1.4 done.
+
+- [ ] R1.6 — Upgrade `QrBarcodeExtractionAdapter` to multi-resolution COLOR decode
+  **Spec/Design**: D2. Keep single `decode_identity(image)` port signature. Adapter internally produces 200-dpi-equivalent and 400-dpi-equivalent scaled variants; decodes each in COLOR (drop `convert("L")`). `_decode_union` returns BOTH compact identity AND `hashqr_url` from URL-variant QR. Propagation: `assemble_blocks` takes first non-null `hashqr_url` across block pages.
+  **Files**: `backend/src/reconciliation/adapters/identity/qr_barcode.py`.
+  **Dependency**: independent; parallel with R1.1–R1.5.
+
+- [ ] R1.7 — Change `GuiaDeRemision.first_page` from `int` (default 0) to `int | None` (default None)
+  **Spec/Design**: D6, EXT-022. Fix `UnresolvedGuiaResponse` fallback: `!= 0` idiom → `is not None`. `_GuiaBlock`/`_build_guia_from_block` set concrete index (happy path unaffected). Document semantic shift in `docs/DECISIONS.md`.
+  **Files**: `backend/src/reconciliation/domain/models.py`, `backend/src/reconciliation/application/pipeline.py` (UnresolvedGuiaResponse fallback), `docs/DECISIONS.md`.
+  **Dependency**: independent; parallel with all above.
+
+- [ ] R1.8 — Tests for R1.1–R1.7
+  **Spec refs**: EXT-S23, EXT-S24, EXT-S25, EXT-S29, D2.
+  **Deliverables**:
+  - `tests/unit/domain/test_classifier.py` — `qr_is_guia=True` → GUIA Condition A (EXT-S23); `image_dominant=True` + short body → GUIA Condition B (EXT-S24); 1200-char body → never GUIA via Condition B (EXT-S25).
+  - `tests/unit/adapters/test_qr_barcode.py` — COLOR path: URL QR decoded only in COLOR (not grayscale) → `hashqr_url` populated (D2 regression).
+  - `tests/unit/domain/test_models.py` — `first_page=0` valid (not None); `is not None` idiom guard (EXT-S29).
+  - `tests/unit/application/test_pipeline.py` — `_stage_decode_identities` empty when `self._identity is None`; wiring: passing QR → `qr_is_guia=True` fed to classifier.
+  **Files**: `tests/unit/domain/test_classifier.py`, `tests/unit/adapters/test_qr_barcode.py`, `tests/unit/domain/test_models.py`, `tests/unit/application/test_pipeline.py`.
+  **Dependency**: R1.1–R1.7 done.
+
+- [ ] R1.9 — Real-data e2e assertion for R1 (pages 0–45, registros 230/231/232)
+  **Spec refs**: EXT-019, EXT-022, D1, D2.
+  **Deliverables** (`tests/integration/test_pipeline_e2e_rev3.py`):
+  - Assert registros 230/231/232 produce non-empty `guias` contributions (status != `GUIA_MISSING`) — the critical unblock verification.
+  - Assert at least one `GuiaDeRemision.identity_source == "qr"` via COLOR decode.
+  - Assert no `first_page` sentinel misuse on real output.
+  **Files**: `tests/integration/test_pipeline_e2e_rev3.py`.
+  **Dependency**: R1.8 done. Run against real PDF.
+
+---
+
+### Slice R2 — Vision adequacy + bounded year inference + provenance
+
+> **PR-13 (base: PR-12 merged to main). R2.1, R2.2, R2.3 are parallel.**
+>
+> Spec refs: EXT-020 (stamp-crop adequacy), EXT-021 (bounded year inference), REC-C07 (year_inferred
+> propagation), D4 (stamp-crop), D5 (pure domain fn + normalize stage), scenarios EXT-S26–EXT-S28,
+> REC-C08, REC-C09.
+
+- [ ] R2.1 — Stamp-crop logic in `_stage_extract_vision`; add `vision.stamp_crop` config
+  **Spec/Design**: D4, EXT-020. Option A: crop lower-right quadrant (`x∈[0.5,1.0], y∈[0.55,1.0]`) at render DPI from `vision.stamp_crop` config. Fallback to Option B: `render_page(idx, dpi=300)` when crop yields empty/too-small image. Port `read_handwritten_date(image)` unchanged.
+  **Files**: `backend/src/reconciliation/application/pipeline.py`, `backend/src/reconciliation/application/config.py`.
+  **Dependency**: R1 done (pipeline structure stable).
+
+- [ ] R2.2 — Implement `domain/date_inference.py`: pure `infer_reception_year(day, month, lower, upper) → tuple[date | None, bool]`
+  **Spec/Design**: D5, EXT-021. Rule: Y where `lower <= date(Y,MM,DD) <= upper`; one → use; multiple → most recent; none → `(None, False)`. No IO. Pure stdlib `datetime`.
+  **Files**: `backend/src/reconciliation/domain/date_inference.py`.
+  **Dependency**: independent; parallel with R2.1.
+
+- [ ] R2.3 — Add `year_inferred: bool = False` to `VisionResult` and `GuiaContribution`; add `any_year_inferred` computed property to `ReconciliationRow`
+  **Spec/Design**: D5, REC-C07. `any_year_inferred = any(g.year_inferred for g in guias)`. Default `False` = backward compat.
+  **Files**: `backend/src/reconciliation/domain/models.py`.
+  **Dependency**: independent; parallel with R2.1/R2.2.
+
+- [ ] R2.4 — Implement `_stage_normalize_dates` pipeline stage (after vision, before material normalization)
+  **Spec/Design**: D5, EXT-021. For each guía with day-month from vision and absent/garbled year: call `infer_reception_year`; lower bound = SUNAT `fecha_entrega` else OCR-printed GRE date else omitted; upper = PDF doc date else run date. Set `guia.fecha`; set `year_inferred=True` on `VisionResult`; propagate to `GuiaContribution.year_inferred`. `requires_review` when no valid year.
+  **Files**: `backend/src/reconciliation/application/pipeline.py`.
+  **Dependency**: R2.2 + R2.3 done; R2.1 done.
+
+- [ ] R2.5 — Update `ReconciliationService.reconcile` to propagate `year_inferred` and compute `any_year_inferred`
+  **Spec/Design**: REC-C07, REC-C08, REC-C09. No MATCH/MISMATCH logic change.
+  **Files**: `backend/src/reconciliation/domain/reconciliation.py`.
+  **Dependency**: R2.3 done.
+
+- [ ] R2.6 — Surface `year_inferred` / `any_year_inferred` in API schemas and export audit
+  **Spec/Design**: REC-C07, D5. Add fields to `schemas.py`; include `any_year_inferred` in xlsx audit sheet.
+  **Files**: `backend/src/reconciliation/infrastructure/api/schemas.py`, `backend/src/reconciliation/adapters/report/excel.py`.
+  **Dependency**: R2.3 + R2.5 done.
+
+- [ ] R2.7 — Tests for R2.1–R2.6
+  **Spec refs**: EXT-S26, EXT-S27, EXT-S28, REC-C08, REC-C09.
+  **Deliverables**:
+  - `tests/unit/domain/test_date_inference.py` — lower+upper (EXT-S27); upper-only (EXT-S28); no valid year → `(None, False)`; multiple valid → most recent.
+  - `tests/unit/domain/test_models.py` — `any_year_inferred` True/False logic (REC-C08/C09).
+  - `tests/unit/application/test_pipeline.py` — `_stage_normalize_dates`: DD=28/MM=05 + lower=2026-05-20 + upper=2026-06-01 → fecha=2026-05-28, `year_inferred=True`.
+  - `tests/unit/domain/test_reconciliation.py` — propagation from guía to `GuiaContribution`; `any_year_inferred` computed.
+  **Files**: `tests/unit/domain/test_date_inference.py`, `tests/unit/domain/test_models.py`, `tests/unit/application/test_pipeline.py`, `tests/unit/domain/test_reconciliation.py`.
+  **Dependency**: R2.2–R2.5 done.
+
+- [ ] R2.8 — Real-data e2e assertion for R2
+  **Spec refs**: EXT-020, EXT-021, REC-C07.
+  **Deliverables** (append to `tests/integration/test_pipeline_e2e_rev3.py`):
+  - Assert at least one guía has non-null `fecha` after vision (EXT-S26 gate).
+  - Assert `any_year_inferred` field present in `GET /runs/{id}/rows` JSON response.
+  **Files**: `tests/integration/test_pipeline_e2e_rev3.py`.
+  **Dependency**: R2.7 done.
+
+---
+
+### Slice R3 — SUNAT descargaqr opt-in adapter (off by default)
+
+> **PR-14 (base: PR-13 merged to main). R3.1–R3.3 are parallel. R3.1–R3.4 can start in parallel with
+> R2 domain/adapter work (no pipeline coupling until R3.5).**
+>
+> Spec refs: EXT-023, D3, EXT-S30, EXT-S31, EXT-S32.
+
+- [ ] R3.1 — Promote `OfficialGre` to a pure domain Pydantic model
+  **Spec/Design**: D3, EXT-023 (Hexagonal). Fields: `guia_id: str`, `ruc_emisor: str`, `ruc_receptor: str`, `fecha_emision: date | None`, `fecha_entrega: date | None`, `lines: list[MaterialLine]`. No IO.
+  **Files**: `backend/src/reconciliation/domain/models.py`.
+  **Dependency**: independent; start immediately.
+
+- [ ] R3.2 — Implement `SunatDescargaqrAdapter` in `adapters/sunat/descargaqr.py`
+  **Spec/Design**: D3, EXT-023. Plain HTTP GET on `hashqr_url` (no OAuth). Parse GRE PDF with PyMuPDF `get_text()` → `OfficialGre`. Failure → `None` (never raise). Cache PDF at `<run_dir>/sunat/{guia_id}.pdf`; reuse on re-run. Lazy-import `httpx`/`urllib` AND PyMuPDF inside `fetch()`.
+  **Files**: `backend/src/reconciliation/adapters/sunat/descargaqr.py`, `backend/src/reconciliation/adapters/sunat/__init__.py`.
+  **Dependency**: R3.1 done.
+
+- [ ] R3.3 — Add `sunat` config block to `AppConfig` and `config.yaml`; document as air-gap exception in `docs/DECISIONS.md`
+  **Spec/Design**: D3. `sunat: { enabled: bool = False, timeout_s: float = 10.0, cache: bool = True }`. `config.yaml` ships `enabled: false`.
+  **Files**: `backend/src/reconciliation/application/config.py`, `backend/config.yaml`, `docs/DECISIONS.md`.
+  **Dependency**: independent; parallel with R3.1/R3.2.
+
+- [ ] R3.4 — Wire `SunatDescargaqrAdapter` in `container.py` behind `config.sunat.enabled`
+  **Spec/Design**: D3 — `build_pipeline` passes adapter only when `enabled is True`, else `None`.
+  **Files**: `backend/src/reconciliation/infrastructure/container.py`.
+  **Dependency**: R3.2 + R3.3 done.
+
+- [ ] R3.5 — Implement `_stage_sunat_fetch` in pipeline (after `assemble_blocks`, before quantity assignment)
+  **Spec/Design**: D3. For each block with non-null `gre_hashqr_url` and `enabled`: fetch → on success cache PDF + replace OCR lines with SUNAT lines + record `fecha_entrega` as year-inference lower bound; on failure log + leave OCR intact. No-op when `self._sunat is None`.
+  **Files**: `backend/src/reconciliation/application/pipeline.py`.
+  **Dependency**: R3.2 + R3.4 done; R1 pipeline structure stable.
+
+- [ ] R3.6 — Enforce SUNAT > OCR quantity precedence in reconciliation; add `extraction_method: Literal["ocr","sunat_gre","digital_text"]` to `MaterialLine`
+  **Spec/Design**: D3 precedence, EXT-023. SUNAT lines replace OCR for the same block. Grouping `fecha` ALWAYS vision (invariant guard). `MaterialLine.extraction_method` tracks provenance.
+  **Files**: `backend/src/reconciliation/domain/models.py`, `backend/src/reconciliation/domain/reconciliation.py`.
+  **Dependency**: R3.1 + R3.5 done.
+
+- [ ] R3.7 — Tests for R3.1–R3.6 (network tests gated on `sunat.enabled=true`)
+  **Spec refs**: EXT-S30, EXT-S31, EXT-S32.
+  **Deliverables**:
+  - `tests/unit/adapters/test_sunat_descargaqr.py` — mocked HTTP valid PDF → `OfficialGre`; timeout → `None`; non-200 → `None`; lazy-import guard (no `ImportError` at module load).
+  - `tests/unit/application/test_pipeline.py` — `_stage_sunat_fetch` no-op when port `None` (EXT-S31); success → block lines replaced (EXT-S30).
+  - `tests/unit/domain/test_reconciliation.py` — SUNAT `extraction_method="sunat_gre"`; grouping fecha stays vision.
+  - Network tests: `@pytest.mark.skipif(not sunat_enabled, ...)`.
+  **Files**: `tests/unit/adapters/test_sunat_descargaqr.py`, `tests/unit/application/test_pipeline.py`, `tests/unit/domain/test_reconciliation.py`.
+  **Dependency**: R3.2 + R3.5 + R3.6 done.
+
+- [ ] R3.8 — Real-data e2e for R3 (skippable when `sunat.enabled=false`)
+  **Spec refs**: EXT-S30, EXT-S31.
+  **Deliverables** (append to `tests/integration/test_pipeline_e2e_rev3.py`):
+  - `@pytest.mark.skipif(not config.sunat.enabled, ...)` — when enabled: assert `OfficialGre` returned for ≥1 block; assert grouping `fecha` is vision handwritten date (not SUNAT date).
+  - Always-on: with `enabled=false`, zero HTTP calls (spy assertion).
+  **Files**: `tests/integration/test_pipeline_e2e_rev3.py`.
+  **Dependency**: R3.7 done.
+
+---
+
+### Slice R4 — Frontend: year_inferred advisory + first_page=None panel safety
+
+> **PR-15 (base: PR-12 merged; can run in parallel with R2/R3). R4.1 → R4.2 || R4.3 → R4.4.**
+>
+> Spec refs: REV-C05 (year_inferred advisory), REV-C06 (first_page=None safety), REV-C06–REV-C08
+> scenarios.
+
+- [ ] R4.1 — Update `frontend/src/api/types.ts`: add `year_inferred: boolean` to `GuiaContributionResponse`, `any_year_inferred: boolean` to `ReconciliationRowDTO`, type `first_page: number | null` on unresolved guía DTO
+  **Spec/Design**: REC-C07, REV-C05. Default `false` for backward compat.
+  **Files**: `frontend/src/api/types.ts`.
+  **Dependency**: independent; start immediately after PR-12 merged.
+
+- [ ] R4.2 — Implement `YearInferredBadge.vue`; integrate into `GuiaDrillDown.vue` and `ReconciliationRow.vue`
+  **Spec/Design**: REV-C05, scenario REV-C06. Yellow badge on fecha cell when `year_inferred === true`. Expand/tooltip: day-month (vision), inferred year, inference bounds. Confirm/override via existing date-edit path; audit `action_type="year_inferred_confirmed"/"year_inferred_overridden"`. `any_year_inferred=true` on aggregate row → advisory indicator (not red MISMATCH badge).
+  **Files**: `frontend/src/features/review/YearInferredBadge.vue` (new), `frontend/src/features/review/GuiaDrillDown.vue`, `frontend/src/features/review/ReconciliationRow.vue`.
+  **Dependency**: R4.1 done.
+
+- [ ] R4.3 — Fix `UnresolvedGuiasPanel.vue` for `first_page: null` and `first_page: 0` (REV-C06)
+  **Spec/Design**: REV-C06, scenarios REV-C07, REV-C08. `null` → show `source_pages` list or "página desconocida". `0` → show "pág. 1" (1-based), NOT treated as absent. Replace all `!= 0` guards with `!== null`.
+  **Files**: `frontend/src/features/review/UnresolvedGuiasPanel.vue`.
+  **Dependency**: R4.1 done.
+
+- [ ] R4.4 — Tests for R4.1–R4.3; verify vitest + vue-tsc clean
+  **Spec refs**: REV-C06 scenario, REV-C07, REV-C08.
+  **Deliverables**:
+  - `frontend/src/__tests__/features/YearInferredBadge.test.ts` (new) — badge renders when `year_inferred=true`; absent when `false`; tooltip shows bounds; confirm emits correct `action_type`.
+  - `frontend/src/__tests__/features/GuiaDrillDown.test.ts` (update) — `YearInferredBadge` present; `any_year_inferred=true` → advisory on aggregate row (not red).
+  - `frontend/src/__tests__/features/UnresolvedGuiasPanel.test.ts` (update) — `first_page=null` + `source_pages=[12,13]` → pages shown, no error (REV-C07); `first_page=0` → "pág. 1", no fallback (REV-C08); `first_page=null` + `source_pages=[]` → "página desconocida".
+  **Files**: `frontend/src/__tests__/features/YearInferredBadge.test.ts`, `frontend/src/__tests__/features/GuiaDrillDown.test.ts`, `frontend/src/__tests__/features/UnresolvedGuiasPanel.test.ts`.
+  **Dependency**: R4.2 + R4.3 done.
+
+---
+
+### Rev-3 Task Dependency Graph
+
+```
+R1 (PR-12) — CRITICAL UNBLOCK — base: main:
+  R1.1 → R1.2 → R1.5
+  R1.3 ──────── parallel with R1.1/R1.2
+  R1.4 ──────── parallel with R1.1/R1.2/R1.3
+  R1.6 ──────── parallel with R1.1–R1.5
+  R1.7 ──────── parallel with all above
+  R1.1–R1.7 → R1.8 → R1.9 (real-data gate)
+
+R2 (PR-13) — base: PR-12 merged:
+  R2.1 || R2.2 || R2.3  (all parallel)
+  R2.2 + R2.3 → R2.4
+  R2.3 → R2.5
+  R2.3 + R2.5 → R2.6
+  R2.1–R2.6 → R2.7 → R2.8 (real-data gate)
+
+R3 (PR-14) — base: PR-13 merged:
+  R3.1 → R3.2
+  R3.3 ──────── parallel with R3.1/R3.2
+  R3.2 + R3.3 → R3.4
+  R3.2 + R3.4 → R3.5
+  R3.1 + R3.5 → R3.6
+  R3.2–R3.6 → R3.7 → R3.8 (skippable)
+
+R4 (PR-15) — base: PR-12 merged (can parallel with R2/R3):
+  R4.1 → R4.2 || R4.3 → R4.4
+
+Cross-slice parallelism:
+  R3.1–R3.4 can start while R2 is in-flight (domain/adapter only)
+  R4.1–R4.3 can start once PR-12 merged (independent of R2/R3)
+```
+
+### Rev-3 Total Count
+
+| Slice | Tasks | PR | Spec Coverage |
+|-------|-------|----|---------------|
+| R1 | 9 (R1.1–R1.9) | PR-12 | EXT-019, EXT-022, D1, D2, D6 |
+| R2 | 8 (R2.1–R2.8) | PR-13 | EXT-020, EXT-021, REC-C07, D4, D5 |
+| R3 | 8 (R3.1–R3.8) | PR-14 | EXT-023, D3, EXT-S30/31/32 |
+| R4 | 4 (R4.1–R4.4) | PR-15 | REV-C05, REV-C06, REV-C07/08 |
+| **Total rev-3** | **29** | PR-12–15 | All rev-3 spec IDs covered |
+
+**Grand total (all phases + rev-2 + rev-3)**: 50 (complete) + 29 (pending) = **79 tasks**.

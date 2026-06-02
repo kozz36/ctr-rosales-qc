@@ -63,10 +63,18 @@ dag:
   tasks:
     status: done
     completed: 2026-05-31
+    refreshed: 2026-06-02
     depends_on: [spec, design]
     artifact: tasks.md
     engram_topic: sdd/material-reconciliation/tasks
-    note: tasks.md predates the rev-2 delta; must be refreshed after the spec-delta.
+    rev3_added: 2026-06-02
+    rev3_task_count: 29
+    rev3_slices: [R1, R2, R3, R4]
+    rev3_prs: [PR-12, PR-13, PR-14, PR-15]
+    total_tasks: 79
+    completed_tasks: 50
+    pending_tasks: 29
+    note: Rev-3 slices R1–R4 appended. All prior 50/50 tasks remain [x]. Delivery strategy stacked-to-main.
   apply:
     status: done
     progress: 50/50 tasks

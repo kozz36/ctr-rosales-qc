@@ -49,7 +49,7 @@ COPY --from=builder /app/src ./src
 # Build-time sanity checks (executed as root before USER switch):
 # 1. Verify pyzbar, zxing-cpp, and openai are importable (core deps present)
 # 2. Assert paddle is NOT importable (CONT-S02 — paddle-free guarantee)
-RUN /app/.venv/bin/python -c "import pyzbar.pyzbar; import zxing; print('identity ok')" && \
+RUN /app/.venv/bin/python -c "import pyzbar.pyzbar; import zxingcpp; print('identity ok')" && \
     /app/.venv/bin/python -c "from openai import OpenAI; print('llm ok')"
 
 # paddle absence assertion — build FAILS if paddle is somehow present

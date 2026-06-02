@@ -466,8 +466,29 @@ def build_pipeline(
         )
         identity = None
 
+    # --- Material inference adapter + key resolver (R8.10 / ADR-6) ---
+    # Lazy imports mirror the SUNAT and QR adapter pattern already in this file.
+    from reconciliation.adapters.inference.factory import (  # noqa: PLC0415
+        build_inference_adapter,
+    )
+    from reconciliation.domain.material_key_normalizer import (  # noqa: PLC0415
+        MaterialKeyNormalizer,
+    )
+    from reconciliation.domain.material_key_resolver import (  # noqa: PLC0415
+        MaterialKeyResolver,
+    )
+
+    inference_adapter = build_inference_adapter(config)
+    key_resolver = MaterialKeyResolver(MaterialKeyNormalizer(), inference_adapter)
+    logger.debug(
+        "build_pipeline: inference %s (model=%s)",
+        "ENABLED" if inference_adapter is not None else "DISABLED (deterministic-only)",
+        config.inference.model,
+    )
+
     # --- Pipeline (C-4 + H-5 fix: pass page_to_registro and deskew; D3: pass sunat;
-    #     D1/D2: pass identity for the decode_identities pre-pass) ---
+    #     D1/D2: pass identity for the decode_identities pre-pass;
+    #     R8.10: pass key_resolver) ---
     pipeline = ReconciliationPipeline(
         doc_source=doc_source,
         extractor=extractor,
@@ -477,6 +498,7 @@ def build_pipeline(
         deskew=deskew,  # type: ignore[arg-type]
         sunat=sunat_adapter,  # type: ignore[arg-type]
         identity=identity,  # type: ignore[arg-type]
+        key_resolver=key_resolver,
     )
 
     return pipeline, ctx, page_to_registro

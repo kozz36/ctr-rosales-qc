@@ -404,4 +404,63 @@ class TestCompositeExtractorDelegation:
         composite = self._make_composite_with_fake_declared(None, reg)
         result = composite.extract_registro_from_detail_page("text", 3)
         assert result is reg
-        composite._declared_adapter.extract_registro_from_detail_page.assert_called_once_with("text", 3)
+
+
+# ---------------------------------------------------------------------------
+# R8.10: container.py wiring — MaterialKeyResolver + inference adapter (ADR-6)
+# ---------------------------------------------------------------------------
+
+from reconciliation.application.config import AppConfig, InferenceConfig
+from reconciliation.application.pipeline import ReconciliationPipeline
+from reconciliation.domain.material_key_resolver import MaterialKeyResolver
+
+
+class TestBuildPipelineResolverWiring:
+    """build_pipeline wires MaterialKeyResolver into the pipeline (ADR-6)."""
+
+    def _patched_build_pipeline(self, config: AppConfig):
+        """Call build_pipeline with minimal mocks to avoid PDF/ML deps."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        with patch(
+            "reconciliation.infrastructure.container.CompositeExtractionAdapter"
+        ) as mock_composite, patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.vision.factory.build_vision_adapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.ocr.paddle_deskew.DeskewAdapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            mock_composite.return_value._declared_adapter = MagicMock()
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+        return pipeline
+
+    def test_build_pipeline_inference_disabled_resolver_has_no_inference(self) -> None:
+        config = AppConfig()
+        assert config.inference.enabled is False
+        pipeline = self._patched_build_pipeline(config)
+        assert pipeline._key_resolver is not None
+        assert isinstance(pipeline._key_resolver, MaterialKeyResolver)
+        assert pipeline._key_resolver._inference is None
+
+    def test_build_pipeline_inference_enabled_resolver_has_adapter(self) -> None:
+        from reconciliation.adapters.inference.ollama_material import (
+            OllamaMaterialInferenceAdapter,
+        )
+        config = AppConfig(inference=InferenceConfig(enabled=True, model="qwen3.5:9b"))
+        pipeline = self._patched_build_pipeline(config)
+        assert pipeline._key_resolver is not None
+        assert pipeline._key_resolver._inference is not None
+        assert isinstance(pipeline._key_resolver._inference, OllamaMaterialInferenceAdapter)

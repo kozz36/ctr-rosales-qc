@@ -17,6 +17,16 @@ error), the pipeline continues with the original orientation.
     - On any per-image error: log a warning, return the original bytes.
     - On import / model-load failure: log once, set a ``_unavailable``
       flag so subsequent calls fast-return without retrying the import.
+
+**paddleocr 3.x API**: the classifier is instantiated with
+``use_doc_orientation_classify=True`` only; the removed 2.x ``use_angle_cls``,
+``use_gpu``, and ``show_log`` are omitted.  ``_classify_angle`` now calls
+``predict()`` and reads the angle from
+``result[0]["doc_preprocessor_res"]["angle"]`` instead of parsing the
+2.x nested ``result[0][0][0][1]`` structure.  ``_run_title_ocr`` reads the
+3.x ``rec_texts`` / ``rec_scores`` keys instead of the 2.x ``item[1]``
+tuple.  All changes are backward-compatible with injected mock classifiers
+via the ``_classifier`` parameter.
 """
 
 from __future__ import annotations
@@ -39,8 +49,6 @@ class DeskewAdapter:
     installed.
 
     Args:
-        use_gpu: Whether to run PaddleOCR on GPU.  Defaults to False for
-                 predictable behaviour in CI/test environments.
         _classifier: Optional pre-built classifier instance injected for
                      testing.  If provided, the lazy-load path is skipped.
     """
@@ -50,10 +58,8 @@ class DeskewAdapter:
 
     def __init__(
         self,
-        use_gpu: bool = False,
         _classifier: object | None = None,
     ) -> None:
-        self._use_gpu = use_gpu
         # Injected in tests to avoid importing PaddleOCR
         self._classifier = _classifier
         self._unavailable: bool = False
@@ -134,15 +140,20 @@ class DeskewAdapter:
 
         Scans all recognised lines for any known title keyword and returns the
         first match.  Returns None if no known title is found.
+
+        Uses the paddleocr 3.x ``predict()`` API.  The result is a list of
+        ``OCRResult`` dict-like objects with ``rec_texts`` and ``rec_scores``
+        keys; the 2.x ``ocr(cls=False)`` nested-list format is not produced
+        by 3.x.
         """
-        import numpy as np  # type: ignore[import]  # noqa: PLC0415
-        from PIL import Image  # type: ignore[import]  # noqa: PLC0415
+        import numpy as np  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
 
         img = Image.open(io.BytesIO(image)).convert("RGB")
         img_array = np.array(img)
-        # rec=True, det=True for full OCR; cls=False (orientation already corrected)
-        result = classifier.ocr(img_array, cls=False)  # type: ignore[union-attr]
-        if not result or not result[0]:
+        # 3.x: predict() is the canonical API; ocr() delegates to it.
+        result = classifier.predict(img_array)  # type: ignore[attr-defined]
+        if not result:
             return None
 
         _TITLE_KEYWORDS = (
@@ -152,20 +163,35 @@ class DeskewAdapter:
             "PLANILLA RESUMEN",
             "LISTADO DE BARRAS",
         )
-        for line in result[0]:
-            if not line or len(line) < 2:
+        # 3.x result: list of OCRResult, each item["rec_texts"] = list[str]
+        for item in result:
+            if item is None:
                 continue
-            text_conf = line[1]
-            if not text_conf or len(text_conf) < 1:
+            try:
+                texts = item["rec_texts"]
+            except (KeyError, TypeError):
                 continue
-            text = str(text_conf[0]).upper()
-            for kw in _TITLE_KEYWORDS:
-                if kw in text:
-                    return text_conf[0]
+            if not texts:
+                continue
+            for text in texts:
+                if text is None:
+                    continue
+                text_upper = str(text).upper()
+                for kw in _TITLE_KEYWORDS:
+                    if kw in text_upper:
+                        return str(text)
         return None
 
     def _get_classifier(self) -> object:
-        """Return the orientation classifier, loading it lazily on first call."""
+        """Return the orientation classifier, loading it lazily on first call.
+
+        Uses the paddleocr 3.x API: ``use_doc_orientation_classify=True``
+        activates the document orientation classification model.  The removed
+        2.x parameters ``use_angle_cls``, ``use_gpu``, and ``show_log`` are
+        omitted (device is auto-selected; logging via stdlib).
+        ``use_doc_unwarping`` and ``use_textline_orientation`` are explicitly
+        disabled to keep instantiation lightweight (orientation only).
+        """
         if self._classifier is not None:
             return self._classifier
 
@@ -175,59 +201,52 @@ class DeskewAdapter:
                 return self._classifier
 
             # Lazy import — fails gracefully if paddleocr not installed
-            from paddleocr import PaddleOCR  # type: ignore[import]  # noqa: PLC0415
+            from paddleocr import PaddleOCR  # noqa: PLC0415
 
             classifier = PaddleOCR(
-                use_angle_cls=True,
-                use_gpu=self._use_gpu,
-                show_log=False,
                 use_doc_orientation_classify=True,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
             )
             self._classifier = classifier
             logger.debug("DeskewAdapter: PaddleOCR orientation classifier loaded")
-        return self._classifier  # type: ignore[return-value]
+        return self._classifier
 
     def _classify_angle(self, classifier: object, image: bytes) -> int:
         """Run the orientation classifier and return the detected angle (int).
 
-        PaddleOCR ``ocr()`` with ``use_angle_cls=True`` returns results that
-        include classification in ``result[0][0][0][1]`` when called on an
-        image array.  We use the simpler approach: call the classifier with
-        ``cls=True`` on the image bytes wrapped in a PIL Image, then read the
-        ``cls_res`` field.
+        Uses the paddleocr 3.x ``predict()`` API.  When the classifier is
+        instantiated with ``use_doc_orientation_classify=True``, the pipeline
+        performs doc-level orientation classification and stores the detected
+        rotation angle (0 / 90 / 180 / 270) in
+        ``result[0]["doc_preprocessor_res"]["angle"]``.
 
-        Interpretation: PaddleOCR returns the TEXT orientation label
-        ("0", "90", "180", "270"), meaning the text in the image is rotated
-        by that angle.  We rotate by the NEGATIVE of that angle to correct.
+        Interpretation: the angle is the image's current rotation from upright.
+        We rotate by the NEGATIVE of that angle to correct it.
+
+        The 2.x path (``ocr(cls=True, det=False, rec=False)`` →
+        ``result[0][0][0][1]``) is not produced by 3.x; that call signature
+        is no longer valid.
         """
-        import numpy as np  # type: ignore[import]  # noqa: PLC0415
-        from PIL import Image  # type: ignore[import]  # noqa: PLC0415
+        import numpy as np  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
 
         img = Image.open(io.BytesIO(image)).convert("RGB")
         img_array = np.array(img)
 
-        result = classifier.ocr(img_array, cls=True, det=False, rec=False)  # type: ignore[union-attr]
+        # 3.x: predict() is the canonical entry point.
+        result = classifier.predict(img_array)  # type: ignore[attr-defined]
 
-        if (
-            result is None
-            or not result
-            or not result[0]
-        ):
+        if not result:
             return 0
 
-        # result[0] is a list of [bbox, (text_or_cls, confidence)]
-        # When cls=True, det=False, rec=False: result[0][0] = [None, ('0', conf)]
-        first = result[0][0]
-        if not first or len(first) < 2:
-            return 0
-
-        label_conf = first[1]
-        if not label_conf or len(label_conf) < 1:
-            return 0
-
+        # 3.x result: list of OCRResult (one per image).
+        # Orientation angle is in doc_preprocessor_res["angle"].
         try:
-            angle = int(label_conf[0])
-        except (ValueError, TypeError):
+            first = result[0]
+            angle_raw = first["doc_preprocessor_res"]["angle"]
+            angle = int(angle_raw)
+        except (KeyError, TypeError, ValueError, IndexError):
             return 0
 
         return angle if angle in self._ANGLES else 0
@@ -235,7 +254,7 @@ class DeskewAdapter:
     @staticmethod
     def _rotate_image(image: bytes, angle: int) -> bytes:
         """Rotate *image* by *-angle* degrees (inverse correction) and return PNG bytes."""
-        from PIL import Image  # type: ignore[import]  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
 
         img = Image.open(io.BytesIO(image)).convert("RGB")
         # expand=True ensures the canvas resizes for 90/270 rotations

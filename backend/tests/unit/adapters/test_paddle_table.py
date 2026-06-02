@@ -3,15 +3,20 @@
 All tests mock the PaddleOCR engine — NO real model, NO paddleocr install.
 
 Covered:
-- Parses well-formed OCR result into MaterialLine list
+- Parses well-formed OCR result into MaterialLine list (3.x format)
 - Confidence < 0.85 sets requires_review=True
 - Confidence >= 0.85 leaves requires_review=False
 - Non-matching OCR lines (headers, dates) are silently skipped
 - Empty OCR result returns []
-- OCR raise → ExtractionError propagated
-- _unavailable flag: raises ExtractionError without calling OCR
+- OCR raise → graceful degradation: returns [], sets _ocr_failed=True
+- _unavailable flag: returns [] without calling OCR, sets _ocr_failed=True
 - Lazy-load: injected _ocr bypasses import
 - extract_declared is no-op
+
+paddleocr 3.x result format used by mocks:
+  predict() returns a list of OCRResult-like dicts, one per image.
+  Each dict has: {"rec_texts": [str, ...], "rec_scores": [float, ...], ...}
+  (Contrast with 2.x: [[ [bbox], (text, conf) ]] nested list structure)
 """
 
 from __future__ import annotations
@@ -24,7 +29,6 @@ import pytest
 from PIL import Image
 
 from reconciliation.adapters.ocr.paddle_table import PrintedTableAdapter, _CONFIDENCE_THRESHOLD
-from reconciliation.domain.errors import ExtractionError
 
 
 # ---------------------------------------------------------------------------
@@ -40,12 +44,20 @@ def _make_png() -> bytes:
 
 
 def _make_ocr(lines: list[tuple[str, float]]) -> MagicMock:
-    """Build a mock OCR engine returning *lines* as [(bbox, (text, conf)), ...]."""
+    """Build a mock OCR engine returning *lines* in paddleocr 3.x predict() format.
+
+    The 3.x ``predict()`` API returns a list of OCRResult dict-like objects.
+    Each object has ``rec_texts`` (list[str]) and ``rec_scores`` (list[float]).
+    """
     mock = MagicMock()
-    result_items = [
-        [None, (text, conf)] for text, conf in lines
-    ]
-    mock.ocr.return_value = [result_items]
+    # 3.x format: predict() → [{"rec_texts": [...], "rec_scores": [...], ...}]
+    result_item = MagicMock()
+    result_item.__getitem__ = lambda self, key: (
+        [t for t, _ in lines] if key == "rec_texts" else
+        [c for _, c in lines] if key == "rec_scores" else
+        [][0]  # KeyError for unknown keys
+    )
+    mock.predict.return_value = [result_item]
     return mock
 
 
@@ -114,15 +126,24 @@ class TestPrintedTableAdapterParsing:
         assert len(lines) == 1
 
     def test_empty_ocr_result_returns_empty_list(self) -> None:
+        """predict() returns list with item having empty rec_texts → []."""
         mock = MagicMock()
-        mock.ocr.return_value = [[]]
+        # 3.x: empty OCRResult — item with empty rec_texts list
+        result_item = MagicMock()
+        result_item.__getitem__ = lambda self, key: (
+            [] if key == "rec_texts" else
+            [] if key == "rec_scores" else
+            [][0]
+        )
+        mock.predict.return_value = [result_item]
         adapter = PrintedTableAdapter(_ocr=mock)
         lines = adapter.extract_printed_table(_make_png())
         assert lines == []
 
     def test_none_ocr_result_returns_empty_list(self) -> None:
+        """predict() returns empty list (no items) → []."""
         mock = MagicMock()
-        mock.ocr.return_value = None
+        mock.predict.return_value = []
         adapter = PrintedTableAdapter(_ocr=mock)
         lines = adapter.extract_printed_table(_make_png())
         assert lines == []
@@ -171,26 +192,52 @@ class TestPrintedTableAdapterConfidence:
 
 
 class TestPrintedTableAdapterErrorHandling:
-    def test_ocr_raises_propagates_extraction_error(self) -> None:
-        mock = MagicMock()
-        mock.ocr.side_effect = RuntimeError("cuda died")
-        adapter = PrintedTableAdapter(_ocr=mock)
-        with pytest.raises(ExtractionError):
-            adapter.extract_printed_table(_make_png())
+    """Graceful degradation: OCR errors return [] and set _ocr_failed=True.
 
-    def test_unavailable_raises_extraction_error(self) -> None:
+    As of the paddleocr-3.x compat fix, extract_printed_table NEVER raises.
+    Load failures, predict() errors, and the _unavailable flag all result in
+    an empty list (guía quantities empty → MISMATCH flagged for review).
+    """
+
+    def test_ocr_predict_raises_returns_empty_and_sets_flag(self) -> None:
+        """predict() error → [] returned, _ocr_failed=True, no raise."""
+        mock = MagicMock()
+        mock.predict.side_effect = RuntimeError("cuda died")
+        adapter = PrintedTableAdapter(_ocr=mock)
+        result = adapter.extract_printed_table(_make_png())
+        assert result == []
+        assert adapter._ocr_failed is True
+
+    def test_unavailable_returns_empty_and_sets_flag(self) -> None:
+        """_unavailable=True → [] returned without calling predict()."""
         adapter = PrintedTableAdapter()
         adapter._unavailable = True
-        with pytest.raises(ExtractionError):
-            adapter.extract_printed_table(_make_png())
+        result = adapter.extract_printed_table(_make_png())
+        assert result == []
+        assert adapter._ocr_failed is True
 
-    def test_import_failure_raises_extraction_error(self) -> None:
+    def test_import_failure_returns_empty_and_sets_unavailable(self) -> None:
+        """Import failure (load error) → [] returned, _unavailable set permanently."""
         adapter = PrintedTableAdapter()
         with patch.object(
             adapter, "_get_ocr", side_effect=ImportError("paddleocr missing")
         ):
-            with pytest.raises(ExtractionError):
-                adapter.extract_printed_table(_make_png())
+            result = adapter.extract_printed_table(_make_png())
+        assert result == []
+        assert adapter._ocr_failed is True
+        assert adapter._unavailable is True
+
+    def test_ocr_failed_reset_on_successful_call(self) -> None:
+        """_ocr_failed is reset to False at the start of each call."""
+        lines_data = [("BARRA 5.800 KG", 0.95)]
+        ocr = _make_ocr(lines_data)
+        adapter = PrintedTableAdapter(_ocr=ocr)
+        # Simulate a prior failure state
+        adapter._ocr_failed = True
+        result = adapter.extract_printed_table(_make_png())
+        # Successful call resets the flag
+        assert adapter._ocr_failed is False
+        assert len(result) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -207,3 +254,4 @@ class TestPrintedTableAdapterStubs:
         adapter = PrintedTableAdapter()
         assert adapter._ocr is None
         assert adapter._unavailable is False
+        assert adapter._ocr_failed is False

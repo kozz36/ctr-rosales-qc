@@ -11,10 +11,19 @@ top-level so the package imports cleanly without PaddleOCR installed.
 confidence below 0.85 have ``requires_review=True`` set on the returned
 :class:`MaterialLine` and are not silently discarded.
 
-**Error isolation**: on any extraction error, raises
-:class:`~reconciliation.domain.errors.ExtractionError` rather than
-propagating raw OCR exceptions.  The pipeline catches ExtractionError and
-treats the page as unextractable (returns empty list, flags for review).
+**Error isolation (graceful degradation)**: on any OCR load or inference
+error, ``extract_printed_table`` logs a warning and returns an empty list
+instead of raising.  The ``_ocr_failed`` flag is set so callers can detect
+that OCR was skipped for this page (guía quantities will be empty → MISMATCH
+flagged for human review, which is the correct domain behaviour).
+
+**paddleocr 3.x API**: instantiation uses ``use_textline_orientation=True``
+instead of the removed 2.x ``use_angle_cls``.  ``use_gpu`` and ``show_log``
+are also removed (3.x auto-selects device; logging is controlled via the
+standard Python logging hierarchy).  Result parsing targets the 3.x
+``predict()`` output: a list of ``OCRResult`` dict-like objects, each with
+``rec_texts`` (list[str]) and ``rec_scores`` (list[float]) keys, rather than
+the 2.x nested ``[[ [bbox], (text, conf) ]]`` structure.
 """
 
 from __future__ import annotations
@@ -26,7 +35,6 @@ from decimal import Decimal, InvalidOperation
 from threading import Lock
 from typing import Final
 
-from reconciliation.domain.errors import ExtractionError
 from reconciliation.domain.models import MaterialLine
 from reconciliation.domain.normalizer import MaterialNormalizer
 
@@ -61,19 +69,19 @@ class PrintedTableAdapter:
     :class:`~reconciliation.adapters.pdf.digital_text_extractor.DigitalTextExtractionAdapter`.
 
     Args:
-        use_gpu: Whether PaddleOCR should use GPU.  Defaults to False.
         _ocr: Optional pre-built PaddleOCR instance injected for testing.
               When provided, the lazy-load path is skipped entirely.
     """
 
     def __init__(
         self,
-        use_gpu: bool = False,
         _ocr: object | None = None,
     ) -> None:
-        self._use_gpu = use_gpu
         self._ocr = _ocr
         self._unavailable: bool = False
+        # Set to True on each call where OCR load/predict fails; callers that
+        # need to detect per-page degradation can inspect this flag.
+        self._ocr_failed: bool = False
 
     # ------------------------------------------------------------------
     # ExtractionPort interface
@@ -89,45 +97,61 @@ class PrintedTableAdapter:
         Lines with any recognised per-character confidence below 0.85 are
         returned with ``requires_review=True`` (they are NOT dropped).
 
+        **Graceful degradation**: on any OCR load or inference failure, logs a
+        warning, sets ``self._ocr_failed = True``, and returns an empty list.
+        The pipeline treats empty OCR output as a guía with no quantities →
+        MISMATCH flagged for human review.  The run never aborts due to OCR
+        errors (domain rule: flag mismatches, never fail the run).
+
         Args:
             image: PNG or JPEG bytes of a rendered guía page.
 
         Returns:
-            List of :class:`MaterialLine`.  Empty list if no material lines
-            are detected.
-
-        Raises:
-            ExtractionError: if OCR fails with an unrecoverable error.
+            List of :class:`MaterialLine`.  Empty list when no material lines
+            are detected OR when OCR is unavailable / failed.
         """
+        self._ocr_failed = False
+
         if self._unavailable:
-            raise ExtractionError("PrintedTableAdapter: PaddleOCR is unavailable")
+            logger.warning("PrintedTableAdapter: PaddleOCR is unavailable; returning empty")
+            self._ocr_failed = True
+            return []
 
         try:
             ocr = self._get_ocr()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "PrintedTableAdapter: PaddleOCR unavailable — %s", exc
+                "PrintedTableAdapter: PaddleOCR could not be loaded (%s); "
+                "guía quantities will be empty for this page",
+                exc,
             )
             self._unavailable = True
-            raise ExtractionError(
-                f"PrintedTableAdapter: PaddleOCR could not be loaded: {exc}"
-            ) from exc
+            self._ocr_failed = True
+            return []
 
         try:
             return self._run_ocr(ocr, image)
-        except ExtractionError:
-            raise
         except Exception as exc:  # noqa: BLE001
-            raise ExtractionError(
-                f"PrintedTableAdapter: OCR failed on image: {exc}"
-            ) from exc
+            logger.warning(
+                "PrintedTableAdapter: OCR predict failed (%s); "
+                "guía quantities will be empty for this page",
+                exc,
+            )
+            self._ocr_failed = True
+            return []
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _get_ocr(self) -> object:
-        """Return the PaddleOCR instance, loading it lazily on first call."""
+        """Return the PaddleOCR instance, loading it lazily on first call.
+
+        Uses the paddleocr 3.x API: ``use_textline_orientation`` replaces the
+        removed 2.x ``use_angle_cls``.  ``use_gpu`` and ``show_log`` are not
+        accepted by 3.x (device is auto-selected; logging via stdlib).
+        ``lang="es"`` maps to the Latin-script recognition model (valid in 3.x).
+        """
         if self._ocr is not None:
             return self._ocr
 
@@ -135,43 +159,61 @@ class PrintedTableAdapter:
             if self._ocr is not None:
                 return self._ocr
 
-            from paddleocr import PaddleOCR  # type: ignore[import]  # noqa: PLC0415
+            from paddleocr import PaddleOCR  # noqa: PLC0415
 
             ocr = PaddleOCR(
-                use_angle_cls=True,
-                use_gpu=self._use_gpu,
-                show_log=False,
+                use_textline_orientation=True,
                 lang="es",
             )
             self._ocr = ocr
             logger.debug("PrintedTableAdapter: PaddleOCR recognition engine loaded")
-        return self._ocr  # type: ignore[return-value]
+        return self._ocr
 
     def _run_ocr(self, ocr: object, image: bytes) -> list[MaterialLine]:
-        """Run OCR on *image* and parse results into MaterialLine objects."""
-        import numpy as np  # type: ignore[import]  # noqa: PLC0415
-        from PIL import Image  # type: ignore[import]  # noqa: PLC0415
+        """Run OCR on *image* and parse results into MaterialLine objects.
+
+        Targets the paddleocr 3.x ``predict()`` API.  The result is a list of
+        ``OCRResult`` dict-like objects (one per input image).  Each item
+        exposes:
+          - ``item["rec_texts"]``: list[str] — recognised text per line
+          - ``item["rec_scores"]``: list[float] — per-line confidence
+          - ``item["rec_polys"]``: list[ndarray] — bounding polygon per line
+
+        The 2.x ``ocr(img_array, cls=True)`` call returned a deeply-nested
+        ``[[ [bbox], (text, conf) ]]`` structure; that format is no longer
+        produced by 3.x.
+        """
+        import numpy as np  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
 
         img = Image.open(io.BytesIO(image)).convert("RGB")
         img_array = np.array(img)
 
-        result = ocr.ocr(img_array, cls=True)  # type: ignore[union-attr]
+        # 3.x primary API is predict(); ocr() is a deprecated alias that calls predict().
+        result = ocr.predict(img_array)  # type: ignore[attr-defined]
 
-        if not result or not result[0]:
+        if not result:
             return []
 
-        # Gather all text lines from OCR result.
-        # Each element in result[0]: [[bbox_pts], (text, confidence)]
+        # Gather all text lines from 3.x OCR result.
+        # result is a list of OCRResult (one per image).  For a single image
+        # there is exactly one item; iterate defensively in case of batching.
         raw_lines: list[tuple[str, float]] = []
-        for item in result[0]:
-            if not item or len(item) < 2:
+        for item in result:
+            if item is None:
                 continue
-            text_conf = item[1]
-            if not text_conf or len(text_conf) < 2:
+            try:
+                texts = item["rec_texts"]
+                scores = item["rec_scores"]
+            except (KeyError, TypeError):
+                # Defensive: if the result structure is unexpected, skip silently.
                 continue
-            text: str = text_conf[0]
-            conf: float = float(text_conf[1])
-            raw_lines.append((text.strip(), conf))
+            if not texts:
+                continue
+            for text, conf in zip(texts, scores):
+                if text is None:
+                    continue
+                raw_lines.append((str(text).strip(), float(conf)))
 
         return self._parse_lines(raw_lines)
 

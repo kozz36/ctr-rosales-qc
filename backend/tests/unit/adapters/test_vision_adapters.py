@@ -115,6 +115,35 @@ class TestParseVisionJson:
         result = _parse_vision_json(raw)
         assert result.raw == raw
 
+    def test_think_block_stripped_before_json_parse(self) -> None:
+        """Extended-thinking models (e.g. qwen3.5:9b) prepend <think>…</think> blocks.
+
+        The parser must strip these before attempting JSON parsing so that the
+        structured response is extracted correctly from the remaining content.
+        """
+        raw = (
+            "<think>I need to look at the stamp region and find the date.</think>"
+            '\n{"date": "2026-05-28", "confidence": 0.95}'
+        )
+        result = _oai_parse(raw)
+        assert result.date == date(2026, 5, 28)
+        assert result.confidence == pytest.approx(0.95)
+
+    def test_think_block_multiline_stripped(self) -> None:
+        raw = (
+            "<think>\nStep 1: Examine image\nStep 2: Find date\n</think>"
+            '\n```json\n{"date": "2026-05-28", "confidence": 0.90}\n```'
+        )
+        result = _oai_parse(raw)
+        assert result.date == date(2026, 5, 28)
+        assert result.confidence == pytest.approx(0.90)
+
+    def test_empty_content_after_think_block_returns_null(self) -> None:
+        """When max_tokens is exhausted during thinking, content is empty → null."""
+        result = _oai_parse("")
+        assert result.date is None
+        assert result.confidence == pytest.approx(0.0)
+
 
 # ---------------------------------------------------------------------------
 # AnthropicVisionAdapter

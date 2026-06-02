@@ -43,8 +43,12 @@ class StampCropConfig(BaseSettings):
     """Stamp-region crop box for the VisionLLMPort date-extraction call (D4 / EXT-020).
 
     Defines a fractional crop box ``(x0, y0, x1, y1)`` relative to the full
-    rendered page dimensions (values in [0.0, 1.0]).  The default targets the
-    lower-right quadrant where the CTR "Recibí conforme" stamp is located.
+    rendered page dimensions (values in [0.0, 1.0]).
+
+    R7 fix: empirical tuning on the real CTR PDF confirmed the "Recibí conforme"
+    stamp is in the UPPER-RIGHT region.  The default now targets x ∈ [55%, 100%],
+    y ∈ [5%, 45%] — proven to yield day-month on guía pages 4, 5, 6, 8, 20, 25, 30
+    of the production PDF subset.
 
     Set all four values to ``0.0`` to disable cropping (falls back to Option B:
     >=300 dpi full-page render).
@@ -53,11 +57,11 @@ class StampCropConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="allow")
 
     # Fractional coordinates relative to rendered page (0.0 – 1.0).
-    # Default: lower-right quadrant (x: 50–100%, y: 60–100%).
-    x0: float = Field(default=0.5, ge=0.0, le=1.0)
-    y0: float = Field(default=0.6, ge=0.0, le=1.0)
+    # Default: upper-right quadrant (x: 55–100%, y: 5–45%) — R7 bake-off winner.
+    x0: float = Field(default=0.55, ge=0.0, le=1.0)
+    y0: float = Field(default=0.05, ge=0.0, le=1.0)
     x1: float = Field(default=1.0, ge=0.0, le=1.0)
-    y1: float = Field(default=1.0, ge=0.0, le=1.0)
+    y1: float = Field(default=0.45, ge=0.0, le=1.0)
 
     @property
     def enabled(self) -> bool:

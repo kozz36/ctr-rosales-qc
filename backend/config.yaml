@@ -30,13 +30,16 @@ vision:
 
   # Rev-3 D4 (EXT-020): stamp-region crop box for the VisionLLM date-extraction call.
   # Fractional coordinates (0.0–1.0) relative to the rendered page dimensions.
-  # Default targets the lower-right quadrant where the CTR "Recibí conforme" stamp lives.
+  # R7 fix: bake-off + empirical tuning confirmed the CTR "Recibí conforme" stamp is in
+  # the UPPER-RIGHT region (not lower-right as originally set).  Crop fitz.Rect(w*0.55,
+  # h*0.05, w, h*0.45) reliably yields day-month "28-05" on pages 4,5,6,8,20 of the
+  # real PDF subset.  Year is reconstructed by year-inference; day-month is the gate.
   # Set all values to 0.0 to disable Option A and fall back to Option B (>=300dpi full page).
   stamp_crop:
-    x0: 0.5
-    y0: 0.6
+    x0: 0.55
+    y0: 0.05
     x1: 1.0
-    y1: 1.0
+    y1: 0.45
 
   # Rev-3 D4 Option B: DPI for full-page render when stamp_crop is disabled.
   fallback_dpi: 300

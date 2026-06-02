@@ -971,9 +971,8 @@ class ReconciliationPipeline:
         handling multi-page guías.
 
         Rev-3 D4 (EXT-020): the image sent to the vision adapter is the
-        stamp-region crop (Option A, lower-right quadrant default) rather than
-        the full-page-200dpi render that previously caused date failures on
-        non-qwen models.  When stamp_crop is disabled (all zeros), falls back
+        stamp-region crop (Option A, upper-right quadrant — R7 fix) rather than
+        the full-page-200dpi render.  When stamp_crop is disabled (all zeros), falls back
         to Option B: a fresh render at ``fallback_dpi`` (≥300 dpi).
 
         Respects the vision cost cap.  Raises VisionCapExceededError if the
@@ -1324,9 +1323,10 @@ def _build_guia_from_block(block: _GuiaBlock, vision_result: VisionResult) -> Gu
 def _prepare_vision_image(image: bytes, config: AppConfig) -> bytes:
     """Prepare the image to send to VisionLLMPort for date extraction (D4 / EXT-020).
 
-    Option A (default): crop the stamp-region (lower-right quadrant) from the
+    Option A (default): crop the stamp-region (upper-right quadrant — R7 fix) from the
     already-rendered page image.  The crop box is defined in ``config.vision.stamp_crop``
-    as fractional coordinates in [0.0, 1.0].
+    as fractional coordinates in [0.0, 1.0].  Default is x ∈ [55%, 100%], y ∈ [5%, 45%]
+    (bake-off-proven: reliably yields day-month for the CTR "Recibí conforme" stamp).
 
     Option B (fallback): when stamp_crop is disabled (x0==x1 or y0==y1), the
     caller is expected to have passed a >=300dpi full-page image.  In the

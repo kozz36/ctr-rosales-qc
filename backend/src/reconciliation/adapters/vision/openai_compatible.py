@@ -44,19 +44,25 @@ _SYSTEM_PROMPT = (
 )
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Matches <think>…</think> blocks emitted by extended-thinking models (e.g. qwen3.5).
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 def _parse_vision_json(raw: str) -> VisionResult:
     """Defensively parse the model's JSON response.
 
     Handles:
+    - ``<think>…</think>`` blocks from extended-thinking models (e.g. qwen3.5:9b).
+      These blocks must be stripped BEFORE JSON parsing because they consume most of
+      the token budget and are never part of the structured output.
     - markdown code fences (```json ... ```)
     - missing fields
     - invalid date strings
     - non-JSON text
     """
     try:
-        clean = raw.strip()
+        # Strip think blocks first — qwen3.5 and similar thinking models prepend them.
+        clean = _THINK_RE.sub("", raw).strip()
         if clean.startswith("```"):
             clean = re.sub(r"^```[a-z]*\n?", "", clean)
             clean = re.sub(r"\n?```$", "", clean)
@@ -115,7 +121,12 @@ class OpenAICompatibleVisionAdapter:
                   (``https://api.openai.com/v1``).  Set to
                   ``"http://localhost:11434/v1"`` for Ollama.
         api_key: API key string.  For Ollama, any non-empty string works.
-        max_tokens: Maximum output tokens.
+        max_tokens: Maximum output tokens.  Default is 4096 because extended-thinking
+                    models (e.g. qwen3.5:9b) consume the token budget with
+                    ``<think>…</think>`` blocks before emitting structured output —
+                    128 tokens is exhausted during the thinking phase, leaving an
+                    empty ``content``.  Think-blocks are stripped by ``_parse_vision_json``
+                    before JSON parsing.
         supports_batch: Whether to enable the batch path via OpenAI Batch
                         API.  Must be ``False`` for Ollama.
         client: Injected ``openai.OpenAI`` instance for testing.  When
@@ -127,7 +138,7 @@ class OpenAICompatibleVisionAdapter:
         model: str = "gpt-4o",
         base_url: str | None = None,
         api_key: str | None = None,
-        max_tokens: int = 128,
+        max_tokens: int = 4096,
         supports_batch: bool = True,
         client: object | None = None,
     ) -> None:

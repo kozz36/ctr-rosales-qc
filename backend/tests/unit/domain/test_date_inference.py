@@ -323,16 +323,18 @@ class TestStampCropRegionSelection:
         original_bytes = buf.getvalue()
 
         cfg = AppConfig()
-        # Default stamp_crop: x0=0.5, y0=0.6, x1=1.0, y1=1.0
+        # R7 default stamp_crop: x0=0.55, y0=0.05, x1=1.0, y1=0.45 (upper-right)
         result = _prepare_vision_image(original_bytes, cfg)
 
         # Result must be different (cropped region smaller)
         assert result != original_bytes
 
-        # Verify cropped dimensions: 200×240 (50% of 400, 40% of 600)
+        # Verify cropped dimensions match the R7 upper-right defaults on a 400×600 image.
+        # left=int(0.55*400)=220, upper=int(0.05*600)=30, right=400, lower=int(0.45*600)=270
+        # → width=180, height=240
         with Image.open(io.BytesIO(result)) as cropped:
-            assert cropped.width == 200  # 400 * (1.0 - 0.5)
-            assert cropped.height == 240  # 600 * (1.0 - 0.6)
+            assert cropped.width == 180   # 400 - int(0.55 * 400) = 400 - 220
+            assert cropped.height == 240  # int(0.45 * 600) - int(0.05 * 600) = 270 - 30
 
     def test_crop_disabled_returns_original(self) -> None:
         """Option B: when stamp_crop is disabled (degenerate box), original bytes returned."""

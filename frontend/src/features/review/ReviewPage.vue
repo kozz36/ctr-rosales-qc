@@ -37,6 +37,13 @@
       <span v-if="runStatus?.error">: {{ runStatus.error }}</span>
     </div>
 
+    <!-- Unresolved guías bucket (REV-C04) — shown above the grid when guías exist -->
+    <UnresolvedGuiasPanel
+      v-if="isReady && unresolvedGuias.length > 0"
+      :unresolved-guias="unresolvedGuias"
+      @assign-guia="onAssignUnresolved"
+    />
+
     <!-- Review grid (only when ready) -->
     <ReviewGrid
       v-if="isReady"
@@ -87,10 +94,11 @@ import { useReconciliationStore } from '@/stores/reconciliation'
 import { useTable, useReassignGuia, useExportRun, queryKeys } from '@/composables/useReconciliationApi'
 import { getRunStatus } from '@/api/client'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import type { ReconciliationRowResponse, ExportFormat, ReassignRequest } from '@/api/types'
+import type { ReconciliationRowResponse, ExportFormat, ReassignRequest, UnresolvedGuiaResponse } from '@/api/types'
 import ReviewGrid from './ReviewGrid.vue'
 import GuiaReassignDialog from './GuiaReassignDialog.vue'
 import ExportButton from './ExportButton.vue'
+import UnresolvedGuiasPanel from './UnresolvedGuiasPanel.vue'
 
 const props = defineProps<{
   /** run_id from router prop */
@@ -137,6 +145,11 @@ const rows = computed<ReconciliationRowResponse[]>(
   () => tableQuery.data.value?.rows ?? [],
 )
 
+/** Rev-2: unresolved guías bucket (REV-C04). Never appears in the main grid. */
+const unresolvedGuias = computed<UnresolvedGuiaResponse[]>(
+  () => tableQuery.data.value?.unresolved_guias ?? [],
+)
+
 const tableError = computed<string | null>(() =>
   tableQuery.error.value ? String(tableQuery.error.value) : null,
 )
@@ -164,6 +177,17 @@ function onReassignRequest(payload: { guia_id: string }): void {
   // Find the row that currently owns this guía for context display in the dialog
   reassignTarget.value =
     rows.value.find((r) => r.guias?.some((g) => g.guia_id === payload.guia_id)) ?? null
+  reassignError.value = null
+  showReassignDialog.value = true
+}
+
+/**
+ * Handles "Assign to registro" from UnresolvedGuiasPanel.
+ * Opens GuiaReassignDialog with row=null (no parent row context — the guía is unresolved).
+ */
+function onAssignUnresolved(guiaId: string): void {
+  reassignGuiaId.value = guiaId
+  reassignTarget.value = null // unresolved guías have no parent row
   reassignError.value = null
   showReassignDialog.value = true
 }

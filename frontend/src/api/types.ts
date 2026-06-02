@@ -93,10 +93,31 @@ export interface ReconciliationRowResponse {
   guias: GuiaContributionResponse[] // rev-2: inline contributions
 }
 
+// ---------------------------------------------------------------------------
+// Unresolved guía (REV-C04 — guías whose registro could not be determined)
+// ---------------------------------------------------------------------------
+
+/**
+ * An unresolved GuiaDeRemision from the ``unresolved_guias`` bucket.
+ *
+ * These guías could not be matched to a Registro N° during the pipeline run.
+ * They MUST appear only in the UnresolvedGuiasPanel, never in the main grid.
+ *
+ * Mirrors backend UnresolvedGuiaResponse (schemas.py).
+ */
+export interface UnresolvedGuiaResponse {
+  guia_id: string // serie-numero, e.g. "T009-0741770"
+  identity_source: 'qr' | 'ocr_fallback'
+  source_pages: number[]
+  first_page: number | null
+}
+
 /** GET /runs/{run_id}/table */
 export interface ReconciliationTableResponse {
   run_id: string
   rows: ReconciliationRowResponse[]
+  /** Rev-2: guías whose registro could not be determined (REV-C04 / REC-C05). */
+  unresolved_guias: UnresolvedGuiaResponse[]
 }
 
 // ---------------------------------------------------------------------------

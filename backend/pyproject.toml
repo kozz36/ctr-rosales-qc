@@ -64,3 +64,8 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_mode = "strict"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "e2e: marks end-to-end tests requiring external assets or services",
+]

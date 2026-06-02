@@ -1084,6 +1084,27 @@ Cross-slice parallelism:
 | R2 | 8 (R2.1–R2.8) | PR-13 | EXT-020, EXT-021, REC-C07, D4, D5 |
 | R3 | 8 (R3.1–R3.8) | PR-14 | EXT-023, D3, EXT-S30/31/32 |
 | R4 | 4 (R4.1–R4.4) | PR-15 | REV-C05, REV-C06, REV-C07/08 |
-| **Total rev-3** | **29** | PR-12–15 | All rev-3 spec IDs covered |
+| R5 | 2 (R5.1–R5.2) | PR-16 | paddle-compat-gap (real-data blocking bug) |
+| **Total rev-3** | **31** | PR-12–16 | All rev-3 spec IDs covered |
 
-**Grand total (all phases + rev-2 + rev-3)**: 50 (complete) + 29 (pending) = **79 tasks**.
+**Grand total (all phases + rev-2 + rev-3)**: 50 (complete) + 31 (pending) = **81 tasks**.
+
+---
+
+## R5 — Paddle 3.6 Compat + Graceful Degradation (blocking bugfix)
+
+> Blocking bug found during rev-3 real-data validation. Fixed in branch `feat/rev2-identity-domain`.
+
+### R5.1 — paddleocr 3.6 API compat (paddle_table.py + paddle_deskew.py)
+- [x] Remove `use_gpu`, `show_log` from `PaddleOCR(...)` instantiation in both adapters
+- [x] Replace `use_angle_cls=True` with `use_textline_orientation=True` (paddle_table) and keep `use_doc_orientation_classify=True` (paddle_deskew)
+- [x] Update `_run_ocr` to call `predict()` instead of `ocr()` and parse 3.x result format: `item["rec_texts"]` / `item["rec_scores"]` (paddle_table)
+- [x] Update `_classify_angle` to read angle from `result[0]["doc_preprocessor_res"]["angle"]` (paddle_deskew)
+- [x] Update `_run_title_ocr` to use `predict()` and `item["rec_texts"]` (paddle_deskew)
+- [x] Update unit test mocks to 3.x `predict()` return format
+
+### R5.2 — Graceful degradation (pipeline never aborts on OCR failure)
+- [x] `PrintedTableAdapter.extract_printed_table` catches all exceptions, returns `[]`, sets `_ocr_failed=True`; never raises
+- [x] `_stage_extract_ocr` detects `_ocr_failed`, appends human-readable warning, continues
+- [x] `PipelineResult.warnings` now includes OCR degradation warnings (prepended before vision warnings)
+- [x] Unit tests updated: `ExtractionError` propagation tests → graceful degradation tests

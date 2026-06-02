@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+tests/
+*.egg-info/
+.git
+runs/
+config.yaml
+*.md

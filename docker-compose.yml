@@ -1,0 +1,71 @@
+# docker-compose.yml — ctr-rosales-qc backend verification environment (r10 / D5)
+#
+# Cloud vision profile: provider=ollama → qwen3.5:397b-cloud via host Ollama daemon.
+# SUNAT fetch: opt-in (enabled=true); cross-run cache at /data/sunat-cache (named volume).
+# OCR: disabled (ocr.enabled=false) — quantities come from SUNAT; paddle never instantiated.
+#
+# Prerequisites:
+#   - make build (or docker compose build backend)
+#   - Ollama host daemon running with qwen3.5:397b-cloud pulled
+#   - PDF file present at the path bound below (read-only)
+#
+# Air-gap default is PRESERVED — the cloud + SUNAT profile is opt-in via this compose file.
+# Running the backend directly (outside compose) uses its own defaults (provider=anthropic,
+# sunat.enabled=false) — no cloud egress.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: ctr-backend:latest
+    ports:
+      - "8000:8000"
+    # Route host.docker.internal → host gateway so the container can reach
+    # the host's Ollama daemon at http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # OCR: disabled — SUNAT supplies authoritative quantities (paddle never loaded)
+      RECONCILIATION__OCR__ENABLED: "false"
+      # Vision: cloud via host Ollama proxy
+      RECONCILIATION__VISION__PROVIDER: "ollama"
+      RECONCILIATION__VISION__OLLAMA__MODEL: "qwen3.5:397b-cloud"
+      RECONCILIATION__VISION__OLLAMA__BASE_URL: "http://host.docker.internal:11434/v1"
+      # max_tokens: 640 sits in the 512-768 range — survives the <think> phase
+      RECONCILIATION__VISION__MAX_TOKENS: "640"
+      # Protocolo crop: upper-right header table (0.60,0.04,1.00,0.22) — starting estimate
+      RECONCILIATION__VISION__PROTOCOLO_CROP__X0: "0.60"
+      RECONCILIATION__VISION__PROTOCOLO_CROP__Y0: "0.04"
+      RECONCILIATION__VISION__PROTOCOLO_CROP__X1: "1.00"
+      RECONCILIATION__VISION__PROTOCOLO_CROP__Y1: "0.22"
+      # SUNAT: enabled with cross-run cache (stable named volume)
+      RECONCILIATION__SUNAT__ENABLED: "true"
+      RECONCILIATION__SUNAT__CACHE: "true"
+      RECONCILIATION__SUNAT__CACHE_DIR: "/data/sunat-cache"
+      # Output: named volume for run results
+      RECONCILIATION__OUTPUT_DIR: "/data/runs"
+    volumes:
+      # Real PDF: read-only bind-mount (input PDF must not be modified)
+      - "/data/Projects/ctr-rosales-qc/Informe de detalle del formulario-202606020255.pdf:/data/input.pdf:ro"
+      # Run output: named volume (persistent across compose up/down)
+      - run-output:/data/runs
+      # SUNAT cache: stable cross-run named volume (D4 CONT-S10)
+      - sunat-cache:/data/sunat-cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # frontend: DEFERRED — frontend tree absent from this branch (feat/rev2-identity-domain)
+  # Uncomment when frontend/ lands on this branch.
+  # frontend:
+  #   profiles: [ui]
+  #   build: { context: ./frontend }
+  #   ports: ["5173:5173"]
+
+volumes:
+  run-output:
+  sunat-cache:

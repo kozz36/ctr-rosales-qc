@@ -447,7 +447,27 @@ def build_pipeline(
     else:
         logger.debug("build_pipeline: SUNAT fetch disabled (air-gap default)")
 
-    # --- Pipeline (C-4 + H-5 fix: pass page_to_registro and deskew; D3: pass sunat) ---
+    # --- Identity adapter (rev-3 D1/D2: local QR decode for the decode_identities
+    # pre-pass that drives hybrid classification + block identity). Without this the
+    # pre-pass has no decoder and scanned guías fall back to OCR-only classification
+    # with no QR identity / no SUNAT hashqr_url. Lazy-imports pyzbar/zxing inside the
+    # adapter; if those are absent at call time it degrades to None per page.
+    try:
+        from reconciliation.adapters.identity.qr_barcode import (  # noqa: PLC0415
+            QrBarcodeExtractionAdapter,
+        )
+
+        identity: object | None = QrBarcodeExtractionAdapter()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "build_pipeline: QrBarcodeExtractionAdapter import failed (%s); "
+            "QR identity disabled (guías classify via heuristic only)",
+            exc,
+        )
+        identity = None
+
+    # --- Pipeline (C-4 + H-5 fix: pass page_to_registro and deskew; D3: pass sunat;
+    #     D1/D2: pass identity for the decode_identities pre-pass) ---
     pipeline = ReconciliationPipeline(
         doc_source=doc_source,
         extractor=extractor,
@@ -456,6 +476,7 @@ def build_pipeline(
         page_to_registro=page_to_registro,
         deskew=deskew,  # type: ignore[arg-type]
         sunat=sunat_adapter,  # type: ignore[arg-type]
+        identity=identity,  # type: ignore[arg-type]
     )
 
     return pipeline, ctx, page_to_registro

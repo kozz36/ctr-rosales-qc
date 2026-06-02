@@ -13,6 +13,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 from reconciliation.domain.models import (
     GuiaIdentity,
+    MaterialKeyInference,
     MaterialLine,
     OfficialGre,
     ReconciliationRow,
@@ -115,6 +116,32 @@ class IdentityExtractionPort(Protocol):
         Args:
             image:    PNG or JPEG bytes of a rendered page.
             page_idx: Optional 0-based page index for audit logging.
+        """
+        ...
+
+
+@runtime_checkable
+class MaterialInferencePort(Protocol):
+    """LLM inference port for ambiguous material descriptions (R8.6, MAT-006, ADR-2).
+
+    Adapters implement this by calling a local text-inference model (e.g. Ollama
+    qwen3.5:9b) to extract the canonical key tuple from descriptions that the
+    deterministic regex rules cannot resolve.
+
+    Invariants:
+    - Failure (Ollama down, timeout, malformed JSON) MUST return None.
+    - Never raises; the caller (MaterialKeyResolver) handles None gracefully.
+    - LLM-inferred results ALWAYS have requires_review=True (set by the resolver).
+    """
+
+    def infer(self, description: str) -> MaterialKeyInference | None:
+        """Infer the canonical key tuple from an ambiguous description.
+
+        Args:
+            description: Raw material description string.
+
+        Returns:
+            A MaterialKeyInference with the inferred fields, or None on failure.
         """
         ...
 

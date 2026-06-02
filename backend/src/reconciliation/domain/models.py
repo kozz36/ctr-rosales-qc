@@ -244,6 +244,25 @@ class OfficialGre(BaseModel):
         return cls(guia_id=guia_id, serie=serie, numero=numero, ruc_emisor="", ruc_receptor="")
 
 
+class MaterialKeyInference(BaseModel):
+    """Return value from MaterialInferencePort.infer() (R8.6, MAT-006, ADR-2).
+
+    Carries the LLM-inferred canonical tuple for a material description.
+    The resolver (MaterialKeyResolver) wraps this into a CanonicalKey with
+    method="llm_inferred" after applying the hallucination guard.
+
+    All fields except ``familia`` are optional: the LLM may not always be
+    able to infer every dimension.  The resolver handles None values by
+    falling through to the unresolved sentinel.
+    """
+
+    familia: str
+    grado: str | None = None
+    diametro: str | None = None
+    presentacion: str | None = None
+    confidence: float = 0.0
+
+
 class ReconciliationResult(BaseModel):
     """Output of ReconciliationService.reconcile() — rev-2 (REC-C05 / design §E).
 

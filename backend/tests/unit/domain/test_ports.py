@@ -184,3 +184,66 @@ class TestSunatGreFetchPort:
     def test_fetch_returns_none_when_disabled(self) -> None:
         stub = _StubSunatGreFetch()
         assert stub.fetch("https://example.com/hashqr=XYZ") is None
+
+
+# ---------------------------------------------------------------------------
+# R8.6: MaterialInferencePort and MaterialKeyInference (MAT-006)
+# ---------------------------------------------------------------------------
+
+from reconciliation.domain.models import MaterialKeyInference
+from reconciliation.domain.ports import MaterialInferencePort
+
+
+class _StubMaterialInference:
+    def infer(self, description: str) -> MaterialKeyInference | None:
+        return MaterialKeyInference(
+            familia="BARRA",
+            grado="A615 G60",
+            diametro='1/2"',
+            presentacion="9M",
+            confidence=0.95,
+        )
+
+
+class TestMaterialInferencePort:
+    def test_isinstance_check_passes(self) -> None:
+        stub = _StubMaterialInference()
+        assert isinstance(stub, MaterialInferencePort)
+
+    def test_infer_returns_material_key_inference(self) -> None:
+        stub = _StubMaterialInference()
+        result = stub.infer("some description")
+        assert isinstance(result, MaterialKeyInference)
+        assert result.familia == "BARRA"
+
+    def test_infer_can_return_none(self) -> None:
+        class _NoneStub:
+            def infer(self, description: str) -> MaterialKeyInference | None:
+                return None
+
+        stub = _NoneStub()
+        assert isinstance(stub, MaterialInferencePort)
+        assert stub.infer("unknown") is None
+
+
+class TestMaterialKeyInference:
+    def test_all_fields(self) -> None:
+        inf = MaterialKeyInference(
+            familia="BARRA",
+            grado="A615 G60",
+            diametro='1/2"',
+            presentacion="9M",
+            confidence=0.9,
+        )
+        assert inf.familia == "BARRA"
+        assert inf.grado == "A615 G60"
+        assert inf.diametro == '1/2"'
+        assert inf.presentacion == "9M"
+        assert inf.confidence == 0.9
+
+    def test_optional_fields_default_none(self) -> None:
+        inf = MaterialKeyInference(familia="BARRA")
+        assert inf.grado is None
+        assert inf.diametro is None
+        assert inf.presentacion is None
+        assert inf.confidence == 0.0

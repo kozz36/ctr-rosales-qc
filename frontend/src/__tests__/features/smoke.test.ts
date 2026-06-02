@@ -34,6 +34,7 @@ const { MOCK_TABLE, MOCK_STATUS } = vi.hoisted(() => {
     unidad: 'KG',
     confidence: 0.95,
     identity_source: 'qr' as const,
+    year_inferred: false,
   })
 
   const makeRow = (
@@ -54,6 +55,7 @@ const { MOCK_TABLE, MOCK_STATUS } = vi.hoisted(() => {
     min_confidence: 0.9,
     requires_review: requiresReview,
     guias: status === 'DECLARED_MISSING' ? [] : [makeGuia(`T001-${registro}`, '800.0', 1)],
+    any_year_inferred: false,
   })
 
   const MOCK_TABLE: ReconciliationTableResponse = {

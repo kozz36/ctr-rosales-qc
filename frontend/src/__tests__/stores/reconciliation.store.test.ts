@@ -28,6 +28,7 @@ function makeRow(partial: Partial<ReconciliationRowResponse> = {}): Reconciliati
     min_confidence: 0.92,
     requires_review: false,
     guias: [],
+    any_year_inferred: false,
     ...partial,
   }
 }

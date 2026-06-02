@@ -32,6 +32,7 @@ const { MOCK_TABLE_DATA, MOCK_STATUS } = vi.hoisted(() => {
     unidad: 'KG',
     confidence: 0.9,
     identity_source: 'qr' as const,
+    year_inferred: false,
   }
   const GUIA_B = {
     guia_id: 'T009-BBB',
@@ -40,6 +41,7 @@ const { MOCK_TABLE_DATA, MOCK_STATUS } = vi.hoisted(() => {
     unidad: 'KG',
     confidence: 0.85,
     identity_source: 'ocr_fallback' as const,
+    year_inferred: false,
   }
   const ROW_MISMATCH_1: ReconciliationRowResponse = {
     row_id: '101|2025-03-15|BARRA 1/2|KG',
@@ -55,6 +57,7 @@ const { MOCK_TABLE_DATA, MOCK_STATUS } = vi.hoisted(() => {
     min_confidence: 0.9,
     requires_review: false,
     guias: [GUIA_A],
+    any_year_inferred: false,
   }
   const ROW_MISMATCH_2: ReconciliationRowResponse = {
     row_id: '102|2025-03-16|BARRA 3/8|KG',
@@ -70,6 +73,7 @@ const { MOCK_TABLE_DATA, MOCK_STATUS } = vi.hoisted(() => {
     min_confidence: 0.85,
     requires_review: false,
     guias: [GUIA_B],
+    any_year_inferred: false,
   }
   const UNRESOLVED = {
     guia_id: 'T009-UNRES',

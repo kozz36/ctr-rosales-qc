@@ -108,12 +108,33 @@ describe('UnresolvedGuiasPanel', () => {
     expect(wrapper.find('.unresolved-panel__item-source').text()).toBe('OCR fallback')
   })
 
-  it('displays source_pages for each entry', () => {
+  it('displays first_page when set (REV-C06: first_page is authoritative)', () => {
     const wrapper = mount(UnresolvedGuiasPanel, {
-      props: { unresolvedGuias: [makeUnresolved({ source_pages: [12, 13, 14] })] },
+      props: { unresolvedGuias: [makeUnresolved({ first_page: 7, source_pages: [7, 8] })] },
+    })
+    expect(wrapper.find('.unresolved-panel__item-pages').text()).toBe('Pág. 7')
+  })
+
+  it('displays source_pages when first_page is null (REV-C06: null fallback)', () => {
+    const wrapper = mount(UnresolvedGuiasPanel, {
+      props: { unresolvedGuias: [makeUnresolved({ first_page: null, source_pages: [12, 13, 14] })] },
     })
     expect(wrapper.find('.unresolved-panel__item-pages').text()).toContain('12')
     expect(wrapper.find('.unresolved-panel__item-pages').text()).toContain('13')
+  })
+
+  it('shows — when first_page is null and source_pages is empty (REV-C06: empty fallback)', () => {
+    const wrapper = mount(UnresolvedGuiasPanel, {
+      props: { unresolvedGuias: [makeUnresolved({ first_page: null, source_pages: [] })] },
+    })
+    expect(wrapper.find('.unresolved-panel__item-pages').text()).toBe('—')
+  })
+
+  it('displays first_page=0 as valid page (not treated as absent)', () => {
+    const wrapper = mount(UnresolvedGuiasPanel, {
+      props: { unresolvedGuias: [makeUnresolved({ first_page: 0, source_pages: [0, 1] })] },
+    })
+    expect(wrapper.find('.unresolved-panel__item-pages').text()).toBe('Pág. 0')
   })
 
   it('shows page range as fallback when guia_id is empty string', () => {

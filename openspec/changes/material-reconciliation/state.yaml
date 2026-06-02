@@ -76,8 +76,8 @@ dag:
     pending_tasks: 29
     note: Rev-3 slices R1–R4 appended. All prior 50/50 tasks remain [x]. Delivery strategy stacked-to-main.
   apply:
-    status: in_progress
-    progress: 75/79 tasks (R3 complete; R4 pending)
+    status: done
+    progress: 79/79 tasks — ALL COMPLETE (R4 done 2026-06-02)
     depends_on: [tasks]
     engram_topic: sdd/material-reconciliation/apply-progress
     branch: feat/rev2-identity-domain  # stacked-to-main chain, not yet pushed
@@ -100,8 +100,8 @@ dag:
       - "PR-12 Rev-3 R1 (hybrid classifier + decode_identities + dual-QR COLOR + first_page sentinel) [R1.1-R1.9, 2026-06-02]"
       - "PR-13 Rev-3 R2 (stamp-crop D4 + bounded year inference D5 + any_year_inferred REC-C07) [R2.1-R2.8, 2026-06-02]"
       - "PR-14 Rev-3 R3 (OfficialGre domain model, SunatDescargaqrAdapter, SunatConfig, _stage_sunat_fetch, folded year-fix #2753) [R3.1-R3.8, 2026-06-02]"
-    pending_slices:
-      - PR-15 R4: Frontend year_inferred advisory + first_page=None safety [R4.1-R4.4]
+      - "PR-15 Rev-3 R4 (FE: year_inferred types, YearInferredBadge, GuiaDrillDown+ReconciliationRow wiring, UnresolvedGuiasPanel null safety, 18 new tests) [R4.1-R4.4, 2026-06-02]"
+    pending_slices: []
     tests:
       backend_unit: 584 passing (was 557 before PR-14; +27 new in test_sunat_descargaqr.py)
       backend_integration:
@@ -111,6 +111,8 @@ dag:
         r2_gate_b: 1/1 (stamp crop dimensions)
         r2_gate_c: 1/1 (real Ollama month=5 confirmed)
         r1_gate: 10/10 (no regression)
+      frontend_vitest: 175 passed (was 157; +18 new for R4)
+      frontend_type_check: 0 errors
       ruff: all checks passed on changed source files
       mypy: 0 new errors on changed files (pre-existing in container.py unchanged)
   verify:

@@ -1016,22 +1016,22 @@ Chain strategy: stacked-to-main
 > Spec refs: REV-C05 (year_inferred advisory), REV-C06 (first_page=None safety), REV-C06–REV-C08
 > scenarios.
 
-- [ ] R4.1 — Update `frontend/src/api/types.ts`: add `year_inferred: boolean` to `GuiaContributionResponse`, `any_year_inferred: boolean` to `ReconciliationRowDTO`, type `first_page: number | null` on unresolved guía DTO
+- [x] R4.1 — Update `frontend/src/api/types.ts`: add `year_inferred: boolean` to `GuiaContributionResponse`, `any_year_inferred: boolean` to `ReconciliationRowDTO`, type `first_page: number | null` on unresolved guía DTO
   **Spec/Design**: REC-C07, REV-C05. Default `false` for backward compat.
   **Files**: `frontend/src/api/types.ts`.
   **Dependency**: independent; start immediately after PR-12 merged.
 
-- [ ] R4.2 — Implement `YearInferredBadge.vue`; integrate into `GuiaDrillDown.vue` and `ReconciliationRow.vue`
+- [x] R4.2 — Implement `YearInferredBadge.vue`; integrate into `GuiaDrillDown.vue` and `ReconciliationRow.vue`
   **Spec/Design**: REV-C05, scenario REV-C06. Yellow badge on fecha cell when `year_inferred === true`. Expand/tooltip: day-month (vision), inferred year, inference bounds. Confirm/override via existing date-edit path; audit `action_type="year_inferred_confirmed"/"year_inferred_overridden"`. `any_year_inferred=true` on aggregate row → advisory indicator (not red MISMATCH badge).
   **Files**: `frontend/src/features/review/YearInferredBadge.vue` (new), `frontend/src/features/review/GuiaDrillDown.vue`, `frontend/src/features/review/ReconciliationRow.vue`.
   **Dependency**: R4.1 done.
 
-- [ ] R4.3 — Fix `UnresolvedGuiasPanel.vue` for `first_page: null` and `first_page: 0` (REV-C06)
+- [x] R4.3 — Fix `UnresolvedGuiasPanel.vue` for `first_page: null` and `first_page: 0` (REV-C06)
   **Spec/Design**: REV-C06, scenarios REV-C07, REV-C08. `null` → show `source_pages` list or "página desconocida". `0` → show "pág. 1" (1-based), NOT treated as absent. Replace all `!= 0` guards with `!== null`.
   **Files**: `frontend/src/features/review/UnresolvedGuiasPanel.vue`.
   **Dependency**: R4.1 done.
 
-- [ ] R4.4 — Tests for R4.1–R4.3; verify vitest + vue-tsc clean
+- [x] R4.4 — Tests for R4.1–R4.3; verify vitest + vue-tsc clean
   **Spec refs**: REV-C06 scenario, REV-C07, REV-C08.
   **Deliverables**:
   - `frontend/src/__tests__/features/YearInferredBadge.test.ts` (new) — badge renders when `year_inferred=true`; absent when `false`; tooltip shows bounds; confirm emits correct `action_type`.

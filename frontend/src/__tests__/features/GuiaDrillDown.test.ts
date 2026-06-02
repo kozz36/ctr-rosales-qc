@@ -54,6 +54,7 @@ function makeGuia(overrides: Partial<GuiaContributionResponse> = {}): GuiaContri
     unidad: 'KG',
     confidence: 0.92,
     identity_source: 'qr',
+    year_inferred: false,
     ...overrides,
   }
 }
@@ -199,5 +200,41 @@ describe('GuiaDrillDown', () => {
     // Only useGuiaLineEdit mock is in scope; it sets up the mutation but does NOT
     // fire on mount. mutate() should not have been called.
     expect(mockMutate).not.toHaveBeenCalled()
+  })
+
+  // ---------------------------------------------------------------------------
+  // Rev-3 D5 / REV-C05: year_inferred advisory badge per contribution (R4.2)
+  // ---------------------------------------------------------------------------
+
+  it('shows YearInferredBadge when guia.year_inferred=true (R4.2)', () => {
+    const wrapper = mount(GuiaDrillDown, {
+      props: { guias: [makeGuia({ year_inferred: true })], runId: 'run-abc' },
+    })
+    expect(wrapper.find('.year-inferred-badge').exists()).toBe(true)
+  })
+
+  it('does not show YearInferredBadge when guia.year_inferred=false (R4.2)', () => {
+    const wrapper = mount(GuiaDrillDown, {
+      props: { guias: [makeGuia({ year_inferred: false })], runId: 'run-abc' },
+    })
+    expect(wrapper.find('.year-inferred-badge').exists()).toBe(false)
+  })
+
+  it('shows YearInferredBadge only for guias with year_inferred=true (mixed list)', () => {
+    const guias = [
+      makeGuia({ guia_id: 'T009-INFERRED', year_inferred: true }),
+      makeGuia({ guia_id: 'T009-EXACT', year_inferred: false }),
+    ]
+    const wrapper = mount(GuiaDrillDown, { props: { guias, runId: 'run-abc' } })
+    const badges = wrapper.findAll('.year-inferred-badge')
+    expect(badges).toHaveLength(1)
+  })
+
+  it('renders "Fecha" column header (R4.2)', () => {
+    const wrapper = mount(GuiaDrillDown, { props: DEFAULT_PROPS })
+    expect(wrapper.find('th[scope="col"]').text()).not.toBeUndefined()
+    // Check all column headers include "Fecha"
+    const headers = wrapper.findAll('th').map((th) => th.text())
+    expect(headers.some((h) => h === 'Fecha')).toBe(true)
   })
 })

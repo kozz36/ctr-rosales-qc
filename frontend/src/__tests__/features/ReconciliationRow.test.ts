@@ -59,6 +59,7 @@ function makeGuia(overrides: Partial<GuiaContributionResponse> = {}): GuiaContri
     unidad: 'KG',
     confidence: 0.92,
     identity_source: 'qr',
+    year_inferred: false,
     ...overrides,
   }
 }
@@ -78,6 +79,7 @@ function makeRow(overrides: Partial<ReconciliationRowResponse> = {}): Reconcilia
     min_confidence: 0.92,
     requires_review: false,
     guias: [makeGuia()],
+    any_year_inferred: false,
     ...overrides,
   }
 }
@@ -239,5 +241,34 @@ describe('ReconciliationRow', () => {
       props: { row, runId: 'run-abc' },
     })
     expect(wrapper.find('.recon-row__status-badge').text()).toContain('Sin clasificar')
+  })
+
+  // ---------------------------------------------------------------------------
+  // Rev-3 D5 / REV-C05: any_year_inferred aggregate advisory badge (R4.2)
+  // ---------------------------------------------------------------------------
+
+  it('shows YearInferredBadge in confidence cell when any_year_inferred=true (R4.2)', () => {
+    const row = makeRow({ any_year_inferred: true })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    expect(wrapper.find('.year-inferred-badge').exists()).toBe(true)
+  })
+
+  it('does not show YearInferredBadge when any_year_inferred=false (R4.2)', () => {
+    const row = makeRow({ any_year_inferred: false })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    expect(wrapper.find('.year-inferred-badge').exists()).toBe(false)
+  })
+
+  it('YearInferredBadge is independent from requires_review flag (can show both)', () => {
+    const row = makeRow({ any_year_inferred: true, requires_review: true })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    expect(wrapper.find('.year-inferred-badge').exists()).toBe(true)
+    expect(wrapper.find('.recon-row__flag--review').exists()).toBe(true)
   })
 })

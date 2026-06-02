@@ -49,6 +49,7 @@ function makeRow(): ReconciliationRowResponse {
     min_confidence: 0.88,
     requires_review: false,
     guias: [],
+    any_year_inferred: false,
   }
 }
 

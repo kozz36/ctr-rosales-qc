@@ -619,7 +619,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 Completed 2026-05-31 as part of `Hotfix-E2E` apply slice. 455 backend tests passing. Validated real PDF pipeline including 5 bug fixes uncovered during e2e.
 
-### [ ] 6.1 — Backend E2E: full pipeline happy path (greenfield baseline)
+### [x] 6.1 — Backend E2E: full pipeline happy path (greenfield baseline)
 
 **Spec refs**: INJ-S01 through INJ-S05, EXT-S01 through EXT-S12, REC-S01 through REC-S08, EXP-S01 through EXP-S06.
 **Depends on**: Phase 4.2 complete.
@@ -631,7 +631,7 @@ Completed 2026-05-31 as part of `Hotfix-E2E` apply slice. 455 backend tests pass
 
 **Completable in**: one session.
 
-### [ ] 6.2 — Backend E2E: error paths
+### [x] 6.2 — Backend E2E: error paths
 
 **Spec refs**: INJ-S03, EXT-S04, EXT-S08, EXT-S08b, EXT-S09, EXT-S11, REC-S04, REC-S05.
 **Depends on**: 6.1.
@@ -645,7 +645,7 @@ Completed 2026-05-31 as part of `Hotfix-E2E` apply slice. 455 backend tests pass
 
 **Completable in**: one session.
 
-### [ ] 6.3 — Frontend Vitest smoke (greenfield baseline)
+### [x] 6.3 — Frontend Vitest smoke (greenfield baseline)
 
 **Spec refs**: REV-S01 through REV-S08b.
 **Depends on**: Phase 5.5.
@@ -661,7 +661,7 @@ Completed 2026-05-31 as part of `Hotfix-E2E` apply slice. 455 backend tests pass
 
 > Can start once Phase 4 + Phase 5 are functionally complete. Tasks are independent.
 
-### [ ] 7.1 — config.yaml + .env.example
+### [x] 7.1 — config.yaml + .env.example
 
 **Spec refs**: EXT-006, EXT-008, design §3.
 **Depends on**: 2.1.
@@ -672,7 +672,7 @@ Completed 2026-05-31 as part of `Hotfix-E2E` apply slice. 455 backend tests pass
 
 **Completable in**: one session.
 
-### [ ] 7.2 — Cost cap enforcement + audit logging
+### [x] 7.2 — Cost cap enforcement + audit logging
 
 **Spec refs**: EXT-008, EXT-011, design §4.
 **Depends on**: 2.3 (pipeline).
@@ -685,7 +685,7 @@ Completed 2026-05-31 as part of `Hotfix-E2E` apply slice. 455 backend tests pass
 
 **Completable in**: one session.
 
-### [ ] 7.3 — Flagging surface completeness
+### [x] 7.3 — Flagging surface completeness
 
 **Spec refs**: REV-004, INJ-007 (orientation_fallback_failed), INJ-S04, INJ-S05, EXT-S08, EXT-S08b.
 **Depends on**: 1.1 (models), 2.3 (pipeline), 4.2 (API).
@@ -697,7 +697,7 @@ Completed 2026-05-31 as part of `Hotfix-E2E` apply slice. 455 backend tests pass
 
 **Completable in**: one session.
 
-### [ ] 7.4 — Local dev run script
+### [x] 7.4 — Local dev run script
 
 **Spec refs**: design migration/rollout (local-first).
 **Depends on**: Phase 4.2, Phase 5.5.

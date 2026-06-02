@@ -50,8 +50,8 @@ dag:
     engram_topic: sdd/material-reconciliation/tasks
     note: tasks.md predates the rev-2 delta; must be refreshed after the spec-delta.
   apply:
-    status: in-progress
-    progress: 43/50 tasks
+    status: done
+    progress: 50/50 tasks
     depends_on: [tasks]
     engram_topic: sdd/material-reconciliation/apply-progress
     branch: feat/rev2-identity-domain  # stacked-to-main chain, not yet pushed
@@ -70,12 +70,12 @@ dag:
       - "PR-8 slice-1 (real-data e2e rev-2; 20/20 guias QR-decoded on real PDF) [S1.9]"
       - "PR-9 slice-2 (FE types, GuiaDrillDown, summed_qty read-only, reassign by guia_id) [S2.1-S2.4]"
       - "PR-10 slice-2 (a11y/visual, UnresolvedGuiasPanel + unresolved_guias table delta, smoke) [S2.5-S2.7]"
+      - "PR-11 Phase 6/7 (6.1-6.3 e2e+smoke, 7.1-7.4 config/.env/audit/flags/Makefile) [2026-06-02]"
     pending_slices:
-      - PR-11 Phase 6/7 (6.1 happy-path e2e, 6.2 error paths, 6.3 FE smoke, 7.1-7.4 hardening)
       - deferred opt-in: SunatGreFetchAdapter (Tier-4, off by default)
     tests:
-      backend: 589 passing (incl. 86 real-PDF integration; pyzbar+zxing-cpp installed in venv)
-      frontend: 149 passing vitest, 0 vue-tsc errors
+      backend: 614 passing (incl. 101 integration; 86 real-PDF + 15 new API e2e)
+      frontend: 157 passing vitest, 0 vue-tsc errors
   verify:
     status: pending
     depends_on: [apply]

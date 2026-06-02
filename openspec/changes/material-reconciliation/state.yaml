@@ -12,6 +12,7 @@ dag:
     status: done
     completed: 2026-05-31
     delta_applied: 2026-06-01
+    delta_rev3_applied: 2026-06-02
     depends_on: [proposal]
     artifact: specs/
     engram_topic: sdd/material-reconciliation/spec
@@ -19,7 +20,7 @@ dag:
     delta_domains: [extraction, reconciliation, review]
     delta_summary: >
       Rev-2 delta (A-F) encoded as testable requirements + scenarios.
-      EXT-011 to EXT-022 added to extraction/spec.md (QR identity port, local decode
+      EXT-011 to EXT-018 added to extraction/spec.md (QR identity port, local decode
       adapter spec, tiered precedence invariant, OCR fallback, multi-page block
       grouping, SunatGreFetchPort seam, authoritative fecha, UNRESOLVED fallback).
       REC-C01 to REC-C06 added to reconciliation/spec.md (handwritten fecha authority,
@@ -27,9 +28,26 @@ dag:
       summed_qty read-only, UNRESOLVED surfacing, API surface PATCH /guias/{id}/lines).
       REV-C01 to REV-C04 added to review/spec.md (drill-down, reassign by guia_id,
       line edit, unresolved guias bucket).
+    delta_rev3_summary: >
+      Rev-3 delta (4 real-pipeline findings from qwen3.5:9b + real PaddleOCR + real QR
+      libs, masked by prior injected-fake e2e tests).
+      EXT-019 (hybrid classifier — CRITICAL: scanned guías now classified via QR Condition A
+      or Forma-header-only Condition B, not digital-title only).
+      EXT-020 (vision input adequacy — full-page-200dpi insufficient; stamp crop or
+      higher DPI required).
+      EXT-021 (bounded year inference — day-month trusted from vision; year reconstructed
+      from delivery_GRE_date <= reception <= reference_date; year_inferred provenance).
+      EXT-022 (first_page None sentinel — replaces default-0; fixes ambiguous page-0
+      fallback in UnresolvedGuiaResponse).
+      REC-C07 to REC-C07 added to reconciliation/spec.md (year_inferred propagation;
+      any_year_inferred on ReconciliationRow).
+      REV-C05 to REV-C06 added to review/spec.md (year_inferred advisory indicator;
+      first_page=None panel safety).
+      Deferred: SunatGreFetchPort integration — spike in progress; NOT a rev-3 requirement.
     note: >
-      tasks.md predates the rev-2 delta and must be refreshed next (slice-1 backend-hotfix
-      tasks now have full testable spec coverage).
+      tasks.md predates the rev-2 delta and must be refreshed next.
+      After rev-3 spec is encoded, a design-delta for the hybrid classifier and year
+      inference adapter changes is recommended before a rev-3 tasks refresh.
   design:
     status: done
     completed: 2026-05-31

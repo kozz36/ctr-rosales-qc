@@ -366,6 +366,54 @@ precedence.
 
 ---
 
+## Delta — rev 3 (2026-06-02): year inference provenance in reconciliation output
+
+> The requirements below ADD or MODIFY behaviour relative to REC-001 through REC-C06 above.
+> Each entry is marked [ADDED] or [MODIFIED: replaces <id>].
+
+### REC-C07 — [ADDED] year_inferred provenance propagated through ReconciliationRow
+
+When a `GuiaDeRemision.fecha` was set via bounded year inference (EXT-021,
+`year_inferred = true`), this provenance MUST be preserved in the reconciliation output.
+
+`GuiaContribution` MUST carry a `year_inferred: bool` field (default `false`).
+When `year_inferred = true` on a `GuiaDeRemision`, all `GuiaContribution` entries derived
+from that guía MUST have `year_inferred = true`.
+
+`ReconciliationRow` MUST expose `any_year_inferred: bool` — a derived flag that is `true`
+when at least one contributing `GuiaContribution` has `year_inferred = true`.
+
+`any_year_inferred = true` on a `ReconciliationRow` MUST be surfaced as an advisory
+indicator in the review UI (distinct from the red `requires_review` / MISMATCH flag).
+It does NOT block reconciliation or change MATCH/MISMATCH logic; it is a transparency
+signal for the engineer.
+
+The `any_year_inferred` flag MUST be included in the export audit trail.
+
+---
+
+## Acceptance Scenarios — Delta rev 3
+
+### Scenario REC-C08 — [ADDED] year_inferred propagates from guía to ReconciliationRow
+
+**Given** guía block `T009-0741770` has `fecha = 2026-05-28` with `year_inferred = true`
+**And** this guía contributes to group
+  `(registro=232, fecha=2026-05-28, material_canonical="BARRA CORRUGADA 1/2", unidad="KG")`
+**When** `ReconciliationService` processes the group
+**Then** `GuiaContribution` for `T009-0741770` has `year_inferred = true`
+**And** `ReconciliationRow.any_year_inferred = true`
+**And** the MATCH/MISMATCH determination is not affected by `year_inferred`
+
+### Scenario REC-C09 — [ADDED] any_year_inferred false when all dates directly read
+
+**Given** all guía blocks contributing to a group have `year_inferred = false`
+  (vision directly read the year component with high confidence)
+**When** `ReconciliationService` computes the group
+**Then** `ReconciliationRow.any_year_inferred = false`
+**And** no advisory indicator is set for this row
+
+---
+
 ## Out of scope for this domain
 
 - PDF reading, page rendering, deskew (ingestion domain).

@@ -540,6 +540,305 @@ without encoding it as a spec requirement).
 
 ---
 
+## Delta — rev 3 (2026-06-02): real-pipeline findings — hybrid classifier, vision input resolution, year inference, first_page sentinel
+
+> The requirements below ADD or MODIFY behaviour relative to EXT-001 through EXT-018 above.
+> Findings originate from a real pipeline run: provider=ollama qwen3.5:9b vision + real PaddleOCR
+> + real pyzbar/zxing-cpp, over the raw 493-page PDF (registros 230/231/232, pages 0–45).
+> Prior injected-fake e2e tests (HybridDocSource text injection) masked all four gaps.
+> Each entry is marked [ADDED] or [MODIFIED: replaces <id>].
+
+### EXT-019 — [MODIFIED: replaces EXT-001] Hybrid page classifier for scanned guías
+
+**[MODIFIED: EXT-001 is insufficient for image-only pages — digital-title-only classification
+gates out all scanned guías on real input because their digital text layer contains only the
+4-line Autodesk Forma header with no "GUIA DE REMISION" string.]**
+
+`PageClassifier` MUST classify a page as `guia` if ANY of the following conditions holds:
+
+**Condition A — QR-decoded identity (deterministic tier)**:
+The page bears a decodable SUNAT GRE QR that passes the `IdentityExtractionPort` confidence
+gate (all five gating conditions in EXT-012). A page satisfying Condition A MUST be
+classified as `guia` regardless of its digital text content.
+
+**Condition B — Forma-header-only heuristic (scanned-page fallback)**:
+The page's digital text matches ALL of the following simultaneously:
+1. Total character count is < 200.
+2. The text matches the known Autodesk Forma header pattern (contains a recognisable Forma
+   header signature such as "Autodesk Forma" or an equivalent project-document header token
+   — exact pattern is an adapter concern, not a domain invariant).
+3. The page is image-dominant: a raster image covers the majority of the page area (as
+   determined by the `DocumentSourcePort` or an equivalent rendering heuristic).
+
+A page satisfying Condition B MUST be classified as `guia` even when Condition A fails
+(e.g., QR present but undecodable, or QR absent entirely).
+
+**Condition C — Digital title match (original EXT-001 logic)**:
+The digital text layer contains a title string matching `GUÍA DE REMISIÓN` with sufficient
+confidence (unchanged from EXT-001).
+
+The classifier MUST evaluate Conditions A, B, and C in any order; any one is sufficient.
+Condition A carries the highest epistemic weight: if a QR passes confidence gating, the
+classification is authoritative. Condition B is a heuristic fallback; it MUST NOT override
+a non-guía classification on pages that have substantial digital text (>= 200 chars).
+
+Classification MUST NOT rely solely on digital title text for image-only pages. The Condition
+A check (QR decode) MUST reuse the `IdentityExtractionPort` already invoked in the QR
+identity tier (EXT-011); a second independent QR scan MUST NOT be introduced.
+
+The supplier name (e.g., "Aceros Arequipa") MUST NOT be used as a classification signal;
+this constraint from EXT-001 is preserved unchanged.
+
+Non-guía page types (declared, protocolo, planilla_resumen, listado_barras, cover_index,
+photo, unclassified) MUST NOT be classified as `guia` solely on the basis of Condition B.
+In particular, declared/protocolo pages have > 200 chars of digital text and will not satisfy
+Condition B.
+
+### EXT-020 — [MODIFIED: replaces EXT-005 / EXT-008] Vision input MUST be adequate for handwritten date legibility
+
+**[MODIFIED: EXT-005 requires vision-LLM invocation with the stamp area; EXT-008 states the
+full page MUST NOT be sent unless the crop cannot be isolated. Real-pipeline finding confirms
+that full-page-200dpi input causes local vision models (gemma variants) to return null or
+hallucinate; adequate resolution is therefore a first-class requirement, not an advisory.]**
+
+The `VisionLLMPort` MUST receive input that is adequate for a local vision model to read the
+handwritten reception date from the guía stamp area. "Adequate" MUST satisfy at least one
+of the following:
+
+**Option A — Cropped stamp region**: A crop of the stamp/reception area of the guía page,
+at any DPI sufficient for the model to read handwritten DD/MM characters. The crop region
+MAY be determined by a configurable heuristic (e.g., lower-right quadrant) or by a
+configurable fixed bounding box; the exact crop strategy is an adapter concern.
+
+**Option B — Higher-DPI full page**: The full page rendered at a DPI sufficient for
+handwritten date legibility (empirically >= 300 DPI for local 9B-class models). "Sufficient"
+is adapter-specific and MUST be validated against real data.
+
+The existing constraint from EXT-008 — that vision MUST NOT be invoked on non-guía pages —
+is unchanged.
+
+The adapter (concrete implementation behind `VisionLLMPort`) MUST document which option it
+uses and the rationale. Switching between options MUST require only an adapter change; the
+domain port contract `read_handwritten_date(image) → VisionResult` is unchanged.
+
+Full-page-200dpi-only input is insufficient and MUST NOT be the sole available mode for
+providers where it produces null/hallucinated output on real data.
+
+### EXT-021 — [ADDED] Bounded year inference for handwritten reception date
+
+**[Context: local vision models (4B–12B class) reliably read DAY-MONTH from the handwritten
+reception stamp but consistently produce the wrong YEAR. The year MUST therefore be
+reconstructed from domain bounds when vision confidence for the year component is low.]**
+
+When the vision result for the handwritten reception date provides DAY-MONTH with sufficient
+confidence but the YEAR component is absent, garbled, or low-confidence, the pipeline MUST
+reconstruct the year via bounded inference:
+
+**Bounds**:
+- Lower bound: `delivery_GRE_date` — the printed electronic GRE delivery date on the guía
+  (read from OCR of the printed table/header, NOT from the QR payload which does not carry a
+  date). When `delivery_GRE_date` is unavailable (OCR failed or SUNAT fetch is off), the
+  lower bound MAY be omitted (year is inferred from upper bound only, accepting higher
+  uncertainty).
+- Upper bound: `reference_date` — the PDF document/export date if available, otherwise the
+  pipeline run date.
+
+**Inference rule**: compute `date(Y, MM, DD)` for each candidate year Y satisfying
+`delivery_GRE_date <= date(Y, MM, DD) <= reference_date`. When exactly one valid Y exists,
+use it. When multiple valid years exist, use the most recent. When no valid Y exists (DD/MM
+is physically impossible within bounds), the date MUST be flagged `requires_review: true`
+and surfaced for manual correction; inference MUST NOT produce a date known to violate the
+bounds.
+
+**Provenance**: the `VisionResult` / date extraction output MUST carry `year_inferred: bool`.
+When the year was reconstructed by this rule, `year_inferred = true` MUST be recorded.
+`year_inferred` MUST be propagated through reconciliation to the review UI and audit trail.
+
+**Audit-gate integrity**: a `year_inferred = true` reception date MUST be surfaced in the
+review UI as a yellow/advisory flag (distinct from the red `requires_review` flag used for
+confidence failures) so the engineer can inspect and confirm the inferred date.
+The OCR validation gate remains honest: an inferred year is visually distinguishable from a
+directly-read year; the system MUST NOT present an inferred date as a fully confident read.
+
+The lower bound delivery date MUST be read from OCR of printed content; the compact SUNAT
+GRE QR payload (format `RUC|tipo|serie|numero|code|RUC`) does NOT carry a date and MUST NOT
+be used as a source for the lower bound.
+
+### EXT-022 — [MODIFIED: replaces EXT-015 field definition] first_page MUST use None sentinel, not 0
+
+**[MODIFIED: EXT-015 defines `GuiaDeRemision.first_page: int — page index of the first page
+of the block`. The default value 0 is ambiguous: a guía genuinely starting at page index 0
+is indistinguishable from an uninitialised / absent first_page. This causes the
+`UnresolvedGuiaResponse.first_page` fallback logic to mishandle page-0 guías.]**
+
+`GuiaDeRemision.first_page` MUST be typed as `int | None` with a default of `None` (not 0).
+
+The value MUST be set to the concrete page index (>= 0 is a valid value) when the first page
+of the block is known, and `None` exclusively when the first page is genuinely unknown (e.g.,
+a guía block constructed without any page reference).
+
+Any fallback or API serialisation logic that reads `first_page` MUST treat `None` as "absent"
+and `0` as "page index zero" — these two states MUST be distinguishable.
+
+The pattern `g.first_page if g.first_page != 0 else source_pages[0]` is PROHIBITED because
+it incorrectly overrides a valid page-0 assignment. The correct pattern is
+`g.first_page if g.first_page is not None else source_pages[0]`.
+
+### EXT-023 — [ADDED] SUNAT descargaqr opt-in deterministic guía-data source
+
+**[Context: the SUNAT descargaqr spike (engram `sdd/material-reconciliation/sunat-fetch-spike`)
+CONFIRMED that the URL-variant QR (`…/descargaqr?hashqr=<base64>`) resolves to the official SUNAT
+GRE representation PDF via a plain no-auth GET. This promotes `SunatGreFetchPort` from the
+future-seam stance of EXT-016 to a first-class OPT-IN deterministic source. The spec phase
+predated the confirmed spike; this requirement records the confirmed behaviour.]**
+
+`SunatGreFetchPort` MUST support an opt-in concrete adapter that, when enabled, GETs the
+QR-derived `hashqr_url` (`…/descargaqr?hashqr=<base64>`) with NO OAuth and NO Clave SOL (the
+`hashqr` is the token), receives the official SUNAT GRE representation document
+(`Content-Type: application/pdf`, full digital text — not a scan), and parses it with PyMuPDF
+`get_text()` to extract deterministically:
+- line items: `cantidad`, `unidad`, `descripción`, `código producto SUNAT`
+- `fecha de emisión` and `fecha de entrega`
+- emisor and receptor RUCs
+
+The parsed result MUST be returned as a pure domain `OfficialGre` value object.
+
+**Precedence (extends EXT-013)**:
+- When SUNAT data is available for a guía block, SUNAT line-item quantities and units MUST take
+  precedence over OCR-extracted quantities for that same block. OCR quantities (Tier 1) become the
+  FALLBACK, used only when the fetch is disabled, unavailable, fails, or the page has no
+  `hashqr_url`.
+- The SUNAT `fecha de entrega` MUST be usable as the deterministic lower bound for bounded year
+  inference (EXT-021).
+- SUNAT electronic dates (emisión/entrega) MUST NOT be used as the grouping `fecha`. The grouping
+  `fecha` remains the handwritten reception date read by `VisionLLMPort` (EXT-017 / REC-C01) —
+  this invariant is absolute and unaffected by enabling SUNAT.
+
+**Air-gap default (local-first preserved)**: `SunatGreFetchPort` MUST remain OFF by default behind
+an explicit configuration flag (`sunat.enabled: false` in the committed config). Enabling it is the
+ONLY network egress in the system and MUST be documented as the explicit air-gap exception. When
+disabled, no network call is made and OCR quantities are authoritative.
+
+**Failure handling**: a fetch failure (timeout, non-200, non-PDF, parse error) MUST degrade
+gracefully — the block retains its OCR-extracted quantities and the run MUST NOT abort. The
+downloaded GRE PDF MUST be cached in the run output directory for audit and idempotency; a cached
+copy MUST be reused on re-run within the same run directory rather than re-fetched.
+
+**Hexagonal**: `OfficialGre` MUST be a pure domain value object (no IO/SDK). The concrete adapter
+MUST lazy-import its HTTP client inside the fetch method so the test suite runs without it. The
+pipeline/application layer MUST depend only on `SunatGreFetchPort`, never on the concrete adapter.
+
+---
+
+## Acceptance Scenarios — Delta rev 3
+
+### Scenario EXT-S23 — [ADDED] Scanned guía with QR classified via Condition A
+
+**Given** a page whose digital text layer contains only the Autodesk Forma 4-line header
+  (158 chars, no "GUIA DE REMISION" string)
+**And** the page bears a SUNAT GRE QR that decodes to a passing `GuiaIdentity`
+  (all five confidence-gate conditions satisfied)
+**When** `PageClassifier` processes the page
+**Then** the page is classified as `guia` (Condition A)
+**And** the classification is recorded as authoritative (not heuristic)
+**And** the page is eligible for QR identity, OCR quantity, and vision date extraction
+
+### Scenario EXT-S24 — [ADDED] Scanned guía with unreadable QR classified via Condition B
+
+**Given** a page whose digital text layer contains only the Autodesk Forma 4-line header
+  (< 200 chars, matching the Forma header pattern)
+**And** the page is image-dominant (raster covers majority of the page area)
+**And** the QR on the page fails to decode (or is absent)
+**When** `PageClassifier` processes the page
+**Then** the page is classified as `guia` (Condition B heuristic)
+**And** `identity_source` on the resulting `GuiaDeRemision` is `"ocr_fallback"` (no QR)
+**And** the page is eligible for OCR quantity and vision date extraction
+
+### Scenario EXT-S25 — [ADDED] Genuine declared page NOT misclassified as guía
+
+**Given** a declared/detail page whose digital text layer contains 1200 chars of embedded
+  material text (registro notes, declared weights — far above the 200-char threshold)
+**When** `PageClassifier` processes the page
+**Then** the page is classified as `declared` (not `guia`)
+**And** Condition B (Forma-header-only heuristic) does NOT fire because char count >= 200
+**And** the page is processed by declared-side extraction only (no OCR quantities, no vision)
+
+### Scenario EXT-S26 — [ADDED] Vision receives adequate stamp-region input
+
+**Given** a `guia`-class page after deskew
+**And** the configured vision adapter uses Option A (stamp-region crop)
+**When** `VisionLLMPort.read_handwritten_date` is invoked
+**Then** the adapter sends a cropped stamp-area image (not the full-page-200dpi render)
+**And** the returned `VisionResult.date` is non-null and contains a parseable DD/MM value
+
+### Scenario EXT-S27 — [ADDED] Year inferred from bounds; year_inferred=true recorded
+
+**Given** vision returns DD=28, MM=05 with high day-month confidence, but year component
+  is absent or low-confidence
+**And** the printed GRE delivery date (OCR-read) is 2026-05-20
+**And** the pipeline reference date is 2026-06-01
+**When** the year inference rule is applied
+**Then** candidate year 2026 satisfies: `2026-05-20 <= 2026-05-28 <= 2026-06-01`
+**And** the reception date is set to `2026-05-28`
+**And** `year_inferred = true` is recorded in the extraction provenance
+**And** the review UI surfaces an advisory flag for this date field
+
+### Scenario EXT-S28 — [ADDED] Year inference when no lower bound available
+
+**Given** vision returns DD=15, MM=03 with high day-month confidence, year absent
+**And** `delivery_GRE_date` is unavailable (OCR failed on printed date)
+**And** the pipeline reference date (upper bound) is 2026-06-01
+**When** the year inference rule is applied with upper-bound-only
+**Then** the most recent year Y such that `date(Y, 03, 15) <= 2026-06-01` is chosen (2026)
+**And** `year_inferred = true` is recorded
+
+### Scenario EXT-S29 — [ADDED] first_page=0 preserved correctly; None sentinel used for absent
+
+**Given** a guía block whose first page is genuinely page index 0 (first page of the PDF)
+**When** the block grouping stage assigns `first_page = 0` to the `GuiaDeRemision`
+**Then** `GuiaDeRemision.first_page = 0` (not None)
+**And** any fallback logic reading `first_page` treats `0` as a valid concrete page index
+**And** the fallback is triggered ONLY when `first_page is None`, not when `first_page == 0`
+
+### Scenario EXT-S30 — [ADDED] SUNAT fetch overrides OCR quantities when enabled
+
+**Given** `sunat.enabled = true`
+**And** a guía block whose first page yielded a `hashqr_url`
+**When** `SunatGreFetchPort.fetch` returns an `OfficialGre` with line items
+  (e.g. cantidad 0.192, unidad TONELADAS, descripción "BARRA A A615-G60 3/8\" X 9M")
+**Then** the block's quantities and units are sourced from the SUNAT line items (not OCR)
+**And** the SUNAT `fecha de entrega` is recorded as the year-inference lower bound (EXT-021)
+**And** the grouping `fecha` is STILL the handwritten reception date (vision), NOT the SUNAT date
+
+### Scenario EXT-S31 — [ADDED] SUNAT disabled by default preserves the air-gap
+
+**Given** the committed configuration (`sunat.enabled = false`)
+**When** the pipeline processes any guía block
+**Then** `SunatGreFetchPort` is never invoked and no network call is made
+**And** OCR-extracted quantities are authoritative for every block
+
+### Scenario EXT-S32 — [ADDED] SUNAT fetch failure degrades gracefully to OCR
+
+**Given** `sunat.enabled = true`
+**And** the descargaqr GET times out, returns a non-200, or returns non-PDF content
+**When** the pipeline processes the affected guía block
+**Then** the block retains its OCR-extracted quantities
+**And** the run does NOT abort
+**And** the year-inference lower bound falls back to the OCR-printed GRE date (or is omitted)
+
+---
+
+## Superseded note (rev-3): SUNAT fetch promoted from deferred seam to opt-in tier
+
+> The rev-2 "Deferred / seam item" stance for `SunatGreFetchPort` is SUPERSEDED by EXT-023 above.
+> The descargaqr spike CONFIRMED the no-auth endpoint returns the official GRE PDF with deterministic
+> line items and dates (engram `sdd/material-reconciliation/sunat-fetch-spike`). `SunatGreFetchPort`
+> is now a first-class OPT-IN deterministic source (EXT-023), still OFF by default and still the only
+> network egress (air-gap exception). It is part of the rev-3 design; implementation is sequenced as
+> rev-3 slice 3 (behind the off-by-default flag).
+
+---
+
 ## Out of scope for this domain
 
 - Summation of extracted quantities (handled by the reconciliation domain).

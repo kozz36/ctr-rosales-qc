@@ -288,6 +288,75 @@ been assigned.
 
 ---
 
+## Delta — rev 3 (2026-06-02): year_inferred advisory + first_page sentinel propagation to UI
+
+> The requirements below ADD or MODIFY behaviour relative to REV-001 through REV-C04 above.
+> Each entry is marked [ADDED] or [MODIFIED: replaces <id>].
+
+### REV-C05 — [ADDED] year_inferred advisory indicator in review grid
+
+When a `ReconciliationRow.any_year_inferred` is `true`, the review UI MUST display an
+advisory indicator on that row (distinct from the MISMATCH red flag and the
+`requires_review` orange/amber flag).
+
+Recommended presentation: a yellow/informational badge or icon on the `fecha` cell of the
+drill-down guía entry, labelled with text such as "Year inferred" or an equivalent
+localisation-friendly label.
+
+The advisory indicator MUST link or expand to show the engineer:
+- The day-month as read by vision.
+- The inferred year.
+- The bounds used for inference (`delivery_GRE_date` and `reference_date` where available).
+
+The engineer MUST be able to confirm or override the inferred date using the existing
+date-edit path (REV-002 / REV-C03). A confirmed/overridden date clears the advisory
+indicator and records the action in the audit trail with
+`action_type = "year_inferred_confirmed"` or `"year_inferred_overridden"`.
+
+### REV-C06 — [ADDED] first_page=None sentinel does not crash unresolved-guía display
+
+The `UnresolvedGuiasPanel` (REV-C04) MUST handle `GuiaDeRemision.first_page = None`
+without a runtime error or display corruption.
+
+When `first_page` is `None`, the panel MUST display the guía's `source_pages` list (if
+non-empty) as the page reference, or "unknown page" if `source_pages` is also empty.
+The panel MUST NOT treat `first_page = 0` as absent — page index 0 is a valid reference
+and MUST be displayed as "page 0" (or equivalent 1-based display: "page 1").
+
+---
+
+## Acceptance Scenarios — Delta rev 3
+
+### Scenario REV-C06 — [ADDED] year_inferred advisory visible in review grid
+
+**Given** a `ReconciliationRow` where `any_year_inferred = true`
+**And** the contributing guía `T009-0741770` has `fecha = 2026-05-28`, `year_inferred = true`
+**When** the engineer opens the review UI and expands the row drill-down
+**Then** an advisory indicator ("Year inferred") is visible on the fecha cell for `T009-0741770`
+**And** the indicator shows: day-month=28-05 (vision), inferred-year=2026,
+  bounds=delivery_GRE_date..reference_date
+**And** no MISMATCH flag is raised solely because of year inference
+**And** the engineer can click to confirm the date, recording
+  `action_type="year_inferred_confirmed"` in the audit trail
+
+### Scenario REV-C07 — [ADDED] first_page=None does not crash unresolved-guía panel
+
+**Given** a `GuiaDeRemision` in `unresolved_guias` with `first_page = None`
+  and `source_pages = [12, 13]`
+**When** the review UI renders the "Unresolved guías" section
+**Then** the guía is displayed using `source_pages` ([12, 13]) as the page reference
+**And** no JavaScript error or blank panel occurs
+
+### Scenario REV-C08 — [ADDED] first_page=0 displayed correctly; not treated as absent
+
+**Given** a guía block with `first_page = 0` (genuinely the first page of the PDF)
+**When** the review UI (or API serialisation) reads `first_page`
+**Then** the displayed page reference is 0 (or "page 1" in 1-based display)
+**And** the fallback to `source_pages[0]` is NOT triggered
+**And** the page reference is not blank or "unknown"
+
+---
+
 ## Out of scope for this domain
 
 - Pipeline execution (ingestion, extraction, normalization, reconciliation).

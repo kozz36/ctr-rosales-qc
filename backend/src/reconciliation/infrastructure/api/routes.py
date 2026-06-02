@@ -30,6 +30,8 @@ from reconciliation.infrastructure.api.schemas import (
     ErrorResponse,  # noqa: F401 — imported for openapi docs
     ExportRequest,
     ExportResponse,
+    GuiaContributionResponse,
+    GuiaLineEditRequest,
     ReassignRequest,
     ReassignResponse,
     ReconciliationRowResponse,
@@ -79,7 +81,18 @@ AppConfigDep = Annotated[Any, Depends(_get_config)]
 
 
 def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
-    """Convert a domain ReconciliationRow to the API DTO."""
+    """Convert a domain ReconciliationRow to the API DTO (rev-2: includes guias[])."""
+    guia_responses = [
+        GuiaContributionResponse(
+            guia_id=g.guia_id,
+            source_pages=g.source_pages,
+            cantidad=g.cantidad,
+            unidad=g.unidad,
+            confidence=g.confidence,
+            identity_source=g.identity_source,
+        )
+        for g in row.guias
+    ]
     return ReconciliationRowResponse(
         row_id=_row_id(row.registro, row.fecha, row.material_canonical, row.unidad),
         registro=row.registro,
@@ -92,6 +105,7 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
         status=row.status,
         source_pages=row.source_pages,
         min_confidence=row.min_confidence,
+        guias=guia_responses,
     )
 
 
@@ -298,9 +312,22 @@ def edit_row(
 
     ``row_id`` is accepted in the URL for RESTful resource addressing but the
     actual mutation target is identified by ``body.guia_id``.
+
+    Prohibited fields:
+        ``summed_qty`` — computed property; returns 422 (REC-C04).
     """
     entry = _require_run(registry, run_id)
     review_service = _require_review_service(entry, run_id)
+
+    # Explicitly reject summed_qty as a direct write target (REC-C04 / S1.7)
+    if body.field == "summed_qty":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Field 'summed_qty' is a computed property and cannot be edited directly. "
+                "Use PATCH /runs/{run_id}/guias/{guia_id}/lines to update a guía line quantity."
+            ),
+        )
 
     try:
         updated_rows = review_service.apply_edit(
@@ -310,6 +337,55 @@ def edit_row(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return RowEditResponse(
+        run_id=run_id,
+        rows=[_row_to_response(r) for r in updated_rows],
+    )
+
+
+@router.patch(
+    "/runs/{run_id}/guias/{guia_id}/lines",
+    response_model=RowEditResponse,
+    summary="Update a guía line quantity and recompute affected reconciliation rows.",
+)
+def edit_guia_line(
+    run_id: str,
+    guia_id: str,
+    body: GuiaLineEditRequest,
+    registry: RunRegistry,
+) -> RowEditResponse:
+    """Update the cantidad of a specific material line on a GuiaDeRemision.
+
+    Spec: REC-C04 / REV-C02 / S1.7.
+
+    Validation:
+        - ``cantidad < 0`` → 422 (enforced by Pydantic schema ``ge=0``).
+        - Unknown ``guia_id`` → 404.
+        - Idempotent: sending the same request twice returns the same result.
+    """
+    entry = _require_run(registry, run_id)
+    review_service = _require_review_service(entry, run_id)
+
+    from decimal import Decimal, InvalidOperation  # noqa: PLC0415
+
+    try:
+        new_cantidad = Decimal(str(body.cantidad))
+    except InvalidOperation:
+        raise HTTPException(status_code=422, detail=f"Invalid cantidad value: {body.cantidad!r}")
+
+    try:
+        updated_rows = review_service.apply_guia_line_edit(
+            guia_id=guia_id,
+            line_index=body.line_index,
+            material_canonical=body.material_canonical,
+            new_cantidad=new_cantidad,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail) from exc
+        raise HTTPException(status_code=422, detail=detail) from exc
 
     return RowEditResponse(
         run_id=run_id,

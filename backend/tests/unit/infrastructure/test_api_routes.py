@@ -565,3 +565,142 @@ class TestUploadSecurity:
         assert ".." not in stored
         assert "etc" not in stored
         assert "passwd" not in stored
+
+
+# ---------------------------------------------------------------------------
+# PATCH /runs/{run_id}/guias/{guia_id}/lines (S1.7 — rev-2 line edit)
+# ---------------------------------------------------------------------------
+
+
+class TestPatchGuiaLine:
+    def test_returns_404_for_unknown_run(self, client: TestClient) -> None:
+        resp = client.patch(
+            "/api/v1/runs/nope/guias/T001-0001/lines",
+            json={"line_index": 0, "cantidad": 100.0},
+        )
+        assert resp.status_code == 404
+
+    def test_returns_409_when_not_in_review(self, client: TestClient) -> None:
+        run_id = str(uuid.uuid4())
+        _seed_run(client, run_id, status="processing")
+        resp = client.patch(
+            f"/api/v1/runs/{run_id}/guias/T001-0001/lines",
+            json={"line_index": 0, "cantidad": 100.0},
+        )
+        assert resp.status_code == 409
+
+    def test_apply_guia_line_edit_returns_updated_rows(self, client: TestClient) -> None:
+        run_id = str(uuid.uuid4())
+        updated = [_make_row()]
+        svc = _make_review_service()
+        svc.apply_guia_line_edit = MagicMock(return_value=updated)
+        _seed_run(client, run_id, review_service=svc)
+
+        resp = client.patch(
+            f"/api/v1/runs/{run_id}/guias/T001-0001/lines",
+            json={"line_index": 0, "cantidad": 200.0},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["run_id"] == run_id
+        assert len(body["rows"]) == 1
+
+    def test_negative_cantidad_returns_422(self, client: TestClient) -> None:
+        """Pydantic ge=0 constraint: cantidad < 0 → 422 before route handler."""
+        run_id = str(uuid.uuid4())
+        svc = _make_review_service()
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.patch(
+            f"/api/v1/runs/{run_id}/guias/T001-0001/lines",
+            json={"line_index": 0, "cantidad": -1.0},
+        )
+        assert resp.status_code == 422
+
+    def test_unknown_guia_id_returns_404(self, client: TestClient) -> None:
+        run_id = str(uuid.uuid4())
+        svc = _make_review_service()
+        svc.apply_guia_line_edit = MagicMock(
+            side_effect=ValueError("guia_id='ghost' not found")
+        )
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.patch(
+            f"/api/v1/runs/{run_id}/guias/ghost/lines",
+            json={"line_index": 0, "cantidad": 100.0},
+        )
+        assert resp.status_code == 404
+
+    def test_idempotent_same_request_same_result(self, client: TestClient) -> None:
+        run_id = str(uuid.uuid4())
+        updated = [_make_row()]
+        svc = _make_review_service()
+        svc.apply_guia_line_edit = MagicMock(return_value=updated)
+        _seed_run(client, run_id, review_service=svc)
+
+        resp1 = client.patch(
+            f"/api/v1/runs/{run_id}/guias/T001-0001/lines",
+            json={"line_index": 0, "cantidad": 100.0},
+        )
+        resp2 = client.patch(
+            f"/api/v1/runs/{run_id}/guias/T001-0001/lines",
+            json={"line_index": 0, "cantidad": 100.0},
+        )
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+        # Both return the same rows
+        assert resp1.json()["rows"] == resp2.json()["rows"]
+
+
+# ---------------------------------------------------------------------------
+# PATCH /runs/{run_id}/rows/{row_id} — summed_qty field rejected (S1.7 / REC-C04)
+# ---------------------------------------------------------------------------
+
+
+class TestPatchRowSummedQtyRejected:
+    def test_summed_qty_field_returns_422(self, client: TestClient) -> None:
+        """PATCH with field='summed_qty' must return 422 (REC-C04 / S1.7).
+
+        The RowEditRequest.field Literal rejects 'summed_qty' at Pydantic validation.
+        """
+        run_id = str(uuid.uuid4())
+        svc = _make_review_service()
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.patch(
+            f"/api/v1/runs/{run_id}/rows/r1",
+            json={"guia_id": "g1", "field": "summed_qty", "value": "999"},
+        )
+        assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /runs/{run_id}/table — guias[] inline (S1.7 / REC-C02)
+# ---------------------------------------------------------------------------
+
+
+class TestTableGuiasInline:
+    def test_row_response_contains_guias_field(self, client: TestClient) -> None:
+        """ReconciliationRowResponse must include a 'guias' list (REC-C02 / S1.7)."""
+        run_id = str(uuid.uuid4())
+        svc = _make_review_service(rows=[_make_row()])
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.get(f"/api/v1/runs/{run_id}/table")
+        assert resp.status_code == 200
+        row = resp.json()["rows"][0]
+        assert "guias" in row
+        assert isinstance(row["guias"], list)
+
+    def test_guia_contribution_fields_present(self, client: TestClient) -> None:
+        """Each GuiaContributionResponse has the required fields."""
+        run_id = str(uuid.uuid4())
+        # _make_row() already includes a dummy GuiaContribution
+        svc = _make_review_service(rows=[_make_row()])
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.get(f"/api/v1/runs/{run_id}/table")
+        row = resp.json()["rows"][0]
+        assert len(row["guias"]) == 1
+        contrib = row["guias"][0]
+        assert "guia_id" in contrib
+        assert "source_pages" in contrib
+        assert "cantidad" in contrib
+        assert "unidad" in contrib
+        assert "confidence" in contrib
+        assert "identity_source" in contrib

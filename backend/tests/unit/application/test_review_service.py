@@ -397,6 +397,99 @@ class TestRestoreFromSidecar:
 
 
 # ---------------------------------------------------------------------------
+# apply_guia_line_edit (S1.7 — rev-2 line-level edit)
+# ---------------------------------------------------------------------------
+
+
+class TestApplyGuiaLineEdit:
+    def test_updates_line_cantidad_by_index(self, tmp_path: Path) -> None:
+        """Update line at index 0 → cantidad changes; summed_qty recomputed."""
+        line = _make_line(qty="100", desc="barra 3/8")
+        guia = _make_guia(lines=[line])
+        declared = [_make_registro(lines=[_make_line(qty="200", desc="barra 3/8")])]
+        service, _ = _build_service(tmp_path, guias=[guia], declared=declared)
+
+        from decimal import Decimal  # noqa: PLC0415
+        service.apply_guia_line_edit(
+            guia_id="g1",
+            line_index=0,
+            material_canonical=None,
+            new_cantidad=Decimal("200"),
+        )
+        updated_guia = next(g for g in service.guias if g.guia_id == "g1")
+        assert updated_guia.lines[0].cantidad == Decimal("200")
+
+    def test_recomputes_match_after_edit(self, tmp_path: Path) -> None:
+        """After edit that makes guia qty equal declared → MATCH row."""
+        line = _make_line(qty="80", desc="barra 3/8")
+        guia = _make_guia(lines=[line])
+        declared = [_make_registro(lines=[_make_line(qty="100", desc="barra 3/8")])]
+        service, _ = _build_service(tmp_path, guias=[guia], declared=declared)
+
+        from decimal import Decimal  # noqa: PLC0415
+        rows = service.apply_guia_line_edit(
+            guia_id="g1",
+            line_index=0,
+            material_canonical=None,
+            new_cantidad=Decimal("100"),
+        )
+        # Find the row for this guia
+        match_rows = [r for r in rows if r.status == "MATCH"]
+        assert len(match_rows) >= 1
+
+    def test_updates_line_by_material_canonical(self, tmp_path: Path) -> None:
+        """Lookup by material_canonical when line_index is None."""
+        line = _make_line(qty="50", desc="alambre n16")
+        guia = _make_guia(lines=[line])
+        declared = [_make_registro(lines=[_make_line(qty="50", desc="alambre n16")])]
+        service, _ = _build_service(tmp_path, guias=[guia], declared=declared)
+
+        from decimal import Decimal  # noqa: PLC0415
+        service.apply_guia_line_edit(
+            guia_id="g1",
+            line_index=None,
+            material_canonical="alambre n16",
+            new_cantidad=Decimal("75"),
+        )
+        updated = next(g for g in service.guias if g.guia_id == "g1")
+        assert updated.lines[0].cantidad == Decimal("75")
+
+    def test_negative_cantidad_raises(self, tmp_path: Path) -> None:
+        """cantidad < 0 must raise ValueError."""
+        service, _ = _build_service(tmp_path)
+        from decimal import Decimal  # noqa: PLC0415
+        with pytest.raises(ValueError, match="must be >= 0"):
+            service.apply_guia_line_edit("g1", 0, None, Decimal("-1"))
+
+    def test_unknown_guia_id_raises(self, tmp_path: Path) -> None:
+        service, _ = _build_service(tmp_path)
+        from decimal import Decimal  # noqa: PLC0415
+        with pytest.raises(ValueError, match="not found"):
+            service.apply_guia_line_edit("ghost", 0, None, Decimal("10"))
+
+    def test_out_of_range_line_index_raises(self, tmp_path: Path) -> None:
+        service, _ = _build_service(tmp_path)
+        from decimal import Decimal  # noqa: PLC0415
+        with pytest.raises(ValueError, match="out of range"):
+            service.apply_guia_line_edit("g1", 99, None, Decimal("10"))
+
+    def test_audit_trail_records_guia_line_edit(self, tmp_path: Path) -> None:
+        service, _ = _build_service(tmp_path)
+        from decimal import Decimal  # noqa: PLC0415
+        service.apply_guia_line_edit("g1", 0, None, Decimal("50"))
+        trail = service.get_audit_trail()
+        assert len(trail) == 1
+        assert trail[0]["kind"] == "guia_line_edit"
+        assert trail[0]["field"] == "cantidad"
+
+    def test_apply_edit_summed_qty_field_raises(self, tmp_path: Path) -> None:
+        """apply_edit must explicitly reject 'summed_qty' (REC-C04)."""
+        service, _ = _build_service(tmp_path)
+        with pytest.raises(ValueError, match="computed property"):
+            service.apply_edit("g1", "summed_qty", "999")
+
+
+# ---------------------------------------------------------------------------
 # _parse_date helper
 # ---------------------------------------------------------------------------
 

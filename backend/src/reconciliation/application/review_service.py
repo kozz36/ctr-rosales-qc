@@ -28,7 +28,9 @@ from typing import Any
 
 from reconciliation.domain.errors import ReconciliationError
 from reconciliation.domain.models import (
+    GuiaContribution,
     GuiaDeRemision,
+    MaterialLine,
     ReconciliationRow,
     Registro,
 )
@@ -154,6 +156,9 @@ class ReviewService:
             ``fecha``       — accepts ``date``, ISO-8601 string, or None.
             ``registro``    — accepts str or None.
 
+        Prohibited fields (raise ValueError / 422 at API layer):
+            ``summed_qty``  — computed property; use apply_guia_line_edit instead (REC-C04).
+
         Args:
             guia_id:    Identifier of the target GuiaDeRemision.
             field:      Field name to update (``"fecha"`` or ``"registro"``).
@@ -163,8 +168,16 @@ class ReviewService:
             Updated list of reconciliation rows (all rows recomputed).
 
         Raises:
-            ValueError: If the guia_id is not found or field is unsupported.
+            ValueError: If the guia_id is not found, field is unsupported, or
+                        field is a prohibited write target (summed_qty).
         """
+        # Explicitly prohibit direct writes to computed/structural fields (REC-C04)
+        if field == "summed_qty":
+            raise ValueError(
+                "Field 'summed_qty' is a computed property and cannot be edited directly. "
+                "Use PATCH /guias/{guia_id}/lines to update a guía line quantity instead."
+            )
+
         target_idx = self._find_guia_index(guia_id)
         guia = self._guias[target_idx]
 
@@ -203,6 +216,96 @@ class ReviewService:
         self._rows = self._reconciler.reconcile(self._declared, self._guias)
 
         # Append audit event and persist
+        self._audit_trail.append(event)
+        self._persist()
+
+        return list(self._rows)
+
+    def apply_guia_line_edit(
+        self,
+        guia_id: str,
+        line_index: int | None,
+        material_canonical: str | None,
+        new_cantidad: Decimal,
+    ) -> list[ReconciliationRow]:
+        """Update a specific line's ``cantidad`` on a GuiaDeRemision and recompute rows.
+
+        Spec: REC-C04 / REV-C02 / S1.7.
+
+        Identifies the target line by ``line_index`` (0-based within guia.lines) or
+        by ``material_canonical`` when ``line_index`` is None (matches first line with
+        that canonical description).  Updates the line's ``cantidad`` in-place on an
+        immutable copy, then re-runs reconcile to recompute MATCH/MISMATCH statuses.
+
+        Args:
+            guia_id:            Identifier of the target GuiaDeRemision.
+            line_index:         0-based index of the line to update, or None to match
+                                by material_canonical.
+            material_canonical: Canonical material description for lookup when
+                                line_index is None.
+            new_cantidad:       New quantity value (must be >= 0).
+
+        Returns:
+            Updated list of reconciliation rows (all rows recomputed).
+
+        Raises:
+            ValueError: If guia_id not found, line not found, or new_cantidad < 0.
+        """
+        if new_cantidad < Decimal(0):
+            raise ValueError(
+                f"new_cantidad must be >= 0; got {new_cantidad}"
+            )
+
+        target_idx = self._find_guia_index(guia_id)
+        guia = self._guias[target_idx]
+
+        # Locate the target line
+        lines = list(guia.lines)
+        resolved_index: int
+
+        if line_index is not None:
+            if line_index < 0 or line_index >= len(lines):
+                raise ValueError(
+                    f"line_index {line_index} out of range for guia_id={guia_id!r} "
+                    f"(has {len(lines)} lines)"
+                )
+            resolved_index = line_index
+        elif material_canonical is not None:
+            for i, line in enumerate(lines):
+                if line.description_canonical == material_canonical:
+                    resolved_index = i
+                    break
+            else:
+                raise ValueError(
+                    f"No line with description_canonical={material_canonical!r} "
+                    f"found in guia_id={guia_id!r}"
+                )
+        else:
+            raise ValueError("Either line_index or material_canonical must be provided.")
+
+        old_line = lines[resolved_index]
+        old_cantidad = old_line.cantidad
+        new_line = old_line.model_copy(update={"cantidad": new_cantidad})
+        lines[resolved_index] = new_line
+
+        updated_guia = guia.model_copy(update={"lines": lines})
+
+        event = EditEvent(
+            kind="guia_line_edit",
+            target={"guia_id": guia_id},
+            field="cantidad",
+            old_value=str(old_cantidad),
+            new_value=str(new_cantidad),
+        )
+
+        # Mutate in-memory state
+        new_guias = list(self._guias)
+        new_guias[target_idx] = updated_guia
+        self._guias = new_guias
+
+        # Recompute all rows after the edit
+        self._rows = self._reconciler.reconcile(self._declared, self._guias)
+
         self._audit_trail.append(event)
         self._persist()
 

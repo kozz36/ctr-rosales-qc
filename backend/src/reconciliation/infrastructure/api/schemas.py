@@ -21,6 +21,24 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
+# Guía contribution (inline per reconciliation row — rev-2, REC-C02)
+# ---------------------------------------------------------------------------
+
+
+class GuiaContributionResponse(BaseModel):
+    """Per-guía contribution inline in a ReconciliationRowResponse (rev-2)."""
+
+    guia_id: str = Field(description="Deterministic identifier: {serie}-{numero}.")
+    source_pages: list[int] = Field(description="Physical page indices contributing to this guía.")
+    cantidad: Decimal = Field(description="Total quantity contributed by this guía to the group.")
+    unidad: str = Field(description="Unit of measure (must match the parent group's unidad).")
+    confidence: float = Field(description="Identity confidence from QR decode or fallback.")
+    identity_source: Literal["qr", "ocr_fallback"] = Field(
+        description="How the guía identity was determined."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Run lifecycle
 # ---------------------------------------------------------------------------
 
@@ -48,7 +66,7 @@ class RunStatusResponse(BaseModel):
 
 
 class ReconciliationRowResponse(BaseModel):
-    """A single row in the reconciliation table."""
+    """A single row in the reconciliation table (rev-2: guias[] inline)."""
 
     row_id: str  # "{registro}|{fecha}|{material_canonical}|{unidad}"
     registro: str
@@ -61,6 +79,11 @@ class ReconciliationRowResponse(BaseModel):
     status: Literal["MATCH", "MISMATCH", "DECLARED_MISSING", "GUIA_MISSING", "UNCLASSIFIED"]
     source_pages: list[int]
     min_confidence: float | None = None
+    # Rev-2: inline guía contributions (REC-C02 / design §D)
+    guias: list[GuiaContributionResponse] = Field(
+        default_factory=list,
+        description="Per-guía contributions to this reconciliation group.",
+    )
 
 
 class ReconciliationTableResponse(BaseModel):
@@ -97,6 +120,32 @@ class RowEditResponse(BaseModel):
 
     run_id: str
     rows: list[ReconciliationRowResponse]
+
+
+# ---------------------------------------------------------------------------
+# Guía line edit (PATCH /runs/{run_id}/guias/{guia_id}/lines — rev-2, S1.7)
+# ---------------------------------------------------------------------------
+
+
+class GuiaLineEditRequest(BaseModel):
+    """Update a specific material line's quantity on a GuiaDeRemision.
+
+    Identifies the target line by ``line_index`` (0-based, preferred) or
+    by ``material_canonical`` when ``line_index`` is omitted.
+    """
+
+    line_index: int | None = Field(
+        default=None,
+        description="0-based index of the line to update within guia.lines.",
+    )
+    material_canonical: str | None = Field(
+        default=None,
+        description="Canonical material description for line lookup when line_index is None.",
+    )
+    cantidad: float = Field(
+        description="New quantity value. Must be >= 0.",
+        ge=0,
+    )
 
 
 # ---------------------------------------------------------------------------

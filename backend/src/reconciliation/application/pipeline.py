@@ -175,14 +175,14 @@ class ReconciliationPipeline:
         extractor: ExtractionPort,
         vision: VisionLLMPort,
         config: AppConfig,
-        page_to_registro: dict[int, str] | None = None,
+        page_to_registro: dict[int, str | None] | None = None,
         deskew: DeskewPort | None = None,
     ) -> None:
         self._doc = doc_source
         self._extractor = extractor
         self._vision = vision
         self._config = config
-        self._page_to_registro: dict[int, str] = page_to_registro or {}
+        self._page_to_registro: dict[int, str | None] = page_to_registro or {}
         self._deskew = deskew
         self._classifier = PageClassifier()
         self._normalizer = MaterialNormalizer()

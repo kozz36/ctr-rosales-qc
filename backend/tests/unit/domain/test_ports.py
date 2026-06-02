@@ -8,8 +8,6 @@ Rev-2 additions: IdentityExtractionPort, SunatGreFetchPort (seam only).
 
 from __future__ import annotations
 
-from datetime import date
-from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 

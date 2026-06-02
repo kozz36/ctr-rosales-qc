@@ -255,13 +255,16 @@ class QrBarcodeExtractionAdapter:
         Returns PIL image bytes at effective decode resolution.
         Lazy-imports PIL so the test suite can stub this out.
         """
-        from PIL import Image  # type: ignore[import]  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
 
         img = Image.open(BytesIO(image))
         w, h = img.size
         new_w = int(w * self._upscale)
         new_h = int(h * self._upscale)
-        img = img.resize((new_w, new_h), Image.LANCZOS).convert("L")  # grayscale
+        # Image.Resampling.LANCZOS (Pillow ≥9) / Image.LANCZOS (legacy).
+        lanczos = getattr(getattr(Image, "Resampling", None), "LANCZOS", None) or Image.LANCZOS  # type: ignore[attr-defined]
+        resized = img.resize((new_w, new_h), lanczos)
+        img = resized.convert("L")  # type: ignore[assignment]  # grayscale; ImageFile→Image
         out = BytesIO()
         img.save(out, format="PNG")
         return out.getvalue()
@@ -273,7 +276,7 @@ class QrBarcodeExtractionAdapter:
         ImportError is caught silently — the absent library is skipped and
         the other is still tried.
         """
-        from PIL import Image  # type: ignore[import]  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
 
         img = Image.open(BytesIO(image))
         seen: set[str] = set()
@@ -281,7 +284,7 @@ class QrBarcodeExtractionAdapter:
 
         # --- pyzbar ---
         try:
-            import pyzbar.pyzbar as pyzbar  # type: ignore[import]  # noqa: PLC0415
+            import pyzbar.pyzbar as pyzbar  # noqa: PLC0415
 
             for barcode in pyzbar.decode(img):
                 payload = barcode.data.decode("utf-8", errors="replace")
@@ -295,8 +298,8 @@ class QrBarcodeExtractionAdapter:
 
         # --- zxing-cpp ---
         try:
-            import numpy as np  # type: ignore[import]  # noqa: PLC0415
-            import zxingcpp  # type: ignore[import]  # noqa: PLC0415
+            import numpy as np  # noqa: PLC0415
+            import zxingcpp  # noqa: PLC0415
 
             img_array = np.array(img)
             for result in zxingcpp.read_barcodes(img_array):

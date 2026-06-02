@@ -155,10 +155,14 @@ class TestBuildPageToRegistroMap:
         assert result[3] == "B"
         assert result[4] == "B"
 
-    def test_registro_ids_are_string_keys(self) -> None:
+    def test_section_id_without_doc_source_maps_to_none(self) -> None:
+        """EXT-018: without doc_source, a section ID contents_id MUST map to None.
+
+        The old behaviour (returning "4252" as-is) is prohibited by EXT-018.
+        """
         result = build_page_to_registro_map({"4252": 1}, total_pages=3)
         for v in result.values():
-            assert isinstance(v, str)
+            assert v is None, f"section ID '4252' must map to None, got {v!r}"
 
     def test_three_sections_middle_section_bounded(self) -> None:
         # A: pages 0-1 (0-based), B: 2-3, C: 4-5
@@ -210,15 +214,15 @@ class TestSectionRegistroCorrelationIntegration:
                     f"page {page_0} should map to registro {registro_id!r}"
                 )
 
-    def test_guia_page_in_section_range_maps_to_correct_registro(self) -> None:
-        # Section "4252" starts at page 3 (1-based), "4253" at page 7.
+    def test_guia_page_with_section_ids_maps_to_none_without_doc_source(self) -> None:
+        """EXT-018: without doc_source, section IDs map to None (never emitted as registro)."""
         offsets = {"4252": 3, "4253": 7}
         result = build_page_to_registro_map(offsets, total_pages=12)
-        # 0-based pages 2-5 belong to "4252"; pages 6-11 to "4253"
+        # Both "4252" and "4253" are section IDs → must map to None
         for page in range(2, 6):
-            assert result[page] == "4252"
+            assert result[page] is None, f"page {page} should map to None (section ID), got {result[page]!r}"
         for page in range(6, 12):
-            assert result[page] == "4253"
+            assert result[page] is None, f"page {page} should map to None (section ID), got {result[page]!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +309,8 @@ class TestBuildPageToRegistroMapWithDerivedNumero:
         for page in range(2, 6):
             assert result[page] == "232"
 
-    def test_fallback_to_contents_id_when_no_declared_page(self) -> None:
-        """When no DECLARED page is found in range, the Contents ID is the fallback key."""
+    def test_fallback_to_none_when_no_declared_page(self) -> None:
+        """EXT-018: when no DECLARED page is parseable, returns None (never the Contents ID)."""
         doc = FakeDocSource({
             2: None,  # type: ignore[dict-item]  # scanned / empty
             3: "GUIA DE REMISION\nsome text",
@@ -318,8 +322,11 @@ class TestBuildPageToRegistroMapWithDerivedNumero:
             doc_source=doc,
             declared_extractor=extractor,
         )
+        # EXT-018: "4252" is a section ID — MUST NOT be returned as registro
         for page in range(2, 6):
-            assert result[page] == "4252"
+            assert result[page] is None, (
+                f"page {page}: section ID '4252' must map to None, got {result[page]!r}"
+            )
 
     def test_two_sections_each_get_correct_numero(self) -> None:
         """Multi-section PDF: each section resolves its own Description numero."""
@@ -347,16 +354,21 @@ class TestBuildPageToRegistroMapWithDerivedNumero:
         for page in range(5, 10):
             assert result[page] == "231"
 
-    def test_without_doc_source_uses_contents_id_legacy(self) -> None:
-        """When doc_source is None, original Contents-ID behaviour is preserved."""
+    def test_without_doc_source_section_ids_map_to_none(self) -> None:
+        """EXT-018: without doc_source, section IDs are guarded — pages map to None."""
         result = build_page_to_registro_map(
             {"4252": 3, "4251": 7},
             total_pages=12,
         )
+        # "4252" and "4251" are section IDs → must map to None (never emitted as registro)
         for page in range(2, 6):
-            assert result[page] == "4252"
+            assert result[page] is None, (
+                f"page {page}: '4252' is a section ID, must map to None"
+            )
         for page in range(6, 12):
-            assert result[page] == "4251"
+            assert result[page] is None, (
+                f"page {page}: '4251' is a section ID, must map to None"
+            )
 
 
 # ---------------------------------------------------------------------------

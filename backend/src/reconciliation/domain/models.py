@@ -42,7 +42,7 @@ class GuiaIdentity(BaseModel):
     hashqr_url: str | None = None
     confidence: float
 
-    @computed_field  # type: ignore[misc]
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def guia_id(self) -> str:
         """Deterministic identifier: ``{serie}-{numero}`` (e.g. ``T009-0741770``)."""
@@ -134,3 +134,18 @@ class VisionResult(BaseModel):
     date: date | None
     confidence: float
     raw: str
+
+
+class ReconciliationResult(BaseModel):
+    """Output of ReconciliationService.reconcile() — rev-2 (REC-C05 / design §E).
+
+    Wraps the reconciliation rows with a dedicated bucket for unresolved guías
+    (those whose ``registro`` is ``None`` or could not be derived from the Contents
+    map without emitting a section ID).
+
+    Unresolved guías surface in the review UI under the "unresolved guías" bucket
+    for human assignment; they MUST NOT be silently dropped.
+    """
+
+    rows: list[ReconciliationRow]
+    unresolved_guias: list[GuiaDeRemision] = []

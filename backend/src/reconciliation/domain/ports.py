@@ -14,6 +14,7 @@ from typing import Literal, Protocol, runtime_checkable
 from reconciliation.domain.models import (
     GuiaIdentity,
     MaterialLine,
+    OfficialGre,
     ReconciliationRow,
     VisionResult,
 )
@@ -118,36 +119,39 @@ class IdentityExtractionPort(Protocol):
         ...
 
 
-class OfficialGre(Protocol):
-    """Structured data returned by SUNAT GRE fetch (rev-2, EXT-016 — seam only).
-
-    Fields are intentionally minimal; the seam is off by default and exists only
-    as an extension point for future opt-in SUNAT integration.
-    """
-
-    guia_id: str
-    fecha_emision: object  # date
-    ruc_emisor: str
-    ruc_receptor: str
-
-
 @runtime_checkable
 class SunatGreFetchPort(Protocol):
-    """SEAM for future opt-in SUNAT GRE integration (rev-2, EXT-016).
+    """OPT-IN SUNAT descargaqr fetch adapter (rev-3, EXT-023 / D3).
 
-    OFF BY DEFAULT — enabling this port requires ``sunat_fetch.enabled: true``
-    in config.  When disabled the caller MUST NOT invoke this port and the
-    adapter MUST return ``None`` without any network call.
+    Promoted from a future seam (rev-2 EXT-016) to a first-class OPT-IN
+    deterministic data source.  Remains OFF BY DEFAULT behind ``sunat.enabled``
+    config flag.
 
-    Electronic date and quantity from SUNAT GRE are cross-check data only:
-    - MUST NOT override the handwritten reception fecha for grouping.
-    - MUST NOT override OCR quantities for reconciliation.
-    - Enabling this port breaks the local-first / air-gap invariant.
+    When enabled: performs a plain HTTP GET on the ``hashqr_url`` (the hashqr
+    is the token — NO OAuth, NO Clave SOL) and parses the returned GRE PDF
+    to yield authoritative line items (quantities, units, descriptions) and
+    the GRE delivery date (``fecha_entrega``) used as the lower bound for
+    bounded year inference (D5).
+
+    When disabled: the pipeline MUST NOT invoke this port.
+
+    Invariants (never violated even when SUNAT is enabled):
+    - MUST NOT override the handwritten reception ``fecha`` for grouping (EXT-017 / REC-C01).
+    - Enabling this port is the ONLY network egress; air-gap default preserved.
+    - A fetch failure (timeout, non-200, non-PDF, parse error) MUST return ``None``
+      and MUST NOT abort the run (graceful fallback to OCR).
     """
 
     def fetch(self, hashqr_url: str) -> OfficialGre | None:
         """Fetch official GRE data for *hashqr_url* from SUNAT, or ``None``.
 
-        Returns ``None`` when the port is disabled or the fetch fails.
+        Returns the parsed ``OfficialGre`` on success, or ``None`` on any
+        failure (network, parse, non-PDF) so the caller can fall back to OCR.
+
+        Args:
+            hashqr_url: The full SUNAT descargaqr URL decoded from the URL-variant
+                        QR on the guía page (e.g.
+                        ``https://e-factura.sunat.gob.pe/v1/contribuyente/
+                        gre/comprobantes/descargaqr?hashqr=<BASE64>``).
         """
         ...

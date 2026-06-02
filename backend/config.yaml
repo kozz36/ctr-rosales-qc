@@ -53,3 +53,15 @@ confidence:
 
 # Base directory for per-run output directories (relative to working directory).
 output_dir: runs
+
+# Rev-3 D3 (EXT-023): SUNAT descargaqr opt-in fetch — OFF BY DEFAULT.
+# This is the ONLY network egress in the system.  Enabling it breaks the air-gap.
+# Document in docs/DECISIONS.md when you enable this in a committed config.
+#
+# To enable (e.g. for a connected-network run):
+#   RECONCILIATION__SUNAT__ENABLED=true
+# or set enabled: true in a local override (NOT committed).
+sunat:
+  enabled: false
+  timeout_s: 10.0
+  cache: true

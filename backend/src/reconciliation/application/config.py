@@ -109,6 +109,26 @@ class VisionConfig(BaseSettings):
         return self
 
 
+class SunatConfig(BaseSettings):
+    """SUNAT descargaqr opt-in fetch settings (rev-3, EXT-023 / D3).
+
+    OFF BY DEFAULT — enabling this breaks the local-first / air-gap invariant
+    and is the ONLY network egress in the system.  Document in DECISIONS.md
+    whenever this is enabled in a committed config.
+
+    ``enabled``: master switch.  When False, no network call is ever made.
+    ``timeout_s``: HTTP request timeout in seconds (per fetch).
+    ``cache``: when True, the downloaded GRE PDF is stored in the run dir
+               (``<run_dir>/sunat/{guia_id}.pdf``) and reused on re-run.
+    """
+
+    model_config = SettingsConfigDict(extra="allow")
+
+    enabled: bool = False
+    timeout_s: float = Field(default=10.0, gt=0)
+    cache: bool = True
+
+
 class DeskewConfig(BaseSettings):
     """Deskew scope and fallback settings (locked: guia_only)."""
 
@@ -169,6 +189,7 @@ class AppConfig(BaseSettings):
     vision: VisionConfig = Field(default_factory=VisionConfig)
     deskew: DeskewConfig = Field(default_factory=DeskewConfig)
     confidence: ConfidenceConfig = Field(default_factory=ConfidenceConfig)
+    sunat: SunatConfig = Field(default_factory=SunatConfig)
 
     # Base directory under which per-run directories are created.
     output_dir: Path = Field(default=Path("runs"))

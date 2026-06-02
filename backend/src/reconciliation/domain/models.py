@@ -191,6 +191,52 @@ class VisionResult(BaseModel):
     year_inferred: bool = False
 
 
+class GreLineItem(BaseModel):
+    """A single line item from an official SUNAT GRE PDF (rev-3, EXT-023 / D3).
+
+    Carries the authoritative quantities as printed in the official GRE representation.
+    Units come from SUNAT (e.g. "TONELADAS", "KILOGRAMOS") and are normalised
+    downstream by MaterialNormalizer like any other extraction source.
+    """
+
+    cantidad: Decimal
+    unidad: str  # raw SUNAT unit string (e.g. "TONELADAS", "KILOGRAMOS")
+    descripcion: str  # raw material description
+    codigo_producto: str | None = None  # SUNAT product code (e.g. "407797")
+
+
+class OfficialGre(BaseModel):
+    """Structured data from an official SUNAT GRE PDF (rev-3, EXT-023 / D3).
+
+    Promoted from a bare Protocol seam (rev-2 EXT-016) to a PURE Pydantic domain
+    model.  No I/O; no adapter imports.  All fields come from the text layer of
+    the official SUNAT GRE representation PDF (``get_text()``).
+
+    ``guia_id`` mirrors ``GuiaIdentity.guia_id`` (``{serie}-{numero}``).
+    ``fecha_entrega`` is the date the goods were handed to the carrier (the
+    deterministic lower bound for bounded year inference — D5).
+    ``fecha_emision`` is the electronic issue date (cross-check only).
+    """
+
+    guia_id: str  # e.g. "T073-00680258"
+    serie: str
+    numero: str
+    ruc_emisor: str
+    ruc_receptor: str
+    tipo: str | None = None
+    fecha_emision: date | None = None
+    fecha_entrega: date | None = None  # lower bound for year inference (D5)
+    lines: list[GreLineItem] = []
+
+    @classmethod
+    def from_identity(cls, guia_id: str) -> OfficialGre:
+        """Create a minimal OfficialGre from a guia_id (testing helper)."""
+        parts = guia_id.split("-", 1)
+        serie = parts[0] if parts else guia_id
+        numero = parts[1] if len(parts) > 1 else ""
+        return cls(guia_id=guia_id, serie=serie, numero=numero, ruc_emisor="", ruc_receptor="")
+
+
 class ReconciliationResult(BaseModel):
     """Output of ReconciliationService.reconcile() — rev-2 (REC-C05 / design §E).
 

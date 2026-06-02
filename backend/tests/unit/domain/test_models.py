@@ -435,3 +435,84 @@ class TestReconciliationRowGuias:
         )
         assert len(row.guias) == 1
         assert row.guias[0].guia_id == "T009-0741770"
+
+
+# ---------------------------------------------------------------------------
+# R8.4: match_method field on MaterialLine and ReconciliationRow (MAT-008)
+# ---------------------------------------------------------------------------
+
+
+class TestMaterialLineMatchMethod:
+    def test_default_match_method_is_deterministic(self) -> None:
+        line = MaterialLine(
+            description_raw="BARRA A615 G60 1/2\"",
+            description_canonical="barra a615 g60 1/2\"",
+            unidad="TN",
+            cantidad=Decimal("1.0"),
+        )
+        assert line.match_method == "deterministic"
+
+    def test_match_method_llm_inferred_stored(self) -> None:
+        line = MaterialLine(
+            description_raw="X",
+            description_canonical="x",
+            unidad="KG",
+            cantidad=Decimal("1.0"),
+            match_method="llm_inferred",
+        )
+        assert line.match_method == "llm_inferred"
+
+    def test_backward_compat_model_validate_no_match_method(self) -> None:
+        """Old serialised dict without match_method key → defaults to deterministic."""
+        data = {
+            "description_raw": "BARRA",
+            "description_canonical": "barra",
+            "unidad": "KG",
+            "cantidad": "1.0",
+        }
+        line = MaterialLine.model_validate(data)
+        assert line.match_method == "deterministic"
+
+
+class TestReconciliationRowMatchMethod:
+    def test_default_match_method_is_deterministic(self) -> None:
+        row = ReconciliationRow(
+            registro="232",
+            fecha=None,
+            material_canonical="BARRA A615 G60 1/2\" 9M",
+            unidad="TN",
+            declared_qty=Decimal("4.124"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[5],
+        )
+        assert row.match_method == "deterministic"
+
+    def test_match_method_llm_inferred_stored(self) -> None:
+        row = ReconciliationRow(
+            registro="232",
+            fecha=None,
+            material_canonical="some material",
+            unidad="TN",
+            declared_qty=Decimal("1.0"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[],
+            match_method="llm_inferred",
+        )
+        assert row.match_method == "llm_inferred"
+
+    def test_backward_compat_model_validate_no_match_method(self) -> None:
+        """Old serialised dict without match_method key → defaults to deterministic."""
+        data = {
+            "registro": "100",
+            "fecha": None,
+            "material_canonical": "barra",
+            "unidad": "KG",
+            "declared_qty": "1.0",
+            "delta": "0",
+            "status": "MATCH",
+            "source_pages": [],
+        }
+        row = ReconciliationRow.model_validate(data)
+        assert row.match_method == "deterministic"

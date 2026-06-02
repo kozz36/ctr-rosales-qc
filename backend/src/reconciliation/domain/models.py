@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel, computed_field
 
+from reconciliation.domain.material_key import MatchMethod
+
 
 class MaterialLine(BaseModel):
     """A single material row extracted from a guía or declared page."""
@@ -24,6 +26,8 @@ class MaterialLine(BaseModel):
     source_page: int | None = None
     # Flagging surface (task 7.3 completes all flags, but field defined here per spec)
     requires_review: bool = False
+    # R8.4 (MAT-008): how the canonical key was derived.  Backward-compatible default.
+    match_method: MatchMethod = "deterministic"
 
 
 class GuiaIdentity(BaseModel):
@@ -155,6 +159,9 @@ class ReconciliationRow(BaseModel):
     # Flagging surface (task 7.3 / REV-004, EXT-S08, EXT-S08b)
     requires_review: bool = False
     """True when any contributing line or guia date has low confidence or null date."""
+    # R8.4 (MAT-008): worst-wins match_method aggregated from contributing lines.
+    # Backward-compatible default.
+    match_method: MatchMethod = "deterministic"
     # Rev-2: inline guía contributions (populated by ReconciliationService.reconcile)
     guias: list[GuiaContribution] = []
 

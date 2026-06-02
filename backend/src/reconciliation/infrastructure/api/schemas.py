@@ -43,6 +43,22 @@ class GuiaContributionResponse(BaseModel):
             "via bounded inference (EXT-021), not read directly from vision output."
         ),
     )
+    # R9.6 (FDR-008, ADR-5): fecha-divergence fields — additive, backward-compatible.
+    fecha: date | None = Field(
+        default=None,
+        description="Guía handwritten reception date (ISO-8601 or null).",
+    )
+    fecha_divergence: bool = Field(
+        default=False,
+        description=(
+            "True when this guía's handwritten date diverges (day-month mismatch) "
+            "from the registro's authoritative declared date."
+        ),
+    )
+    divergence_reason: Literal["fecha_divergence"] | None = Field(
+        default=None,
+        description="Divergence classification code, or null when not divergent.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +155,14 @@ class ReconciliationRowResponse(BaseModel):
         description=(
             "How the canonical material key was derived: "
             "'deterministic' (regex), 'llm_inferred' (Ollama), or 'unresolved' (fallback)."
+        ),
+    )
+    # R9.6 (FDR-008, ADR-5): group-level divergence indicator (derived from guías).
+    has_fecha_divergence: bool = Field(
+        default=False,
+        description=(
+            "True when at least one contributing guía has a fecha divergence "
+            "(group-level roll-up of guias[*].fecha_divergence). Advisory only."
         ),
     )
 

@@ -906,3 +906,108 @@ class TestMatchMethodInTableResponse:
         }
         row = ReconciliationRowResponse.model_validate(data)
         assert row.match_method == "deterministic"
+
+
+# ---------------------------------------------------------------------------
+# R9.6: fecha_divergence DTO fields (FDR-008, ADR-5)
+# ---------------------------------------------------------------------------
+
+
+class TestFechaDivergenceInTableResponse:
+    """GET /runs/{run_id}/table surfaces divergence fields (R9.6)."""
+
+    def _make_row(self, *, diverges: bool) -> ReconciliationRow:
+        from decimal import Decimal
+        from reconciliation.domain.models import GuiaContribution
+
+        return ReconciliationRow(
+            registro="232",
+            fecha=date(2026, 5, 28),
+            material_canonical="BARRA A615 G60 1/2\"",
+            unidad="KG",
+            declared_qty=Decimal("1000"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[10],
+            guias=[
+                GuiaContribution(
+                    guia_id="T009-0001",
+                    source_pages=[10],
+                    cantidad=Decimal("1000"),
+                    unidad="KG",
+                    confidence=1.0,
+                    identity_source="qr",
+                    fecha=date(2026, 4, 15) if diverges else date(2026, 5, 28),
+                    fecha_divergence=diverges,
+                    divergence_reason="fecha_divergence" if diverges else None,
+                )
+            ],
+        )
+
+    def _rows(self, rows, client: TestClient, run_id: str) -> list:
+        svc = _make_review_service(rows=rows)
+        svc.guias = []
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.get(f"/api/v1/runs/{run_id}/table")
+        assert resp.status_code == 200, resp.text
+        return resp.json()["rows"]
+
+    def test_contribution_has_divergence_fields(self, client: TestClient) -> None:
+        run_id = str(uuid.uuid4())
+        rows = self._rows([self._make_row(diverges=False)], client, run_id)
+        contrib = rows[0]["guias"][0]
+        assert "fecha" in contrib
+        assert "fecha_divergence" in contrib
+        assert "divergence_reason" in contrib
+
+    def test_diverging_contribution_maps_true(self, client: TestClient) -> None:
+        run_id = str(uuid.uuid4())
+        rows = self._rows([self._make_row(diverges=True)], client, run_id)
+        contrib = rows[0]["guias"][0]
+        assert contrib["fecha_divergence"] is True
+        assert contrib["divergence_reason"] == "fecha_divergence"
+        assert rows[0]["has_fecha_divergence"] is True
+
+    def test_non_diverging_defaults(self, client: TestClient) -> None:
+        run_id = str(uuid.uuid4())
+        rows = self._rows([self._make_row(diverges=False)], client, run_id)
+        contrib = rows[0]["guias"][0]
+        assert contrib["fecha_divergence"] is False
+        assert contrib["divergence_reason"] is None
+        assert rows[0]["has_fecha_divergence"] is False
+
+    def test_backward_compat_model_validate_no_divergence_keys(self) -> None:
+        from reconciliation.infrastructure.api.schemas import (
+            GuiaContributionResponse,
+            ReconciliationRowResponse,
+        )
+
+        contrib = GuiaContributionResponse.model_validate(
+            {
+                "guia_id": "T009-0001",
+                "source_pages": [10],
+                "cantidad": "1000",
+                "unidad": "KG",
+                "confidence": 1.0,
+                "identity_source": "qr",
+            }
+        )
+        assert contrib.fecha is None
+        assert contrib.fecha_divergence is False
+        assert contrib.divergence_reason is None
+
+        row = ReconciliationRowResponse.model_validate(
+            {
+                "row_id": "232|2026-05-28|BARRA|KG",
+                "registro": "232",
+                "fecha": None,
+                "material_canonical": "BARRA",
+                "unidad": "KG",
+                "declared_qty": "1000",
+                "summed_qty": "1000",
+                "delta": "0",
+                "status": "MATCH",
+                "source_pages": [],
+            }
+        )
+        assert row.has_fecha_divergence is False

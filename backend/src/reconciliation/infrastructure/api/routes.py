@@ -94,6 +94,10 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
             confidence=g.confidence,
             identity_source=g.identity_source,
             year_inferred=g.year_inferred,
+            # R9.6 (FDR-008): fecha-divergence fields.
+            fecha=g.fecha,
+            fecha_divergence=g.fecha_divergence,
+            divergence_reason=g.divergence_reason,
         )
         for g in row.guias
     ]
@@ -113,6 +117,7 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
         guias=guia_responses,
         any_year_inferred=row.any_year_inferred,
         match_method=row.match_method,  # R8.12 (MAT-008)
+        has_fecha_divergence=row.has_fecha_divergence,  # R9.6 (FDR-008)
     )
 
 

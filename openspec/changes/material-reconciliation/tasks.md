@@ -959,37 +959,37 @@ Chain strategy: stacked-to-main
 >
 > Spec refs: EXT-023, D3, EXT-S30, EXT-S31, EXT-S32.
 
-- [ ] R3.1 — Promote `OfficialGre` to a pure domain Pydantic model
+- [x] R3.1 — Promote `OfficialGre` to a pure domain Pydantic model
   **Spec/Design**: D3, EXT-023 (Hexagonal). Fields: `guia_id: str`, `ruc_emisor: str`, `ruc_receptor: str`, `fecha_emision: date | None`, `fecha_entrega: date | None`, `lines: list[MaterialLine]`. No IO.
   **Files**: `backend/src/reconciliation/domain/models.py`.
   **Dependency**: independent; start immediately.
 
-- [ ] R3.2 — Implement `SunatDescargaqrAdapter` in `adapters/sunat/descargaqr.py`
+- [x] R3.2 — Implement `SunatDescargaqrAdapter` in `adapters/sunat/descargaqr.py`
   **Spec/Design**: D3, EXT-023. Plain HTTP GET on `hashqr_url` (no OAuth). Parse GRE PDF with PyMuPDF `get_text()` → `OfficialGre`. Failure → `None` (never raise). Cache PDF at `<run_dir>/sunat/{guia_id}.pdf`; reuse on re-run. Lazy-import `httpx`/`urllib` AND PyMuPDF inside `fetch()`.
   **Files**: `backend/src/reconciliation/adapters/sunat/descargaqr.py`, `backend/src/reconciliation/adapters/sunat/__init__.py`.
   **Dependency**: R3.1 done.
 
-- [ ] R3.3 — Add `sunat` config block to `AppConfig` and `config.yaml`; document as air-gap exception in `docs/DECISIONS.md`
+- [x] R3.3 — Add `sunat` config block to `AppConfig` and `config.yaml`; document as air-gap exception in `docs/DECISIONS.md`
   **Spec/Design**: D3. `sunat: { enabled: bool = False, timeout_s: float = 10.0, cache: bool = True }`. `config.yaml` ships `enabled: false`.
   **Files**: `backend/src/reconciliation/application/config.py`, `backend/config.yaml`, `docs/DECISIONS.md`.
   **Dependency**: independent; parallel with R3.1/R3.2.
 
-- [ ] R3.4 — Wire `SunatDescargaqrAdapter` in `container.py` behind `config.sunat.enabled`
+- [x] R3.4 — Wire `SunatDescargaqrAdapter` in `container.py` behind `config.sunat.enabled`
   **Spec/Design**: D3 — `build_pipeline` passes adapter only when `enabled is True`, else `None`.
   **Files**: `backend/src/reconciliation/infrastructure/container.py`.
   **Dependency**: R3.2 + R3.3 done.
 
-- [ ] R3.5 — Implement `_stage_sunat_fetch` in pipeline (after `assemble_blocks`, before quantity assignment)
+- [x] R3.5 — Implement `_stage_sunat_fetch` in pipeline (after `assemble_blocks`, before quantity assignment)
   **Spec/Design**: D3. For each block with non-null `gre_hashqr_url` and `enabled`: fetch → on success cache PDF + replace OCR lines with SUNAT lines + record `fecha_entrega` as year-inference lower bound; on failure log + leave OCR intact. No-op when `self._sunat is None`.
   **Files**: `backend/src/reconciliation/application/pipeline.py`.
   **Dependency**: R3.2 + R3.4 done; R1 pipeline structure stable.
 
-- [ ] R3.6 — Enforce SUNAT > OCR quantity precedence in reconciliation; add `extraction_method: Literal["ocr","sunat_gre","digital_text"]` to `MaterialLine`
+- [x] R3.6 — Enforce SUNAT > OCR quantity precedence in reconciliation; add `extraction_method: Literal["ocr","sunat_gre","digital_text"]` to `MaterialLine`
   **Spec/Design**: D3 precedence, EXT-023. SUNAT lines replace OCR for the same block. Grouping `fecha` ALWAYS vision (invariant guard). `MaterialLine.extraction_method` tracks provenance.
   **Files**: `backend/src/reconciliation/domain/models.py`, `backend/src/reconciliation/domain/reconciliation.py`.
   **Dependency**: R3.1 + R3.5 done.
 
-- [ ] R3.7 — Tests for R3.1–R3.6 (network tests gated on `sunat.enabled=true`)
+- [x] R3.7 — Tests for R3.1–R3.6 (network tests gated on `sunat.enabled=true`)
   **Spec refs**: EXT-S30, EXT-S31, EXT-S32.
   **Deliverables**:
   - `tests/unit/adapters/test_sunat_descargaqr.py` — mocked HTTP valid PDF → `OfficialGre`; timeout → `None`; non-200 → `None`; lazy-import guard (no `ImportError` at module load).
@@ -999,7 +999,7 @@ Chain strategy: stacked-to-main
   **Files**: `tests/unit/adapters/test_sunat_descargaqr.py`, `tests/unit/application/test_pipeline.py`, `tests/unit/domain/test_reconciliation.py`.
   **Dependency**: R3.2 + R3.5 + R3.6 done.
 
-- [ ] R3.8 — Real-data e2e for R3 (skippable when `sunat.enabled=false`)
+- [x] R3.8 — Real-data e2e for R3 (skippable when `sunat.enabled=false`)
   **Spec refs**: EXT-S30, EXT-S31.
   **Deliverables** (append to `tests/integration/test_pipeline_e2e_rev3.py`):
   - `@pytest.mark.skipif(not config.sunat.enabled, ...)` — when enabled: assert `OfficialGre` returned for ≥1 block; assert grouping `fecha` is vision handwritten date (not SUNAT date).

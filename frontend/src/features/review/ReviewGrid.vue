@@ -71,6 +71,8 @@
         </caption>
         <thead class="review-grid__thead">
           <tr>
+            <!-- Expand/collapse column (rev-2: guía drill-down) -->
+            <th class="review-grid__th review-grid__th--expand" scope="col" aria-label="Expandir detalle" />
             <th
               v-for="col in COLUMNS"
               :key="col.key"
@@ -101,7 +103,7 @@
           <template v-for="group in groupedRows" :key="group.key">
             <!-- Group header: Registro + Fecha -->
             <tr class="review-grid__group-header" :aria-label="`Grupo: Registro ${group.registro}, Fecha ${group.fecha ?? 'sin fecha'}`">
-              <td colspan="11" class="review-grid__group-cell">
+              <td colspan="12" class="review-grid__group-cell">
                 <button
                   class="review-grid__group-toggle"
                   :aria-expanded="!collapsedGroups.has(group.key)"
@@ -125,7 +127,7 @@
               :run-id="runId"
               :pending-value="pendingEdits.get(row.row_id)?.value ?? undefined"
               @edit="onEdit"
-              @reassign="emit('reassign', $event)"
+              @open-reassign="emit('openReassign', $event)"
               @page-click="emit('pageClick', $event)"
               @row-activate="emit('rowActivate', $event)"
             />
@@ -176,8 +178,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** Debounced PATCH — parent owns the mutation */
   edit: [rowId: string, guiaId: string, value: string]
-  /** Open reassign dialog */
-  reassign: [row: ReconciliationRowResponse]
+  /** Open reassign dialog for a specific guía (rev-2) */
+  openReassign: [payload: { guia_id: string }]
   /** Source page chip clicked */
   pageClick: [page: number]
   /** Row Enter/Space activated */

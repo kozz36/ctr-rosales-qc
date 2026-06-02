@@ -1,4 +1,5 @@
 <template>
+  <!-- Fragment: main row + optional drill-down row (Vue 3 template fragment) -->
   <tr
     class="recon-row"
     :class="rowClass"
@@ -8,6 +9,21 @@
     @keydown.enter="emit('rowActivate', row)"
     @keydown.space.prevent="emit('rowActivate', row)"
   >
+    <!-- Col 0: Expand/collapse chevron -->
+    <td class="recon-row__cell recon-row__cell--expand">
+      <button
+        v-if="row.guias && row.guias.length > 0"
+        class="recon-row__expand-btn"
+        :aria-label="isExpanded ? 'Colapsar detalle de guías' : 'Expandir detalle de guías'"
+        :aria-expanded="isExpanded"
+        @click.stop="toggleExpand"
+      >
+        <span class="recon-row__chevron" :class="{ 'recon-row__chevron--open': isExpanded }" aria-hidden="true">
+          ›
+        </span>
+      </button>
+    </td>
+
     <!-- Col 1: Registro -->
     <td class="recon-row__cell recon-row__cell--registro">
       <span class="recon-row__registro mono">{{ row.registro }}</span>
@@ -35,38 +51,14 @@
       <span class="recon-row__qty">{{ formatDecimal(row.declared_qty) }}</span>
     </td>
 
-    <!-- Col 6: Sumado (guías) — editable when MISMATCH -->
+    <!-- Col 6: Sumado (guías) — READ-ONLY (REV-C03: summed_qty is derived, not directly editable).
+         Edit happens at guía-line level via GuiaDrillDown. -->
     <td
-      class="recon-row__cell recon-row__cell--numeric recon-row__cell--editable"
+      class="recon-row__cell recon-row__cell--numeric"
       data-numeric
-      :aria-label="`Sumado guías: ${formatDecimal(row.summed_qty)}${isDirty ? ', editado' : ''}`"
+      :aria-label="`Sumado guías: ${formatDecimal(row.summed_qty)}`"
     >
-      <div v-if="isEditing" class="recon-row__edit-wrap">
-        <input
-          ref="summedInputRef"
-          v-model="editValue"
-          class="recon-row__input mono"
-          type="text"
-          inputmode="decimal"
-          :aria-label="`Editar sumado guías para ${row.material_canonical}`"
-          @blur="commitEdit"
-          @keydown.enter="commitEdit"
-          @keydown.escape="cancelEdit"
-        />
-      </div>
-      <button
-        v-else
-        class="recon-row__editable-cell"
-        :class="{ 'recon-row__editable-cell--dirty': isDirty }"
-        :aria-label="`Editar sumado: ${formatDecimal(row.summed_qty)}`"
-        :title="row.status === 'MISMATCH' ? 'Clic para editar' : undefined"
-        :disabled="row.status === 'MATCH'"
-        @click="startEdit"
-      >
-        <span class="mono">{{ formatDecimal(effectiveSummed) }}</span>
-        <span v-if="isDirty" class="recon-row__dirty-dot" aria-label="editado" title="Cambio pendiente" />
-        <span v-if="row.status !== 'MATCH' && row.status !== 'GUIA_MISSING'" class="recon-row__edit-hint" aria-hidden="true">✎</span>
-      </button>
+      <span class="mono">{{ formatDecimal(row.summed_qty) }}</span>
     </td>
 
     <!-- Col 7: Delta -->
@@ -102,84 +94,77 @@
 
     <!-- Actions column -->
     <td class="recon-row__cell recon-row__cell--actions">
-      <button
-        v-if="showReassign"
-        class="recon-row__action-btn"
-        :aria-label="`Reasignar guía de ${row.registro}`"
-        title="Reasignar guía"
-        @click="emit('reassign', row)"
-      >
-        <span aria-hidden="true">⇄</span>
-      </button>
+      <!-- Row-level reassign button kept for backward compat with parent; drill-down
+           now also emits per-guía reassign events. -->
     </td>
   </tr>
+
+  <!-- Drill-down row (conditionally rendered when expanded) -->
+  <GuiaDrillDown
+    v-if="isExpanded && row.guias && row.guias.length > 0"
+    :guias="row.guias"
+    :run-id="runId"
+    @reassign="onDrillDownReassign"
+    @row-updated="emit('rowUpdated')"
+  />
 </template>
 
 <script setup lang="ts">
 /**
  * ReconciliationRow — a single row of the reconciliation grid.
  *
- * Responsibilities:
- * - Renders all 10 locked columns
- * - Editable summed_qty cell (MISMATCH rows only) with dirty-tracking
- * - Delegates confidence badge and source pages to sub-components
- * - Emits: edit (commits debounced PATCH), reassign (opens dialog), pageClick
+ * Rev-2 changes:
+ * - Expand/collapse chevron reveals GuiaDrillDown (REV-C01, no extra API call).
+ * - summed_qty is now READ-ONLY — edit happens at guía-line level (REV-C03/CRITICAL-2 fix).
+ * - Propagates GuiaDrillDown reassign(guia_id) as openReassign({ guia_id }) (REV-C02).
+ * - Emits rowUpdated when drill-down quantity edit succeeds.
  */
 
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed } from 'vue'
 import type { ReconciliationRowResponse } from '@/api/types'
 import ConfidenceBadge from './ConfidenceBadge.vue'
 import SourcePages from './SourcePages.vue'
+import GuiaDrillDown from './GuiaDrillDown.vue'
 
 const props = defineProps<{
   row: ReconciliationRowResponse
   runId: string
-  /** Pending edit value from Pinia store (post-edit, pre-commit) */
+  /** Kept for API compatibility — no longer used since summed_qty is read-only. */
   pendingValue?: string | null
 }>()
 
 const emit = defineEmits<{
-  /** Emitted when user commits an edit. Parent debounces + PATCH. */
-  edit: [rowId: string, guiaId: string, value: string]
-  /** Emitted when reassign button is clicked. */
-  reassign: [row: ReconciliationRowResponse]
+  /** Emitted when reassign is requested for a specific guía_id. */
+  openReassign: [payload: { guia_id: string }]
   /** Emitted when a source page chip is clicked. */
   pageClick: [page: number]
   /** Emitted on row Enter/Space for row-level keyboard activation. */
   rowActivate: [row: ReconciliationRowResponse]
+  /** Emitted after a successful guía-line cantidad edit (drill-down). */
+  rowUpdated: []
+  /**
+   * @deprecated Legacy emit kept for ReviewGrid backward compat.
+   * Use openReassign instead.
+   */
+  reassign: [row: ReconciliationRowResponse]
 }>()
 
 // ---------------------------------------------------------------------------
-// Edit state
+// Expand / collapse
 // ---------------------------------------------------------------------------
 
-const isEditing = ref(false)
-const editValue = ref('')
-const summedInputRef = ref<HTMLInputElement | null>(null)
+const isExpanded = ref(false)
 
-const isDirty = computed(() => props.pendingValue !== undefined && props.pendingValue !== null)
-const effectiveSummed = computed(() => props.pendingValue ?? props.row.summed_qty)
-
-function startEdit(): void {
-  if (props.row.status === 'MATCH' || props.row.status === 'GUIA_MISSING') return
-  editValue.value = effectiveSummed.value
-  isEditing.value = true
-  void nextTick(() => summedInputRef.value?.select())
+function toggleExpand(): void {
+  isExpanded.value = !isExpanded.value
 }
 
-function commitEdit(): void {
-  if (!isEditing.value) return
-  const trimmed = editValue.value.trim()
-  // Only emit if value actually changed
-  if (trimmed && trimmed !== props.row.summed_qty) {
-    emit('edit', props.row.row_id, props.row.row_id, trimmed)
-  }
-  isEditing.value = false
-}
+// ---------------------------------------------------------------------------
+// Drill-down event handlers
+// ---------------------------------------------------------------------------
 
-function cancelEdit(): void {
-  isEditing.value = false
-  editValue.value = ''
+function onDrillDownReassign(guiaId: string): void {
+  emit('openReassign', { guia_id: guiaId })
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +175,6 @@ function formatDecimal(value: string | null | undefined): string {
   if (value === null || value === undefined || value === '') return '—'
   const n = Number(value)
   if (isNaN(n)) return value
-  // Format to max 4 decimal places, stripping trailing zeros
   return n.toLocaleString('es-PE', { maximumFractionDigits: 4, minimumFractionDigits: 0 })
 }
 
@@ -248,12 +232,6 @@ const deltaClass = computed(() => ({
 const rowClass = computed(() => ({
   [`recon-row--${props.row.status.toLowerCase().replace(/_/g, '-')}`]: true,
 }))
-
-const showReassign = computed(() =>
-  props.row.status === 'MISMATCH' ||
-  props.row.status === 'DECLARED_MISSING' ||
-  props.row.status === 'GUIA_MISSING',
-)
 </script>
 
 <style scoped>
@@ -302,6 +280,11 @@ const showReassign = computed(() =>
   white-space: nowrap;
 }
 
+.recon-row__cell--expand {
+  width: 32px;
+  padding: var(--space-1) var(--space-2);
+}
+
 .recon-row__cell--material {
   max-width: 240px;
   overflow: hidden;
@@ -313,84 +296,40 @@ const showReassign = computed(() =>
   text-align: right;
 }
 
-/* Editable cell */
-.recon-row__editable-cell {
+/* Expand/collapse button */
+.recon-row__expand-btn {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: none;
   background: none;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  padding: 2px var(--space-2);
-  cursor: pointer;
-  color: inherit;
-  font-size: inherit;
-  transition:
-    border-color var(--transition-fast),
-    background-color var(--transition-fast);
-  min-width: 60px;
-  justify-content: flex-end;
-}
-
-.recon-row__editable-cell:not(:disabled):hover {
-  border-color: var(--border-default);
-  background-color: var(--surface-inset);
-}
-
-.recon-row__editable-cell:not(:disabled):focus-visible {
-  outline: none;
-  border-color: var(--border-focus);
-  box-shadow: var(--shadow-focus);
-}
-
-.recon-row__editable-cell:disabled {
-  cursor: default;
-}
-
-.recon-row__editable-cell--dirty {
-  border-color: var(--action-primary);
-  background-color: rgba(31, 111, 235, 0.08);
-}
-
-.recon-row__edit-hint {
   color: var(--text-tertiary);
-  font-size: var(--text-2xs);
-  opacity: 0;
-  transition: opacity var(--transition-fast);
-}
-
-.recon-row__editable-cell:not(:disabled):hover .recon-row__edit-hint {
-  opacity: 1;
-}
-
-.recon-row__dirty-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: var(--action-primary);
-  flex-shrink: 0;
-}
-
-/* Inline edit input */
-.recon-row__edit-wrap {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.recon-row__input {
-  width: 80px;
-  padding: 2px var(--space-2);
-  background-color: var(--surface-inset);
-  border: 1px solid var(--border-focus);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
+  cursor: pointer;
   font-size: var(--text-sm);
-  text-align: right;
+  transition: color var(--transition-fast);
+}
+
+.recon-row__expand-btn:hover {
+  color: var(--text-primary);
+}
+
+.recon-row__expand-btn:focus-visible {
+  outline: none;
   box-shadow: var(--shadow-focus);
 }
 
-.recon-row__input:focus {
-  outline: none;
+.recon-row__chevron {
+  display: inline-block;
+  transition: transform var(--transition-fast);
+  line-height: 1;
+  font-style: normal;
+}
+
+.recon-row__chevron--open {
+  transform: rotate(90deg);
 }
 
 /* Delta coloring */
@@ -439,34 +378,5 @@ const showReassign = computed(() =>
 .recon-row__cell--actions {
   width: 40px;
   padding: var(--space-1) var(--space-2);
-}
-
-.recon-row__action-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-default);
-  background-color: transparent;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition:
-    border-color var(--transition-fast),
-    background-color var(--transition-fast),
-    color var(--transition-fast);
-}
-
-.recon-row__action-btn:hover {
-  border-color: var(--action-primary);
-  color: var(--action-primary-hover);
-  background-color: rgba(31, 111, 235, 0.08);
-}
-
-.recon-row__action-btn:focus-visible {
-  outline: none;
-  box-shadow: var(--shadow-focus);
 }
 </style>

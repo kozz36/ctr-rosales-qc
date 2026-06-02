@@ -15,7 +15,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ReviewGrid from '@/features/review/ReviewGrid.vue'
-import type { ReconciliationRowResponse } from '@/api/types'
+import type { ReconciliationRowResponse, GuiaContributionResponse } from '@/api/types'
 
 // Stub child components to isolate ReviewGrid logic
 vi.mock('@/features/review/ReconciliationRow.vue', () => ({
@@ -23,7 +23,7 @@ vi.mock('@/features/review/ReconciliationRow.vue', () => ({
     name: 'ReconciliationRow',
     template: `<tr class="stub-row" :data-status="row.status" :data-row-id="row.row_id"><td>{{ row.status }}</td></tr>`,
     props: ['row', 'runId', 'pendingValue'],
-    emits: ['edit', 'reassign', 'pageClick', 'rowActivate'],
+    emits: ['edit', 'openReassign', 'pageClick', 'rowActivate', 'rowUpdated'],
   },
 }))
 
@@ -57,6 +57,7 @@ function makeRow(overrides: Partial<ReconciliationRowResponse> = {}): Reconcilia
     status: 'MATCH',
     source_pages: [1, 2],
     min_confidence: 0.92,
+    guias: [] as GuiaContributionResponse[],
     ...overrides,
   }
 }
@@ -189,12 +190,14 @@ describe('ReviewGrid', () => {
     expect(activeBtn.text()).toContain('Todos')
   })
 
-  it('emits reassign when ReconciliationRow emits reassign', async () => {
+  it('emits openReassign when ReconciliationRow emits openReassign', async () => {
     const row = makeRow({ status: 'MISMATCH' })
     const wrapper = mount(ReviewGrid, {
       props: { rows: [row], runId: 'run-abc', pendingEdits: EMPTY_MAP, activeFilter: null },
     })
-    await wrapper.findComponent({ name: 'ReconciliationRow' }).vm.$emit('reassign', row)
-    expect(wrapper.emitted('reassign')).toBeTruthy()
+    await wrapper.findComponent({ name: 'ReconciliationRow' }).vm.$emit('openReassign', { guia_id: 'T009-0741770' })
+    expect(wrapper.emitted('openReassign')).toBeTruthy()
+    const payload = wrapper.emitted('openReassign')![0][0] as { guia_id: string }
+    expect(payload.guia_id).toBe('T009-0741770')
   })
 })

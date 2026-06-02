@@ -46,7 +46,6 @@
       :error="tableError"
       :pending-edits="reconciliationStore.pendingEdits"
       :active-filter="reconciliationStore.statusFilter"
-      @edit="onEdit"
       @open-reassign="onReassignRequest"
       @page-click="onPageClick"
       @filter-change="reconciliationStore.setFilter"
@@ -85,7 +84,7 @@
 
 import { ref, computed, watch } from 'vue'
 import { useReconciliationStore } from '@/stores/reconciliation'
-import { useTable, useEditRow, useReassignGuia, useExportRun, queryKeys } from '@/composables/useReconciliationApi'
+import { useTable, useReassignGuia, useExportRun, queryKeys } from '@/composables/useReconciliationApi'
 import { getRunStatus } from '@/api/client'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { ReconciliationRowResponse, ExportFormat, ReassignRequest } from '@/api/types'
@@ -149,38 +148,6 @@ watch(
     if (data) reconciliationStore.setRows(props.id, data.rows)
   },
 )
-
-// ---------------------------------------------------------------------------
-// Edit flow — debounced PATCH
-// ---------------------------------------------------------------------------
-
-const editMutation = useEditRow(runIdRef)
-const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-function onEdit(rowId: string, _guiaId: string, value: string): void {
-  // Track dirty in store
-  reconciliationStore.setPendingEdit(rowId, {
-    guia_id: rowId,
-    field: 'fecha', // only fecha/registro editable per current API contract
-    value,
-  })
-
-  // Debounce the PATCH — 600ms after last keystroke
-  if (pendingTimers.has(rowId)) clearTimeout(pendingTimers.get(rowId)!)
-  const timer = setTimeout(async () => {
-    pendingTimers.delete(rowId)
-    try {
-      await editMutation.mutateAsync({
-        rowId,
-        body: { guia_id: rowId, field: 'fecha', value },
-      })
-      reconciliationStore.clearPendingEdit(rowId)
-    } catch {
-      // Error stays visible in grid; edit not cleared
-    }
-  }, 600)
-  pendingTimers.set(rowId, timer)
-}
 
 // ---------------------------------------------------------------------------
 // Reassign flow

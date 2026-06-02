@@ -80,9 +80,9 @@
   --status-guia-missing-fg:    #58a6ff;
   --status-guia-missing-glow:  #1f6feb;
 
-  /* UNCLASSIFIED — pipeline could not classify the page */
+  /* UNCLASSIFIED — pipeline could not classify the page; intentionally neutral (REV-004) */
   --status-unclassified-bg:    #1c1c20;
-  --status-unclassified-fg:    #848d97;
+  --status-unclassified-fg:    #a3a3a3;
   --status-unclassified-glow:  #484f58;
 
   /* Shorthand aliases used in ReviewGrid (PR-5b) */
@@ -91,7 +91,7 @@
   --status-flag:             var(--status-mismatch-fg);  /* generic flag = mismatch red */
   --status-declared-missing: var(--status-declared-missing-fg);
   --status-guia-missing:     var(--status-guia-missing-fg);
-  --status-unclassified:     var(--status-unclassified-fg);
+  --status-unclassified:     #a3a3a3; /* neutral — MUST NOT use green MATCH token (REV-004) */
 
   /* -------------------------------------------------------------------------
    * Confidence scale

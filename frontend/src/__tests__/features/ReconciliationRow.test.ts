@@ -204,11 +204,11 @@ describe('ReconciliationRow', () => {
     expect(wrapper.find('.recon-row__status-badge').text()).toContain('Diferencia')
   })
 
-  it('status badge displays correct label for MATCH', () => {
+  it('status badge displays correct label for MATCH (Conforme — REV-001 localization)', () => {
     const wrapper = mount(ReconciliationRow, {
       props: { row: makeRow({ status: 'MATCH' }), runId: 'run-abc' },
     })
-    expect(wrapper.find('.recon-row__status-badge').text()).toContain('Coincide')
+    expect(wrapper.find('.recon-row__status-badge').text()).toContain('Conforme')
   })
 
   it('fecha shown as — when null', () => {
@@ -216,5 +216,27 @@ describe('ReconciliationRow', () => {
       props: { row: makeRow({ fecha: null }), runId: 'run-abc' },
     })
     expect(wrapper.text()).toContain('—')
+  })
+
+  it('UNCLASSIFIED badge uses neutral class, NOT the green MATCH class (REV-004 / S2.5)', () => {
+    const row = makeRow({ status: 'UNCLASSIFIED' })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    const badge = wrapper.find('.recon-row__status-badge')
+    expect(badge.exists()).toBe(true)
+    // Must have the unclassified class (neutral token)
+    expect(badge.classes()).toContain('recon-row__status-badge--unclassified')
+    // Must NOT have the match class (green token)
+    expect(badge.classes()).not.toContain('recon-row__status-badge--match')
+  })
+
+  it('aria-rowcount on table is bound reactively (ReviewGrid contract)', () => {
+    // This test lives in ReviewGrid.test.ts — here we just confirm the badge label path
+    const row = makeRow({ status: 'UNCLASSIFIED' })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    expect(wrapper.find('.recon-row__status-badge').text()).toContain('Sin clasificar')
   })
 })

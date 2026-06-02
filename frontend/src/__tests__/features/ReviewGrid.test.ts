@@ -200,4 +200,31 @@ describe('ReviewGrid', () => {
     const payload = wrapper.emitted('openReassign')![0][0] as { guia_id: string }
     expect(payload.guia_id).toBe('T009-0741770')
   })
+
+  it('aria-rowcount is bound reactively to filteredRows length (S2.5 / REV-001)', () => {
+    const rows = [
+      makeRow({ row_id: 'r1|d|A|K', status: 'MATCH' }),
+      makeRow({ row_id: 'r1|d|B|K', status: 'MISMATCH' }),
+    ]
+    const wrapper = mount(ReviewGrid, {
+      props: { rows, runId: 'run-abc', pendingEdits: EMPTY_MAP, activeFilter: 'MISMATCH' },
+    })
+    const table = wrapper.find('.review-grid__table')
+    expect(table.exists()).toBe(true)
+    // Only 1 MISMATCH row visible after filter → aria-rowcount should be "1"
+    expect(table.attributes('aria-rowcount')).toBe('1')
+  })
+
+  it('aria-rowcount shows all rows when no filter active', () => {
+    const rows = [
+      makeRow({ row_id: 'r1|d|A|K', status: 'MATCH' }),
+      makeRow({ row_id: 'r1|d|B|K', status: 'MISMATCH' }),
+      makeRow({ row_id: 'r1|d|C|K', status: 'DECLARED_MISSING' }),
+    ]
+    const wrapper = mount(ReviewGrid, {
+      props: { rows, runId: 'run-abc', pendingEdits: EMPTY_MAP, activeFilter: null },
+    })
+    const table = wrapper.find('.review-grid__table')
+    expect(table.attributes('aria-rowcount')).toBe('3')
+  })
 })

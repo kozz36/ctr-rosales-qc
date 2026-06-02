@@ -64,7 +64,7 @@
       <table
         class="review-grid__table"
         aria-label="Tabla de reconciliación"
-        aria-rowcount="visibleRows.length"
+        :aria-rowcount="visibleRows.length"
       >
         <caption id="grid-heading" class="sr-only">
           Tabla de reconciliación de materiales — {{ visibleRows.length }} filas

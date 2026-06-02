@@ -191,7 +191,7 @@ function formatDelta(delta: string): string {
 // ---------------------------------------------------------------------------
 
 const STATUS_LABELS: Record<string, string> = {
-  MATCH: 'Coincide',
+  MATCH: 'Conforme',
   MISMATCH: 'Diferencia',
   DECLARED_MISSING: 'Sin declarado',
   GUIA_MISSING: 'Sin guía',

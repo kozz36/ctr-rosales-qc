@@ -449,6 +449,52 @@ class TestVisionCostCap:
 
 
 # ---------------------------------------------------------------------------
+# 7.2: Vision audit record in sidecar
+# ---------------------------------------------------------------------------
+
+
+class TestVisionAuditRecord:
+    """Task 7.2: pipeline writes vision audit {stage, calls_made, cap_reached} to sidecar."""
+
+    def test_audit_record_written_on_normal_run(self, tmp_path: Path) -> None:
+        """After a successful run, sidecar contains vision_audit with cap_reached=False."""
+        pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
+        pipeline, ctx = _build_pipeline(pages=pages, tmp_path=tmp_path)
+        pipeline.run(ctx)
+        sidecar = ctx.read_review_sidecar()
+        assert "vision_audit" in sidecar, "vision_audit key missing from sidecar"
+        audit = sidecar["vision_audit"]
+        assert len(audit) >= 1
+        record = audit[-1]
+        assert record["stage"] == "vision"
+        assert record["calls_made"] >= 0
+        assert record["cap_reached"] is False
+
+    def test_audit_record_no_guia_pages(self, tmp_path: Path) -> None:
+        """Runs with no GUIA pages write audit record with calls_made=0, cap_reached=False."""
+        pages = [{"text": _DECLARED_TEXT}]
+        pipeline, ctx = _build_pipeline(pages=pages, tmp_path=tmp_path)
+        pipeline.run(ctx)
+        sidecar = ctx.read_review_sidecar()
+        audit = sidecar.get("vision_audit", [])
+        assert len(audit) >= 1
+        record = audit[-1]
+        assert record["stage"] == "vision"
+        assert record["calls_made"] == 0
+        assert record["cap_reached"] is False
+
+    def test_sidecar_still_has_edits_after_audit(self, tmp_path: Path) -> None:
+        """Vision audit record does not overwrite the edits key in the sidecar."""
+        pages = [{"text": _DECLARED_TEXT}]
+        pipeline, ctx = _build_pipeline(pages=pages, tmp_path=tmp_path)
+        pipeline.run(ctx)
+        sidecar = ctx.read_review_sidecar()
+        # Both keys must be present
+        assert "edits" in sidecar, "edits key lost after vision audit write"
+        assert "vision_audit" in sidecar
+
+
+# ---------------------------------------------------------------------------
 # C-1 + C-2: real Registro parsers + dedup (proto canonical)
 # ---------------------------------------------------------------------------
 

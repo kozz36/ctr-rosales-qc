@@ -108,3 +108,32 @@ class TestReviewSidecar:
         # No .tmp files should remain
         tmp_files = list(ctx.run_dir.glob("*.tmp"))
         assert tmp_files == []
+
+    def test_append_vision_audit_creates_sidecar_if_absent(self, tmp_path: Path) -> None:
+        """append_vision_audit creates the sidecar with vision_audit when none exists."""
+        ctx = RunContext(pdf_path=tmp_path / "doc.pdf", output_base=tmp_path / "runs")
+        assert not ctx.has_review_sidecar()
+        ctx.append_vision_audit({"stage": "vision", "calls_made": 3, "cap_reached": False})
+        sidecar = ctx.read_review_sidecar()
+        assert "vision_audit" in sidecar
+        assert sidecar["vision_audit"] == [{"stage": "vision", "calls_made": 3, "cap_reached": False}]
+
+    def test_append_vision_audit_merges_with_existing_sidecar(self, tmp_path: Path) -> None:
+        """append_vision_audit preserves existing sidecar keys (edits, audit_trail)."""
+        ctx = RunContext(pdf_path=tmp_path / "doc.pdf", output_base=tmp_path / "runs")
+        ctx.write_review_sidecar({"edits": [], "audit_trail": ["prev"]})
+        ctx.append_vision_audit({"stage": "vision", "calls_made": 5, "cap_reached": True})
+        sidecar = ctx.read_review_sidecar()
+        # Existing keys preserved
+        assert sidecar["edits"] == []
+        assert sidecar["audit_trail"] == ["prev"]
+        # Vision audit added
+        assert sidecar["vision_audit"] == [{"stage": "vision", "calls_made": 5, "cap_reached": True}]
+
+    def test_append_vision_audit_accumulates_records(self, tmp_path: Path) -> None:
+        """Multiple append_vision_audit calls accumulate records in the list."""
+        ctx = RunContext(pdf_path=tmp_path / "doc.pdf", output_base=tmp_path / "runs")
+        ctx.append_vision_audit({"stage": "vision", "calls_made": 2, "cap_reached": False})
+        ctx.append_vision_audit({"stage": "vision", "calls_made": 3, "cap_reached": True})
+        sidecar = ctx.read_review_sidecar()
+        assert len(sidecar["vision_audit"]) == 2

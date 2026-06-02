@@ -240,7 +240,21 @@ class ReconciliationPipeline:
         blocks = self._stage_assemble_blocks(raw_guias, classifications)
 
         # Stage 6: extract vision dates (handwritten) — one call per block (first page)
-        guias, vision_calls_made, warnings = self._stage_extract_vision(blocks)
+        # vision_audit_record is populated here and written to sidecar in stage 9
+        vision_calls_made = 0
+        vision_cap_reached = False
+        try:
+            guias, vision_calls_made, warnings = self._stage_extract_vision(blocks)
+        except Exception:
+            vision_cap_reached = True
+            raise
+        finally:
+            # Store for stage 9 (avoid writing before sidecar is initialised)
+            self._pending_vision_audit = {
+                "stage": "vision",
+                "calls_made": vision_calls_made,
+                "cap_reached": vision_cap_reached,
+            }
 
         # Stage 7: normalize descriptions
         declared, guias = self._stage_normalize(declared, guias)
@@ -248,7 +262,7 @@ class ReconciliationPipeline:
         # Stage 8: reconcile
         rows = self._stage_reconcile(declared, guias)
 
-        # Stage 9: persist sidecar
+        # Stage 9: persist sidecar (also appends the vision audit record)
         self._stage_persist(ctx, classifications, declared, guias, rows)
 
         return PipelineResult(
@@ -566,7 +580,7 @@ class ReconciliationPipeline:
                     first_page_image=raw.image,
                     lines=list(raw.lines),
                     registro=raw.registro,
-                    identity_source=page_identity_source,  # type: ignore[arg-type]
+                    identity_source=page_identity_source,
                     ruc_emisor=page_ruc_emisor,
                     ruc_receptor=page_ruc_receptor,
                     tipo=page_tipo,
@@ -716,7 +730,10 @@ class ReconciliationPipeline:
         guias: list[GuiaDeRemision],
         rows: list[ReconciliationRow],
     ) -> None:
-        """Stage 9: write extraction cache + initial empty review sidecar."""
+        """Stage 9: write extraction cache + initial empty review sidecar.
+
+        Also appends the vision audit record collected in stage 6.
+        """
         if not ctx.has_extraction_cache():
             cache_data: dict[str, Any] = {
                 "run_id": ctx.run_id,
@@ -731,6 +748,12 @@ class ReconciliationPipeline:
         # (preserve existing edits on a restart/reload scenario).
         if not ctx.has_review_sidecar():
             ctx.write_review_sidecar({"edits": [], "audit_trail": []})
+
+        # Append vision audit record if one was collected in stage 6
+        pending: dict[str, object] | None = getattr(self, "_pending_vision_audit", None)
+        if pending is not None:
+            ctx.append_vision_audit(pending)
+            del self._pending_vision_audit
 
 
 # ---------------------------------------------------------------------------

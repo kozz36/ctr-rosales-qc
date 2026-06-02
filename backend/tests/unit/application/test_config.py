@@ -18,6 +18,7 @@ from reconciliation.application.config import (
     DeskewConfig,
     InferenceConfig,
     OcrConfig,
+    SunatConfig,
     VisionConfig,
 )
 
@@ -258,3 +259,67 @@ class TestOcrConfig:
         monkeypatch.setenv("RECONCILIATION__OCR__ENABLED", "true")
         cfg = AppConfig()
         assert cfg.ocr.enabled is True
+
+
+# ---------------------------------------------------------------------------
+# R10.5: protocolo_crop default, VisionConfig.max_tokens, SunatConfig.cache_dir
+# ---------------------------------------------------------------------------
+
+
+class TestProtocoloCropDefault:
+    def test_protocolo_crop_default_is_non_zero(self) -> None:
+        """R10.5: protocolo_crop default is (0.60,0.04,1.00,0.22) — non-degenerate."""
+        cfg = AppConfig()
+        assert cfg.vision.protocolo_crop.x0 == pytest.approx(0.60)
+        assert cfg.vision.protocolo_crop.y0 == pytest.approx(0.04)
+        assert cfg.vision.protocolo_crop.x1 == pytest.approx(1.00)
+        assert cfg.vision.protocolo_crop.y1 == pytest.approx(0.22)
+
+    def test_protocolo_crop_enabled_is_true(self) -> None:
+        """R10.5: default protocolo_crop box is non-degenerate → enabled=True."""
+        cfg = AppConfig()
+        assert cfg.vision.protocolo_crop.enabled is True
+
+
+class TestVisionMaxTokens:
+    def test_max_tokens_default(self) -> None:
+        """R10.5: VisionConfig.max_tokens defaults to 640."""
+        cfg = AppConfig()
+        assert cfg.vision.max_tokens == 640
+
+    def test_max_tokens_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """R10.5: RECONCILIATION__VISION__MAX_TOKENS env overrides default."""
+        monkeypatch.setenv("RECONCILIATION__VISION__MAX_TOKENS", "512")
+        cfg = AppConfig()
+        assert cfg.vision.max_tokens == 512
+
+    def test_max_tokens_must_be_positive(self) -> None:
+        """R10.5: max_tokens=0 is rejected."""
+        with pytest.raises(Exception):
+            VisionConfig(max_tokens=0)
+
+
+class TestSunatCacheDir:
+    def test_cache_dir_default_is_none(self) -> None:
+        """R10.5: SunatConfig.cache_dir defaults to None (backward-compat)."""
+        cfg = AppConfig()
+        assert cfg.sunat.cache_dir is None
+
+    def test_sunat_config_directly_default_none(self) -> None:
+        """SunatConfig() without cache_dir → None."""
+        s = SunatConfig()
+        assert s.cache_dir is None
+
+    def test_cache_dir_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """R10.5: RECONCILIATION__SUNAT__CACHE_DIR=/data/sunat-cache → Path."""
+        monkeypatch.setenv("RECONCILIATION__SUNAT__CACHE_DIR", "/data/sunat-cache")
+        cfg = AppConfig()
+        assert cfg.sunat.cache_dir == Path("/data/sunat-cache")
+
+    def test_cache_dir_yaml_missing_defaults_none(self, tmp_path: Path) -> None:
+        """R10.5: config.yaml without cache_dir → None (backward-compat)."""
+        yaml_content = "sunat:\n  enabled: false\n"
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml_content, encoding="utf-8")
+        cfg = AppConfig.from_yaml(cfg_file)
+        assert cfg.sunat.cache_dir is None

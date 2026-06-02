@@ -124,10 +124,18 @@ class TestStageExtractDeclaredDate:
 
 
 class TestProtocoloCropConfig:
-    def test_protocolo_crop_disabled_by_default(self) -> None:
-        """ADR-6: protocolo_crop defaults to disabled (full-page fallback)."""
+    def test_protocolo_crop_enabled_by_default(self) -> None:
+        """R10.5: protocolo_crop default is (0.60,0.04,1.00,0.22) — non-degenerate (enabled)."""
         cfg = AppConfig()
-        assert cfg.vision.protocolo_crop.enabled is False
+        assert cfg.vision.protocolo_crop.enabled is True
+
+    def test_protocolo_crop_disabled_when_zero_box(self) -> None:
+        """ADR-6: degenerate zero-box still disables crop (full-page fallback path preserved)."""
+        from reconciliation.application.config import StampCropConfig, VisionConfig
+        v = VisionConfig(
+            protocolo_crop=StampCropConfig(x0=0.0, y0=0.0, x1=0.0, y1=0.0)
+        )
+        assert v.protocolo_crop.enabled is False
 
     def test_stamp_crop_unaffected(self) -> None:
         """R7 guía stamp crop is NOT regressed by adding protocolo_crop."""
@@ -136,8 +144,13 @@ class TestProtocoloCropConfig:
 
     def test_prepare_vision_image_proto_returns_nonempty_on_disabled(self) -> None:
         """ADR-6: disabled crop → full-page fallback returns the original bytes."""
-        cfg = AppConfig()
+        from reconciliation.application.config import StampCropConfig, VisionConfig
+        cfg_disabled = AppConfig(
+            vision=VisionConfig(
+                protocolo_crop=StampCropConfig(x0=0.0, y0=0.0, x1=0.0, y1=0.0)
+            )
+        )
         img = b"\x89PNG\r\n-full-page-"
-        out = _prepare_vision_image_proto(img, cfg)
+        out = _prepare_vision_image_proto(img, cfg_disabled)
         assert out == img
         assert len(out) > 0

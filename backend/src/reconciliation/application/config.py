@@ -97,13 +97,17 @@ class VisionConfig(BaseSettings):
     stamp_crop: StampCropConfig = Field(default_factory=StampCropConfig)
     # R9.5 (ADR-6): Protocolo "Fecha:" crop box for the declared-date read.
     # The Protocolo layout differs from the guía stamp, so it gets its own crop.
-    # Default is DISABLED (degenerate zero box) → safe full-page >=300dpi fallback
-    # until the crop box is tuned for the Protocolo layout.
+    # R10.5: default tuned to upper-right header table (0.60,0.04,1.00,0.22).
+    # Env-tunable via RECONCILIATION__VISION__PROTOCOLO_CROP__X0 etc.
     protocolo_crop: StampCropConfig = Field(
-        default_factory=lambda: StampCropConfig(x0=0.0, y0=0.0, x1=0.0, y1=0.0)
+        default_factory=lambda: StampCropConfig(x0=0.60, y0=0.04, x1=1.00, y1=0.22)
     )
     # Rev-3 D4 Option B: DPI for full-page fallback when stamp_crop is disabled
     fallback_dpi: int = Field(default=300, gt=0)
+    # R10.5: max_tokens for vision calls — env-tunable floor at 512-768 to survive
+    # the <think> phase from extended-thinking models (qwen3.5 family).
+    # Passed to the adapter constructor in the factory; overrides the adapter's default.
+    max_tokens: int = Field(default=640, gt=0)
 
     @model_validator(mode="after")
     def _inject_env_api_keys(self) -> VisionConfig:
@@ -161,6 +165,11 @@ class SunatConfig(BaseSettings):
     enabled: bool = False
     timeout_s: float = Field(default=10.0, gt=0)
     cache: bool = True
+    # R10.5: optional stable cross-run cache directory (D4 CONT-S10).
+    # When set, container.py routes the SUNAT adapter to this path instead of the
+    # per-run dir. Default None preserves existing per-run behavior (backward-compat).
+    # Env: RECONCILIATION__SUNAT__CACHE_DIR=/data/sunat-cache
+    cache_dir: Path | None = Field(default=None)
 
 
 class OcrConfig(BaseSettings):

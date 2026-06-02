@@ -557,7 +557,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session (small — surgical change).
 
-### [ ] S2.5 — A11y + visual fixes (carry-forward from frontend review)
+### [x] S2.5 — A11y + visual fixes (carry-forward from frontend review)
 
 **Spec refs**: REV-001, REV-004 (UNCLASSIFIED badge neutralization).
 **Depends on**: S2.3 (ReconciliationRow stable after summed_qty fix).
@@ -576,7 +576,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session.
 
-### [ ] S2.6 — Unresolved guías bucket (REV-C04)
+### [x] S2.6 — Unresolved guías bucket (REV-C04)
 
 **Spec refs**: REV-C04, REV-C04 scenario (unresolved guías section), REC-C05.
 **Depends on**: S2.1 (API types; `unresolved_guias` must be surfaced in the API response).
@@ -594,7 +594,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session.
 
-### [ ] S2.7 — Frontend smoke + integration test update
+### [x] S2.7 — Frontend smoke + integration test update
 
 **Spec refs**: REV-C01–REV-C04, REV-C04 scenario.
 **Depends on**: S2.2–S2.6 complete.

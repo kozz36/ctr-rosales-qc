@@ -484,7 +484,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 > Sequential with slice 1: start only after S1.1–S1.8 backend API surface is stable (API contract needed). Sub-tasks within slice 2 follow a top-down dependency: types → store → components → fixes.
 
-### [ ] S2.1 — Update API types + composables for rev-2 contract
+### [x] S2.1 — Update API types + composables for rev-2 contract
 
 **Spec refs**: REC-C02, REC-C06, REV-C01, REV-C02, REV-C03.
 **Depends on**: S1.7 (updated backend schemas).
@@ -501,7 +501,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session (small).
 
-### [ ] S2.2 — `GuiaDrillDown` component (REV-C01)
+### [x] S2.2 — `GuiaDrillDown` component (REV-C01)
 
 **Spec refs**: REV-C01, REV-C01 scenario, REC-C02.
 **Depends on**: S2.1 (types updated).
@@ -522,7 +522,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session.
 
-### [ ] S2.3 — `ReconciliationRow` drill-down expansion + `summed_qty` read-only fix
+### [x] S2.3 — `ReconciliationRow` drill-down expansion + `summed_qty` read-only fix
 
 **Spec refs**: REV-C01, REV-C03 (summed_qty read-only), REV-C04 scenario.
 **Depends on**: S2.2 (`GuiaDrillDown` component).
@@ -540,7 +540,7 @@ Greenfield build + rev-2 delta. Hexagonal architecture (domain / application / a
 
 **Completable in**: one session.
 
-### [ ] S2.4 — `GuiaReassignDialog` update: reassign by `guia_id`
+### [x] S2.4 — `GuiaReassignDialog` update: reassign by `guia_id`
 
 **Spec refs**: REV-C02, REV-C02 scenario, REC-C03.
 **Depends on**: S2.3 (parent now emits `openReassign({ guia_id })` instead of `{ row_id }`).

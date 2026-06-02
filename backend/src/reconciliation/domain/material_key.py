@@ -42,7 +42,10 @@ _REQUIRES_REVIEW_METHODS: frozenset[str] = frozenset({"llm_inferred", "unresolve
 class CanonicalKey(BaseModel):
     """Immutable canonical material key: (familia, grado, diámetro, presentación, unidad).
 
-    This is a frozen Pydantic Value Object — equality is value-based (all fields).
+    Equality is based on the SEMANTIC tuple (familia, grado, diametro, presentacion, unidad).
+    The ``raw`` and ``method`` fields are provenance/audit metadata and do NOT participate
+    in equality — two keys with the same semantic tuple but different source texts are equal.
+    This is the core MATCH behaviour: declared↔guía descriptions normalize to the same key.
 
     ADR-1: group_token is the string written to MaterialLine.description_canonical.
     unidad is EXCLUDED from group_token because _GroupKey in reconciliation.py
@@ -89,6 +92,20 @@ class CanonicalKey(BaseModel):
             self.diametro or "?",
             self.presentacion or "?",
         ])
+
+    def _semantic_tuple(self) -> tuple:
+        """Semantic identity tuple — used for equality and hashing."""
+        return (self.familia, self.grado, self.diametro, self.presentacion, self.unidad)
+
+    def __eq__(self, other: object) -> bool:
+        """Equality based on semantic tuple only (raw and method excluded)."""
+        if not isinstance(other, CanonicalKey):
+            return NotImplemented
+        return self._semantic_tuple() == other._semantic_tuple()
+
+    def __hash__(self) -> int:
+        """Hash based on semantic tuple only."""
+        return hash(self._semantic_tuple())
 
     @classmethod
     def unresolved(cls, raw: str, unidad: Literal["KG", "TN", "RD", "Rollo"]) -> "CanonicalKey":

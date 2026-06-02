@@ -372,7 +372,8 @@ class TestGuiaDeRemisionRev2Fields:
         assert guia.gre_hashqr_url is None
         assert guia.identity_confidence == pytest.approx(0.0)
         assert guia.identity_source == "ocr_fallback"
-        assert guia.first_page == 0
+        # Rev-3 D6: first_page default changed from 0 to None (sentinel = "unknown")
+        assert guia.first_page is None
 
     def test_rev2_fields_populated(self) -> None:
         guia = GuiaDeRemision(

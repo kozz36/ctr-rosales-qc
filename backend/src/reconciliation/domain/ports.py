@@ -21,7 +21,17 @@ from reconciliation.domain.models import (
 
 @runtime_checkable
 class DocumentSourcePort(Protocol):
-    """Provides page-level access to a PDF document."""
+    """Provides page-level access to a PDF document.
+
+    Core interface (required — all implementors must satisfy):
+        page_count, render_page, page_text
+
+    Optional extension (rev-3 / D1): concrete adapters MAY additionally expose
+        image_coverage_ratio(idx: int) → float
+    returning the fraction of the page area covered by raster images (0.0–1.0).
+    The pipeline calls this via ``hasattr`` guarding so absence is graceful.
+    ``PdfStructureAdapter`` implements it; test fakes may omit it.
+    """
 
     def page_count(self) -> int:
         """Return the total number of pages."""
@@ -34,6 +44,7 @@ class DocumentSourcePort(Protocol):
     def page_text(self, idx: int) -> str | None:
         """Return embedded digital text for page *idx*, or None if the page is scanned."""
         ...
+
 
 
 @runtime_checkable

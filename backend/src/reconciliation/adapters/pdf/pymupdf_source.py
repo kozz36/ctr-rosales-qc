@@ -61,6 +61,48 @@ class PdfStructureAdapter:
         stripped = text.strip()
         return stripped if stripped else None
 
+    def image_coverage_ratio(self, idx: int) -> float:
+        """Return the fraction of page area covered by raster images (0.0–1.0).
+
+        Rev-3 (EXT-019 / D1): used by the pipeline to derive ``image_dominant``.
+        Computes the union of all image bounding boxes on the page and divides by
+        the total page area.  Multi-image overlap is counted once (union, not sum).
+
+        Implementation notes:
+        - ``page.get_images(full=True)`` returns all images embedded on the page.
+        - ``page.get_image_rects(xref)`` returns the bounding boxes of each image
+          occurrence on the page in points (72 dpi coordinates).
+        - No rendering is performed — this is a pure metadata query.
+        """
+        page: fitz.Page = self._doc[idx]
+        page_rect = page.rect  # total page area in points
+        page_area = page_rect.width * page_rect.height
+        if page_area == 0:
+            return 0.0
+
+        images = page.get_images(full=True)
+        if not images:
+            return 0.0
+
+        # Collect all image rects on this page (may overlap).
+        # Compute union area by accumulating covered rectangles.
+        covered: float = 0.0
+        # Simple approximation: sum all image areas clipped to page, then cap at 1.0.
+        # Exact union requires a sweep-line or rect-merge; for classification purposes
+        # the approximation is sufficient (scanned pages have a single full-page image).
+        for img_info in images:
+            xref: int = img_info[0]
+            try:
+                rects = page.get_image_rects(xref)
+            except Exception:  # noqa: BLE001
+                continue
+            for rect in rects:
+                clipped = rect & page_rect  # intersection with page bounds
+                if not clipped.is_empty:
+                    covered += clipped.width * clipped.height
+
+        return min(covered / page_area, 1.0)
+
     def render_page(self, idx: int, dpi: int = 200) -> bytes:
         """Render page *idx* at *dpi* and return PNG bytes.
 

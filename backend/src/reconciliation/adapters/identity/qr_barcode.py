@@ -155,14 +155,23 @@ class QrBarcodeExtractionAdapter:
     ``pyzbar`` and ``zxing-cpp`` are lazy-imported inside ``decode_identity``
     so the test suite can import this module without those libraries installed.
 
+    Rev-3 (D2) — robust dual-QR COLOR decode:
+    - Drops the grayscale ``convert("L")`` step; decodes in COLOR.
+    - Produces two scaled variants (nominal 200-dpi and 400-dpi equivalents)
+      by resizing the input image.  Both are decoded; payloads are merged.
+    - Returns BOTH the compact GRE identity AND the ``hashqr_url`` (URL-variant
+      QR) when found in the union of all decoded payloads.
+    - EXT-012 "only-URL-variant → return None → OCR fallback" rule preserved.
+
     Args:
-        render_dpi: Nominal DPI for page rendering (default 150 as per EXT-012).
-        upscale: Grayscale upscale factor applied before decode (default 2).
+        render_dpi: Nominal DPI the caller rendered the image at (default 200).
+        upscale: Scale factor for the second (higher-res) decode pass (default 2,
+            giving an effective 400-dpi tier when render_dpi=200).
     """
 
     def __init__(
         self,
-        render_dpi: int = 150,
+        render_dpi: int = 200,
         upscale: int = 2,
     ) -> None:
         self._render_dpi = render_dpi
@@ -175,12 +184,14 @@ class QrBarcodeExtractionAdapter:
     def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
         """Decode guía identity from *image* bytes.
 
-        Renders the image at ``render_dpi`` × ``upscale`` grayscale effective
-        resolution, attempts decode with both pyzbar and zxing-cpp (union),
-        then parses the compact GRE QR payload.
+        Rev-3 (D2): multi-resolution COLOR decode — tries the image at two scales
+        (1× and ``upscale``×) with both pyzbar and zxing-cpp in COLOR mode.
+        Returns a ``GuiaIdentity`` when the compact GRE QR passes the EXT-012
+        confidence gate.  Also populates ``hashqr_url`` when the URL-variant QR
+        is decoded on the same page.
 
         Args:
-            image: PNG or JPEG bytes of a rendered guía page.
+            image: PNG or JPEG bytes of a rendered guía page (COLOR).
             page_idx: Page index for audit logging (optional).
 
         Returns:
@@ -188,17 +199,16 @@ class QrBarcodeExtractionAdapter:
             pass; ``None`` on any failure (QR absent, malformed payload,
             confidence gate rejection).
         """
+        payloads: list[str] = []
         try:
-            processed = self._preprocess(image)
+            payloads = self._decode_multi_res(image)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "QrBarcodeExtractionAdapter: image preprocessing failed on page %s: %s",
+                "QrBarcodeExtractionAdapter: decode failed on page %s: %s",
                 page_idx,
                 exc,
             )
             return None
-
-        payloads: list[str] = self._decode_union(processed)
 
         if not payloads:
             logger.debug(
@@ -212,7 +222,8 @@ class QrBarcodeExtractionAdapter:
         for payload in payloads:
             if _URL_PREFIX_RE.match(payload) and _HASHQR_RE.search(payload):
                 # URL-variant QR — store and skip data parse
-                hashqr_url = payload
+                if hashqr_url is None:
+                    hashqr_url = payload
                 logger.debug(
                     "QrBarcodeExtractionAdapter: URL-variant QR on page %s: %r",
                     page_idx,
@@ -245,58 +256,98 @@ class QrBarcodeExtractionAdapter:
 
         return build_guia_identity(fields, hashqr_url, page_idx)
 
+    def decode_hashqr_url(self, image: bytes, page_idx: int | None = None) -> str | None:
+        """Decode only the URL-variant (hashqr) QR from *image*.
+
+        Rev-3 (D2): used by the decode_identities pre-pass when only the hashqr
+        URL is needed (e.g. for block-level propagation without full identity decode).
+        Returns the first URL-variant payload found, or ``None`` if absent.
+        """
+        payloads: list[str] = []
+        try:
+            payloads = self._decode_multi_res(image)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "QrBarcodeExtractionAdapter.decode_hashqr_url: failed page %s: %s",
+                page_idx,
+                exc,
+            )
+            return None
+
+        for payload in payloads:
+            if _URL_PREFIX_RE.match(payload) and _HASHQR_RE.search(payload):
+                return payload
+        return None
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _preprocess(self, image: bytes) -> bytes:
-        """Apply grayscale upscale to *image* and return processed bytes.
+    def _decode_multi_res(self, image: bytes) -> list[str]:
+        """Decode QR codes at two resolutions in COLOR; return union of payloads.
 
-        Returns PIL image bytes at effective decode resolution.
-        Lazy-imports PIL so the test suite can stub this out.
+        Rev-3 (D2): produces a lower-res (1×) and higher-res (``upscale``×) variant
+        of the input image, runs pyzbar ∪ zxing-cpp on each in COLOR mode, and
+        deduplicates.  This reliably catches both the compact data QR and the
+        URL-variant QR that the previous grayscale@2× strategy missed.
         """
         from PIL import Image  # noqa: PLC0415
 
-        img = Image.open(BytesIO(image))
-        w, h = img.size
-        new_w = int(w * self._upscale)
-        new_h = int(h * self._upscale)
-        # Image.Resampling.LANCZOS (Pillow ≥9) / Image.LANCZOS (legacy).
-        lanczos = getattr(getattr(Image, "Resampling", None), "LANCZOS", None) or Image.LANCZOS  # type: ignore[attr-defined]
-        resized = img.resize((new_w, new_h), lanczos)
-        img = resized.convert("L")  # type: ignore[assignment]  # grayscale; ImageFile→Image
-        out = BytesIO()
-        img.save(out, format="PNG")
-        return out.getvalue()
-
-    def _decode_union(self, image: bytes) -> list[str]:
-        """Attempt decode with pyzbar + zxing-cpp; return union of payloads.
-
-        Both decoders are attempted regardless of the first result.  Any
-        ImportError is caught silently — the absent library is skipped and
-        the other is still tried.
-        """
-        from PIL import Image  # noqa: PLC0415
-
-        img = Image.open(BytesIO(image))
+        img_orig = Image.open(BytesIO(image))
         seen: set[str] = set()
         results: list[str] = []
 
-        # --- pyzbar ---
+        # Build list of (PIL_image, label) pairs to decode.
+        # Tier 1: original image (at render_dpi, COLOR).
+        # Tier 2: upscaled image (at render_dpi * upscale, COLOR).
+        variants: list[tuple[object, str]] = []
+        variants.append((img_orig, "1x"))
+
+        if self._upscale > 1:
+            w, h = img_orig.size
+            new_w, new_h = int(w * self._upscale), int(h * self._upscale)
+            lanczos = (
+                getattr(getattr(Image, "Resampling", None), "LANCZOS", None)
+                or Image.LANCZOS  # type: ignore[attr-defined]
+            )
+            img_upscaled = img_orig.resize((new_w, new_h), lanczos)
+            variants.append((img_upscaled, f"{self._upscale}x"))
+
+        for img_variant, label in variants:
+            self._decode_variant_into(img_variant, label, seen, results)
+
+        return results
+
+    def _decode_variant_into(
+        self,
+        img: object,  # PIL.Image.Image
+        label: str,
+        seen: set[str],
+        results: list[str],
+    ) -> None:
+        """Decode a single image variant with pyzbar + zxing-cpp (COLOR).
+
+        Mutates *seen* and *results* in-place.  Errors are logged but do not
+        raise; a missing library silently skips that decoder.
+        """
+        # --- pyzbar (COLOR) ---
         try:
             import pyzbar.pyzbar as pyzbar  # noqa: PLC0415
 
-            for barcode in pyzbar.decode(img):
+            for barcode in pyzbar.decode(img):  # type: ignore[arg-type]
                 payload = barcode.data.decode("utf-8", errors="replace")
                 if payload not in seen:
                     seen.add(payload)
                     results.append(payload)
+                    logger.debug(
+                        "QrBarcodeExtractionAdapter: pyzbar[%s] decoded: %r", label, payload[:60]
+                    )
         except ImportError:
             logger.debug("QrBarcodeExtractionAdapter: pyzbar not installed; skipping")
         except Exception as exc:  # noqa: BLE001
-            logger.debug("QrBarcodeExtractionAdapter: pyzbar failed: %s", exc)
+            logger.debug("QrBarcodeExtractionAdapter: pyzbar[%s] failed: %s", label, exc)
 
-        # --- zxing-cpp ---
+        # --- zxing-cpp (COLOR via numpy) ---
         try:
             import numpy as np  # noqa: PLC0415
             import zxingcpp  # noqa: PLC0415
@@ -307,9 +358,10 @@ class QrBarcodeExtractionAdapter:
                 if payload not in seen:
                     seen.add(payload)
                     results.append(payload)
+                    logger.debug(
+                        "QrBarcodeExtractionAdapter: zxing[%s] decoded: %r", label, payload[:60]
+                    )
         except ImportError:
             logger.debug("QrBarcodeExtractionAdapter: zxing-cpp not installed; skipping")
         except Exception as exc:  # noqa: BLE001
-            logger.debug("QrBarcodeExtractionAdapter: zxing-cpp failed: %s", exc)
-
-        return results
+            logger.debug("QrBarcodeExtractionAdapter: zxing[%s] failed: %s", label, exc)

@@ -309,7 +309,7 @@ def get_table(run_id: str, registry: RunRegistry) -> ReconciliationTableResponse
             source_pages=g.source_pages,
             first_page=(
                 g.first_page
-                if g.first_page != 0
+                if g.first_page is not None
                 else (g.source_pages[0] if g.source_pages else None)
             ),
         )

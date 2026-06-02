@@ -71,6 +71,10 @@ class GuiaDeRemision(BaseModel):
     Rev-2 fields (defaulted to preserve backwards-compatible construction):
     ``ruc_emisor``, ``ruc_receptor``, ``tipo``, ``gre_hashqr_url``,
     ``identity_confidence``, ``identity_source``, ``first_page``.
+
+    Rev-3 (D6): ``first_page`` is now ``int | None`` (default ``None``).
+    ``None`` means "first page unknown"; ``0`` is the valid concrete page-0 index.
+    Fix all ``!= 0`` sentinel idioms: use ``is not None`` instead.
     """
 
     guia_id: str
@@ -86,7 +90,7 @@ class GuiaDeRemision(BaseModel):
     gre_hashqr_url: str | None = None
     identity_confidence: float = 0.0
     identity_source: Literal["qr", "ocr_fallback"] = "ocr_fallback"
-    first_page: int = 0
+    first_page: int | None = None
 
 
 class Registro(BaseModel):

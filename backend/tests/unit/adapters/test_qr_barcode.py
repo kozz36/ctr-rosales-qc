@@ -162,7 +162,7 @@ def _make_tiny_png() -> bytes:
 
 
 class TestQrBarcodeExtractionAdapterMocked:
-    """Tests that mock _decode_union so we don't need pyzbar/zxing-cpp installed."""
+    """Tests that mock _decode_multi_res so we don't need pyzbar/zxing-cpp installed."""
 
     VALID_PAYLOAD = "20370146994|09|T009|0741770|6|20613231871"
 
@@ -172,7 +172,7 @@ class TestQrBarcodeExtractionAdapterMocked:
     def test_happy_path_returns_guia_identity(self) -> None:
         """EXT-S13: compact GRE QR → GuiaIdentity with confidence 1.0."""
         adapter = self._make_adapter()
-        with patch.object(adapter, "_decode_union", return_value=[self.VALID_PAYLOAD]):
+        with patch.object(adapter, "_decode_multi_res", return_value=[self.VALID_PAYLOAD]):
             image = _make_tiny_png()
             result = adapter.decode_identity(image)
 
@@ -187,7 +187,7 @@ class TestQrBarcodeExtractionAdapterMocked:
         """EXT-S14: malformed RUC → None returned, failure logged."""
         bad_payload = "2037014699|09|T009|0741770|6|20613231871"  # 10-digit ruc_emisor
         adapter = self._make_adapter()
-        with patch.object(adapter, "_decode_union", return_value=[bad_payload]):
+        with patch.object(adapter, "_decode_multi_res", return_value=[bad_payload]):
             result = adapter.decode_identity(_make_tiny_png())
         assert result is None
 
@@ -195,7 +195,7 @@ class TestQrBarcodeExtractionAdapterMocked:
         """Risk-3 defensive: only URL-variant QR → None → OCR fallback."""
         url_payload = "https://e-consulta.sunat.gob.pe/descargaqr?hashqr=ABC123"
         adapter = self._make_adapter()
-        with patch.object(adapter, "_decode_union", return_value=[url_payload]):
+        with patch.object(adapter, "_decode_multi_res", return_value=[url_payload]):
             result = adapter.decode_identity(_make_tiny_png())
         assert result is None
 
@@ -205,7 +205,7 @@ class TestQrBarcodeExtractionAdapterMocked:
         adapter = self._make_adapter()
         with patch.object(
             adapter,
-            "_decode_union",
+            "_decode_multi_res",
             return_value=[self.VALID_PAYLOAD, url_payload],
         ):
             result = adapter.decode_identity(_make_tiny_png())
@@ -216,11 +216,9 @@ class TestQrBarcodeExtractionAdapterMocked:
 
     def test_decoder_union_pyzbar_none_zxing_returns_result(self) -> None:
         """Union: pyzbar returns nothing, zxing-cpp returns the QR → result works."""
-        # Simulate: pyzbar returns [], zxing-cpp returns the valid payload
+        # _decode_multi_res implements the union; mocked to simulate only zxing finding the QR.
         adapter = self._make_adapter()
-        # _decode_union already implements the union; we mock it to return only the
-        # zxing-cpp result (simulating pyzbar absent/finding nothing).
-        with patch.object(adapter, "_decode_union", return_value=[self.VALID_PAYLOAD]):
+        with patch.object(adapter, "_decode_multi_res", return_value=[self.VALID_PAYLOAD]):
             result = adapter.decode_identity(_make_tiny_png())
         assert result is not None
         assert result.guia_id == "T009-0741770"
@@ -228,13 +226,13 @@ class TestQrBarcodeExtractionAdapterMocked:
     def test_no_barcode_found_returns_none(self) -> None:
         """Empty decode union → None."""
         adapter = self._make_adapter()
-        with patch.object(adapter, "_decode_union", return_value=[]):
+        with patch.object(adapter, "_decode_multi_res", return_value=[]):
             result = adapter.decode_identity(_make_tiny_png())
         assert result is None
 
     def test_unparseable_payload_returns_none(self) -> None:
         """Payload with insufficient pipes → parse fails → None."""
         adapter = self._make_adapter()
-        with patch.object(adapter, "_decode_union", return_value=["GARBAGE DATA"]):
+        with patch.object(adapter, "_decode_multi_res", return_value=["GARBAGE DATA"]):
             result = adapter.decode_identity(_make_tiny_png())
         assert result is None

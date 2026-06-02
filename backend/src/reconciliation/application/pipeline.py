@@ -1,26 +1,29 @@
-"""ReconciliationPipeline — deterministic 11-stage orchestrator.
+"""ReconciliationPipeline — deterministic orchestrator.
 
-Stage sequence (fixed, non-negotiable per design):
-  1. split          — count pages via DocumentSourcePort
-  2. classify       — classify each page by title rules (PageClassifier);
-                      scanned pages (empty digital text) receive an ocr_title
-                      from the deskew/title-OCR stage when a DeskewPort is wired.
-  3. deskew         — correct orientation of GUIA pages (optional DeskewPort)
-  4. extract_declared — parse digital text from DECLARED pages using real
-                        parsers (DigitalTextExtractionAdapter); dedupe
-                        protocolo+detail into ONE Registro per numero
-                        (protocolo is canonical source per decision 2026-05-31).
-  5. extract_ocr      — OCR material tables from GUIA pages (ExtractionPort.extract_printed_table);
-                        produces per-page _RawGuia objects (no guia_id assignment here).
-  5b. assemble_blocks — group per-page _RawGuia objects into multi-page GuiaBlocks using
-                        IdentityExtractionPort (QR decode); section-boundary and new-QR-id
-                        triggers start new blocks; OCR fallback when decode returns None.
-  6. extract_vision   — read handwritten dates on block FIRST pages (VisionLLMPort);
-                        abort if cost cap exceeded.
-  7. normalize        — canonicalize material descriptions (MaterialNormalizer)
-  8. reconcile        — group + compare via ReconciliationService
-  9. persist_sidecar  — write extraction cache + initial review sidecar via RunContext
-  10. return          — yield PipelineResult
+Stage sequence (rev-3, fixed, non-negotiable per design D1):
+  1. split             — count pages via DocumentSourcePort
+  1b. decode_identities — NEW pre-pass (rev-3): render each page once, decode
+                          IdentityExtractionPort; cache page → DecodeOutcome map.
+                          CRITICAL: rendered bytes are stored in the map and reused
+                          by extract_ocr/assemble_blocks — no second render.
+  2. classify           — HYBRID OR-gate (rev-3 EXT-019): Condition A (qr_is_guia)
+                          ∨ B (Forma-header + image_dominant) ∨ C (digital/ocr title).
+  3. deskew             — correct orientation of GUIA pages (optional DeskewPort)
+  4. extract_declared   — parse digital text from DECLARED pages using real
+                          parsers (DigitalTextExtractionAdapter); dedupe
+                          protocolo+detail into ONE Registro per numero
+                          (protocolo is canonical source per decision 2026-05-31).
+  5. extract_ocr        — OCR material tables from GUIA pages (ExtractionPort.extract_printed_table);
+                          produces per-page _RawGuia objects (no guia_id assignment here).
+                          REUSES cached rendered bytes from decode_identities (no re-render).
+  5b. assemble_blocks   — group per-page _RawGuia objects into multi-page GuiaBlocks;
+                          REUSES cached DecodeOutcome map (no QR re-scan).
+  6. extract_vision     — read handwritten dates on block FIRST pages (VisionLLMPort);
+                          abort if cost cap exceeded.
+  7. normalize          — canonicalize material descriptions (MaterialNormalizer)
+  8. reconcile          — group + compare via ReconciliationService
+  9. persist_sidecar    — write extraction cache + initial review sidecar via RunContext
+  10. return            — yield PipelineResult
 
 No concrete adapter is imported here.  All I/O is injected as Port implementations.
 
@@ -34,6 +37,12 @@ Block grouping invariants (S1.5 / EXT-015):
   - identity_source="qr" when QR decode succeeded; "ocr_fallback" otherwise.
   - fecha MUST come from VisionLLMPort (handwritten stamp); never electronic/SUNAT date.
   - Section boundary always starts a new block (even if same guia_id).
+
+Render-cache invariant (D1 rev-3):
+  decode_identities renders each page ONCE and caches the bytes.
+  extract_ocr and assemble_blocks REUSE the cached bytes from that map.
+  The total number of render_page() calls MUST NOT exceed page_count.
+  A second independent QR scan MUST NOT be introduced (EXT-019).
 """
 
 from __future__ import annotations
@@ -64,6 +73,45 @@ from reconciliation.application.config import AppConfig
 from reconciliation.application.run_context import RunContext
 
 logger = logging.getLogger(__name__)
+
+# DPI used for the decode_identities pre-pass render (rev-3 D1).
+# 200 dpi is the baseline; the QrBarcodeExtractionAdapter internally upscales
+# to 400-dpi equivalent for the second COLOR decode tier (D2).
+_QR_DPI: int = 200
+
+# ---------------------------------------------------------------------------
+# DecodeOutcome — rev-3 pre-pass result per page (R1.1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DecodeOutcome:
+    """Result of the decode_identities pre-pass for a single page (EXT-019 / D1).
+
+    Produced by ``_stage_decode_identities`` and consumed by both
+    ``_stage_classify`` (for the hybrid OR-gate booleans) and
+    ``_stage_assemble_blocks`` (to avoid a second QR scan).
+
+    Attributes:
+        identity:    Decoded GuiaIdentity if the compact GRE QR passed the
+                     EXT-012 confidence gate; ``None`` otherwise.
+        hashqr_url:  URL-variant QR payload (descargaqr URL) if decoded on
+                     this page; ``None`` otherwise.
+        rendered:    PNG bytes rendered at the QR decode DPI.  Reused by
+                     extract_ocr and assemble_blocks to avoid a second render.
+        decoded:     True when ANY QR payload was decoded (compact or URL),
+                     regardless of confidence gating.
+    """
+
+    identity: "GuiaIdentity | None"
+    hashqr_url: str | None
+    rendered: bytes
+    decoded: bool
+
+    @property
+    def qr_is_guia(self) -> bool:
+        """True when a valid compact GRE QR passed the EXT-012 confidence gate."""
+        return self.identity is not None
 
 
 # ---------------------------------------------------------------------------
@@ -222,8 +270,15 @@ class ReconciliationPipeline:
         # Stage 1: split
         page_count = self._stage_split()
 
-        # Stage 2: classify (scanned pages get ocr_title from deskew stage)
-        classifications = self._stage_classify(page_count)
+        # Stage 1b: decode_identities pre-pass (rev-3 / D1).
+        # Renders each page ONCE at QR DPI; caches page → DecodeOutcome.
+        # The rendered bytes are reused by extract_ocr and assemble_blocks
+        # so total renders stay constant (EXT-019 render-cache invariant).
+        decode_map = self._stage_decode_identities(page_count)
+
+        # Stage 2: classify — HYBRID OR-gate (rev-3 EXT-019).
+        # Passes qr_is_guia + image_dominant booleans from the cached decode map.
+        classifications = self._stage_classify(page_count, decode_map=decode_map)
 
         # Stage 3: deskew (orientation correction for GUIA pages; no-op if deskew=None)
         # Note: title-OCR for scanned pages is already wired in _stage_classify above.
@@ -233,11 +288,11 @@ class ReconciliationPipeline:
         # Stage 4: extract declared (digital text; real parsers; dedupe proto+detail)
         declared = self._stage_extract_declared(classifications)
 
-        # Stage 5: extract OCR tables from guia pages; tag with registro numero
-        raw_guias = self._stage_extract_ocr(classifications)
+        # Stage 5: extract OCR tables from guia pages; reuses cached rendered bytes.
+        raw_guias = self._stage_extract_ocr(classifications, decode_map=decode_map)
 
-        # Stage 5b: assemble multi-page guía blocks via QR identity (or OCR fallback)
-        blocks = self._stage_assemble_blocks(raw_guias, classifications)
+        # Stage 5b: assemble multi-page guía blocks; reuses cached DecodeOutcome map.
+        blocks = self._stage_assemble_blocks(raw_guias, classifications, decode_map=decode_map)
 
         # Stage 6: extract vision dates (handwritten) — one call per block (first page)
         # vision_audit_record is populated here and written to sidecar in stage 9
@@ -285,24 +340,134 @@ class ReconciliationPipeline:
         logger.debug("split: %d pages", count)
         return count
 
-    def _stage_classify(self, page_count: int) -> list[PageClassification]:
-        """Stage 2: classify each page by title rules.
+    def _stage_decode_identities(self, page_count: int) -> dict[int, DecodeOutcome]:
+        """Stage 1b (rev-3 / D1): decode QR identities for every page in one pre-pass.
+
+        Renders each page once at ``_QR_DPI`` DPI, calls
+        ``IdentityExtractionPort.decode_identity`` when the adapter is wired,
+        and stores the result in a ``page_idx → DecodeOutcome`` map.
+
+        **Render-cache contract**: the rendered PNG bytes are stored in each
+        ``DecodeOutcome.rendered`` field.  Downstream stages (``_stage_extract_ocr``,
+        ``_stage_assemble_blocks``) MUST reuse these bytes rather than calling
+        ``render_page`` again — this keeps total renders at one per page (EXT-019).
+
+        When ``self._identity is None``, the map is still populated with
+        ``DecodeOutcome(identity=None, hashqr_url=None, rendered=<bytes>, decoded=False)``
+        for every page so the render cache is available even without a QR adapter.
+        The classify/ocr stages then fall back to Condition B/C only.
+
+        Returns:
+            Dict mapping 0-based page index → ``DecodeOutcome``.
+        """
+        decode_map: dict[int, DecodeOutcome] = {}
+
+        for idx in range(page_count):
+            # Always render — the bytes are shared downstream (render-cache).
+            try:
+                rendered = self._doc.render_page(idx, dpi=_QR_DPI)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "decode_identities: render_page(%d) failed: %s; using empty bytes", idx, exc
+                )
+                rendered = b""
+
+            identity = None
+            decoded = False
+
+            if self._identity is not None and rendered:
+                try:
+                    # Try with page_idx kwarg first (full adapter); fall back to
+                    # positional-only signature (test fakes implement Protocol minimum).
+                    try:
+                        identity = self._identity.decode_identity(rendered, page_idx=idx)
+                    except TypeError:
+                        identity = self._identity.decode_identity(rendered)
+                    decoded = identity is not None
+                    # Even if identity gate failed, check for URL-variant QR.
+                    # QrBarcodeExtractionAdapter returns None when only URL-QR found;
+                    # we still want the hashqr_url.  Attempt via duck-type helper.
+                    if not decoded and hasattr(self._identity, "decode_hashqr_url"):
+                        _url = self._identity.decode_hashqr_url(rendered, page_idx=idx)  # type: ignore[attr-defined]
+                        if _url:
+                            decoded = True
+                            decode_map[idx] = DecodeOutcome(
+                                identity=None,
+                                hashqr_url=_url,
+                                rendered=rendered,
+                                decoded=True,
+                            )
+                            continue
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "decode_identities: decode failed page %d: %s", idx, exc
+                    )
+
+            hashqr_url: str | None = identity.hashqr_url if identity is not None else None
+            decode_map[idx] = DecodeOutcome(
+                identity=identity,
+                hashqr_url=hashqr_url,
+                rendered=rendered,
+                decoded=decoded,
+            )
+            logger.debug(
+                "decode_identities: page %d → qr_is_guia=%s hashqr_url=%s",
+                idx,
+                identity is not None,
+                bool(hashqr_url),
+            )
+
+        logger.debug(
+            "decode_identities: %d/%d pages with confirmed guía QR",
+            sum(1 for o in decode_map.values() if o.qr_is_guia),
+            page_count,
+        )
+        return decode_map
+
+    def _stage_classify(
+        self,
+        page_count: int,
+        decode_map: dict[int, DecodeOutcome] | None = None,
+    ) -> list[PageClassification]:
+        """Stage 2: classify each page using the hybrid OR-gate (rev-3 EXT-019).
+
+        Rev-3: the ``decode_map`` from ``_stage_decode_identities`` provides two
+        pre-computed boolean signals for each page:
+          - ``qr_is_guia``: Condition A — page has a valid compact SUNAT GRE QR.
+          - ``image_dominant``: Condition B — page is raster-image heavy.
 
         For scanned pages (empty or noise-only digital text), the deskew
         adapter is called first to correct orientation, then ``extract_title``
         is used to produce an ``ocr_title`` that the classifier uses as a
         fallback.  When no deskew adapter is wired (``self._deskew is None``),
-        scanned pages remain UNCLASSIFIED without crashing the pipeline.
+        scanned pages rely on Condition A/B only (or remain UNCLASSIFIED).
+
+        The rendered bytes from the decode_map are reused for deskew when the
+        page has no meaningful digital text (render-cache invariant, EXT-019).
         """
+        _decode = decode_map or {}
         classifications: list[PageClassification] = []
+
         for idx in range(page_count):
             text = self._doc.page_text(idx)
             ocr_title: str | None = None
 
+            # Determine hybrid boolean signals from the pre-pass.
+            outcome = _decode.get(idx)
+            qr_is_guia = outcome.qr_is_guia if outcome is not None else False
+
+            # image_dominant from DocumentSourcePort (optional method, D1 §3).
+            image_dominant = _get_image_dominant(self._doc, idx)
+
             # Attempt title-OCR for potentially scanned pages only when deskew is wired.
             if self._deskew is not None and not _has_meaningful_text(text):
                 try:
-                    raw_image = self._doc.render_page(idx, dpi=200)
+                    # Reuse the cached render bytes if available (render-cache).
+                    raw_image = (
+                        outcome.rendered
+                        if (outcome is not None and outcome.rendered)
+                        else self._doc.render_page(idx, dpi=200)
+                    )
                     deskewed = self._deskew.correct_orientation(raw_image)
                     ocr_title = self._deskew.extract_title(deskewed)
                 except Exception as exc:  # noqa: BLE001
@@ -314,13 +479,17 @@ class ReconciliationPipeline:
                 page_index=idx,
                 page_text=text,
                 ocr_title=ocr_title,
+                qr_is_guia=qr_is_guia,
+                image_dominant=image_dominant,
             )
             classifications.append(classification)
             logger.debug(
-                "classify: page %d → %s (title=%r, ocr_title=%r)",
+                "classify: page %d → %s (title=%r, qr_is_guia=%s, image_dominant=%s, ocr_title=%r)",
                 idx,
                 classification.kind,
                 classification.title_matched,
+                qr_is_guia,
+                image_dominant,
                 ocr_title,
             )
         return classifications
@@ -454,20 +623,34 @@ class ReconciliationPipeline:
         return registros
 
     def _stage_extract_ocr(
-        self, classifications: list[PageClassification]
+        self,
+        classifications: list[PageClassification],
+        decode_map: dict[int, DecodeOutcome] | None = None,
     ) -> list[_RawGuia]:
         """Stage 5: OCR material tables from GUIA pages; tag with registro numero.
+
+        Rev-3 render-cache: reuses the rendered bytes stored in ``decode_map``
+        when available (EXT-019 invariant — no second render per page).  Falls
+        back to ``render_page`` when the cache entry is absent or has empty bytes.
 
         Each RawGuia is tagged with its section's Registro numero from the
         pre-computed ``page_to_registro`` map.  If the page is not in the map
         (outside all known section ranges), ``registro`` remains None and the
         guia surfaces as UNCLASSIFIED in reconciliation.
         """
+        _decode = decode_map or {}
         raw_guias: list[_RawGuia] = []
         for cls in classifications:
             if cls.kind != "GUIA":
                 continue
-            image = self._doc.render_page(cls.page, dpi=200)
+
+            # Reuse cached render bytes if available (render-cache invariant).
+            outcome = _decode.get(cls.page)
+            if outcome is not None and outcome.rendered:
+                image = outcome.rendered
+            else:
+                image = self._doc.render_page(cls.page, dpi=200)
+
             # Apply deskew before OCR when the adapter is wired
             if self._deskew is not None:
                 try:
@@ -500,41 +683,55 @@ class ReconciliationPipeline:
         self,
         raw_guias: list[_RawGuia],
         classifications: list[PageClassification],
+        decode_map: dict[int, DecodeOutcome] | None = None,
     ) -> list[_GuiaBlock]:
         """Stage 5b: group per-page _RawGuia objects into multi-page GuiaBlocks.
 
-        Algorithm (S1.5 / EXT-015):
-        1. Iterate raw_guias in order (already sorted by page index from _stage_extract_ocr).
-        2. For each page, attempt IdentityExtractionPort.decode_identity(image) if wired.
+        Algorithm (S1.5 / EXT-015, rev-3):
+        1. Iterate raw_guias in order (sorted by page index from _stage_extract_ocr).
+        2. Read identity from the cached ``decode_map`` — no second QR scan (EXT-019).
+           Falls back to direct adapter call only when no cache entry exists (compat).
         3. Start a new block on:
            (a) Run-start (first page).
-           (b) Section boundary cross: page's registro differs from current block's registro.
-           (c) Successful QR decode with a guia_id different from the current block's guia_id.
-        4. Within a block: propagate identity fields from the first page to all pages.
-        5. Append OCR lines from each page to the block's accumulated lines.
-        6. OCR fallback: when decode returns None → identity_source="ocr_fallback";
-           guia_id derived from page index (unique per page, no QR data).
+           (b) Section boundary cross: page's registro differs from current block's.
+           (c) Successful QR decode with a guia_id different from current block's.
+        4. Within a block: propagate identity fields from the first page.
+        5. Append OCR lines from each page to accumulated block lines.
+        6. OCR fallback: decode returns None → identity_source="ocr_fallback";
+           guia_id derived from page index (no QR data).
+        7. hashqr_url propagation: first non-null value across block pages (D2).
 
         Returns a list of _GuiaBlock objects ready for vision date extraction.
         """
         if not raw_guias:
             return []
 
+        _decode = decode_map or {}
         blocks: list[_GuiaBlock] = []
         current_block: _GuiaBlock | None = None
 
         for raw in raw_guias:
-            # Attempt QR decode when the identity adapter is wired
-            identity = None
-            if self._identity is not None:
-                try:
-                    identity = self._identity.decode_identity(raw.image)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "assemble_blocks: identity decode failed page %d: %s",
-                        raw.source_page,
-                        exc,
-                    )
+            # Read from cached decode map (EXT-019: no second QR scan).
+            # Fall back to direct adapter call only when no cache entry exists.
+            outcome = _decode.get(raw.source_page)
+            if outcome is not None:
+                identity = outcome.identity
+                page_hashqr_url_candidate = outcome.hashqr_url
+            else:
+                # No cache entry — backward-compat: call adapter directly.
+                identity = None
+                page_hashqr_url_candidate = None
+                if self._identity is not None:
+                    try:
+                        identity = self._identity.decode_identity(raw.image)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "assemble_blocks: identity decode failed page %d: %s",
+                            raw.source_page,
+                            exc,
+                        )
+                    if identity is not None:
+                        page_hashqr_url_candidate = identity.hashqr_url
 
             # Derive identity fields for this page
             if identity is not None:
@@ -543,7 +740,7 @@ class ReconciliationPipeline:
                 page_ruc_emisor = identity.ruc_emisor
                 page_ruc_receptor = identity.ruc_receptor
                 page_tipo = identity.tipo
-                page_hashqr_url = identity.hashqr_url
+                page_hashqr_url = identity.hashqr_url or page_hashqr_url_candidate
                 page_identity_confidence = identity.confidence
             else:
                 # OCR fallback: unique per page until a QR is found
@@ -552,7 +749,7 @@ class ReconciliationPipeline:
                 page_ruc_emisor = None
                 page_ruc_receptor = None
                 page_tipo = None
-                page_hashqr_url = None
+                page_hashqr_url = page_hashqr_url_candidate  # URL QR may still exist
                 page_identity_confidence = 0.0
 
             # Determine whether to start a new block
@@ -588,10 +785,13 @@ class ReconciliationPipeline:
                     identity_confidence=page_identity_confidence,
                 )
             else:
-                # Continuation page: append lines; identity propagated from first page
+                # Continuation page: append lines; identity propagated from first page.
                 assert current_block is not None
                 current_block.source_pages.append(raw.source_page)
                 current_block.lines.extend(raw.lines)
+                # Rev-3 D2: propagate hashqr_url — first non-null across the block.
+                if current_block.gre_hashqr_url is None and page_hashqr_url is not None:
+                    current_block.gre_hashqr_url = page_hashqr_url
 
             logger.debug(
                 "assemble_blocks: page %d → block guia_id=%r, source=%r, start_new=%s",
@@ -768,6 +968,25 @@ def _has_meaningful_text(text: str | None) -> bool:
     # Import locally to avoid circular dependency; classifier is domain-layer
     from reconciliation.domain.classifier import _clean_lines  # noqa: PLC0415
     return bool(_clean_lines(text))
+
+
+def _get_image_dominant(doc: "DocumentSourcePort", idx: int) -> bool:
+    """Return True if page *idx* is image-dominant (rev-3 D1 Condition B).
+
+    Calls ``DocumentSourcePort.image_coverage_ratio`` when the method is
+    available on the concrete implementation.  Gracefully returns False when
+    the method is absent (test fakes, legacy adapters) or raises an error.
+    """
+    from reconciliation.domain.classifier import IMAGE_DOMINANT_THRESHOLD  # noqa: PLC0415
+
+    if not hasattr(doc, "image_coverage_ratio"):
+        return False
+    try:
+        ratio: float = doc.image_coverage_ratio(idx)  # type: ignore[union-attr]
+        return ratio >= IMAGE_DOMINANT_THRESHOLD
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_get_image_dominant: page %d failed: %s", idx, exc)
+        return False
 
 
 @dataclass

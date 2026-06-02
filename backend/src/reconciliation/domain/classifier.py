@@ -16,6 +16,22 @@ Implementation notes (real-PDF hardening):
   Therefore the classifier scans the WHOLE cleaned text for known markers.
 - Scanned pages have only the 4-line header/footer overlay and yield an
   empty cleaned body; the classifier then consults ocr_title.
+
+Rev-3 hybrid OR-gate (EXT-019 / D1):
+- ``classify`` and ``classify_page`` accept two new optional booleans computed
+  by the pipeline from the decode_identities pre-pass:
+    ``qr_is_guia``: True when a compact SUNAT GRE QR passed the EXT-012 gate
+                    (Condition A — authoritative).
+    ``image_dominant``: True when the page's raster image coverage >= threshold
+                        (used in Condition B heuristic).
+- Evaluation order (declared-title-first, EXT-S25):
+    1. Declared/protocolo title match (text body) — wins over any QR signal.
+    2. Condition A: qr_is_guia  → GUIA (QR_IDENTITY).
+    3. Condition C: "GUIA DE REMISION" in text/ocr_title (existing EXT-001).
+    4. Condition B: header-only (<= _FORMA_HEADER_MAX_CHARS cleaned chars) AND
+                    image_dominant → GUIA (FORMA_HEADER_HEURISTIC).
+    5. No match → UNCLASSIFIED.
+- The classifier remains PURE: it receives plain booleans, not ports/adapters.
 """
 
 from __future__ import annotations
@@ -32,6 +48,13 @@ LOW_CONFIDENCE_THRESHOLD: float = 0.85
 
 _HIGH_CONFIDENCE: float = 0.99
 _LOW_CONFIDENCE: float = 0.30
+
+# Rev-3 Condition B (EXT-019): maximum cleaned-body char count for the
+# Forma-header-only heuristic.  Declared/protocolo pages always exceed this.
+_FORMA_HEADER_MAX_CHARS: int = 200
+
+# Rev-3: minimum image coverage ratio to trigger Condition B ("image_dominant").
+IMAGE_DOMINANT_THRESHOLD: float = 0.5
 
 # ---------------------------------------------------------------------------
 # Noise patterns — lines that are present on EVERY page and carry no signal.
@@ -156,37 +179,50 @@ def _normalize_title(text: str) -> str:
 class PageClassifier:
     """Classifies a PDF page by its document title text.
 
-    Spec: EXT-001, EXT-002.
+    Spec: EXT-001, EXT-002.  Rev-3: EXT-019 hybrid OR-gate.
 
     The classifier scans the *whole* cleaned page body (after stripping
     universal header/footer noise) for known markers, rather than relying
     on the first line.  This handles real-world PDFs where the document
     type identifier is buried below a multi-line header common to all pages.
 
-    Priority order:
-        1. PROTOCOLO DE RECEPCION  → DECLARED
-        2. GUIA DE REMISION        → GUIA
-        3. Cover metadata          → IGNORED
-        4. Contents page           → IGNORED
-        5. Planilla Resumen        → IGNORED
-        6. Listado de Barras       → IGNORED
-        7. Carátula                → IGNORED
-        8. Form Detail page        → DECLARED
-        9. No match                → UNCLASSIFIED
+    Priority order (rev-3 hybrid, EXT-019):
+        1. PROTOCOLO DE RECEPCION  → DECLARED  (digital text; highest priority)
+        2. Condition A: qr_is_guia  → GUIA (QR_IDENTITY)
+        3. GUIA DE REMISION in text → GUIA (digital/ocr title — Condition C)
+        4. Cover metadata           → IGNORED
+        5. Contents page            → IGNORED
+        6. Planilla Resumen         → IGNORED
+        7. Listado de Barras        → IGNORED
+        8. Carátula                 → IGNORED
+        9. Form Detail page         → DECLARED
+        10. Condition B: header-only (<= 200 chars) AND image_dominant → GUIA (heuristic)
+        11. No match                → UNCLASSIFIED
     """
 
     def classify(
         self,
         page_text: str | None,
         ocr_title: str | None = None,
+        *,
+        qr_is_guia: bool = False,
+        image_dominant: bool = False,
     ) -> PageClassification:
         """Classify a page using ``page_text`` (preferred) or ``ocr_title`` as fallback.
+
+        Rev-3: accepts two additional pure-boolean signals from the pipeline's
+        decode_identities pre-pass (EXT-019 / D1).
 
         Args:
             page_text: Full digital text extracted from the page (may be None/empty
                 for scanned pages).
             ocr_title: Optional OCR-extracted title string.  Used when page_text
                 is None or contains only universal header/footer noise.
+            qr_is_guia: True when the page's QR decode passed the EXT-012 confidence
+                gate (Condition A).  The classifier receives only the boolean verdict,
+                never the adapter or the raw identity object.
+            image_dominant: True when the page's raster image coverage exceeds the
+                threshold (used in Condition B heuristic).
 
         Returns:
             PageClassification with the assigned kind and confidence score.
@@ -196,9 +232,12 @@ class PageClassifier:
         if page_text and page_text.strip():
             body_lines = _clean_lines(page_text)
 
-        # If cleaning reduced the page to nothing, fall back to ocr_title
+        # If cleaning reduced the page to nothing, fall back to hybrid-aware OCR path
         if not body_lines:
-            return self._classify_from_ocr(ocr_title)
+            return self._classify_from_hybrid(ocr_title, qr_is_guia, image_dominant)
+
+        # --- Declared-title-first guard (EXT-S25) ---
+        # A page with substantial declared text MUST win over any QR/heuristic signal.
 
         # 1. Protocolo (must precede GUIA check — protocolo pages also contain
         #    "GUIA DE REMISION" as a form field label)
@@ -210,7 +249,16 @@ class PageClassifier:
                 confidence=_HIGH_CONFIDENCE,
             )
 
-        # 2. Guía de Remisión (only reached if PROTOCOLO not present)
+        # 2. Condition A: QR identity gate (authoritative if no declared text won above)
+        if qr_is_guia:
+            return PageClassification(
+                page=0,
+                kind="GUIA",
+                title_matched="QR_IDENTITY",
+                confidence=_HIGH_CONFIDENCE,
+            )
+
+        # 3. Condition C: Guía de Remisión in digital text (original EXT-001 path)
         if _match_guia(body_lines):
             return PageClassification(
                 page=0,
@@ -219,7 +267,7 @@ class PageClassifier:
                 confidence=_HIGH_CONFIDENCE,
             )
 
-        # 3. Cover / summary page
+        # 4. Cover / summary page
         if _match_ignored_cover(body_lines):
             return PageClassification(
                 page=0,
@@ -228,7 +276,7 @@ class PageClassifier:
                 confidence=_HIGH_CONFIDENCE,
             )
 
-        # 4. Contents / index page
+        # 5. Contents / index page
         if _match_ignored_contents(body_lines):
             return PageClassification(
                 page=0,
@@ -237,7 +285,7 @@ class PageClassifier:
                 confidence=_HIGH_CONFIDENCE,
             )
 
-        # 5. Planilla Resumen
+        # 6. Planilla Resumen
         if _match_planilla_resumen(body_lines):
             return PageClassification(
                 page=0,
@@ -246,7 +294,7 @@ class PageClassifier:
                 confidence=_HIGH_CONFIDENCE,
             )
 
-        # 6. Listado de Barras
+        # 7. Listado de Barras
         if _match_listado_barras(body_lines):
             return PageClassification(
                 page=0,
@@ -255,7 +303,7 @@ class PageClassifier:
                 confidence=_HIGH_CONFIDENCE,
             )
 
-        # 7. Carátula (legacy rule)
+        # 8. Carátula (legacy rule)
         if _match_caratula(body_lines):
             return PageClassification(
                 page=0,
@@ -264,7 +312,7 @@ class PageClassifier:
                 confidence=_HIGH_CONFIDENCE,
             )
 
-        # 8. Autodesk Form Detail page (detail record)
+        # 9. Autodesk Form Detail page (detail record)
         if _match_detail_declared(body_lines):
             return PageClassification(
                 page=0,
@@ -273,7 +321,20 @@ class PageClassifier:
                 confidence=_HIGH_CONFIDENCE,
             )
 
-        # 9. Fallback: nothing matched
+        # 10. Condition B: Forma-header-only heuristic (EXT-019, D1).
+        # Guard: only fires when the cleaned body is <= _FORMA_HEADER_MAX_CHARS chars
+        # AND the page is image-dominant.  Declared/protocolo pages (step 1/9 above)
+        # always exceed 200 chars so they can NEVER reach this branch.
+        body_char_count = sum(len(l) for l in body_lines)
+        if body_char_count <= _FORMA_HEADER_MAX_CHARS and image_dominant:
+            return PageClassification(
+                page=0,
+                kind="GUIA",
+                title_matched="FORMA_HEADER_HEURISTIC",
+                confidence=_HIGH_CONFIDENCE,
+            )
+
+        # 11. Fallback: nothing matched
         return PageClassification(
             page=0,
             kind="UNCLASSIFIED",
@@ -286,12 +347,21 @@ class PageClassifier:
         page_index: int,
         page_text: str | None,
         ocr_title: str | None = None,
+        *,
+        qr_is_guia: bool = False,
+        image_dominant: bool = False,
     ) -> PageClassification:
         """Classify and embed the correct page index in the result.
 
         Convenience wrapper used by the pipeline where the page index is known.
+        Rev-3: forwards qr_is_guia and image_dominant to classify() (EXT-019).
         """
-        result = self.classify(page_text, ocr_title)
+        result = self.classify(
+            page_text,
+            ocr_title,
+            qr_is_guia=qr_is_guia,
+            image_dominant=image_dominant,
+        )
         return result.model_copy(update={"page": page_index})
 
     # ------------------------------------------------------------------
@@ -300,7 +370,11 @@ class PageClassifier:
 
     @staticmethod
     def _classify_from_ocr(ocr_title: str | None) -> PageClassification:
-        """Classify using only ocr_title when page_text body is empty (scanned page)."""
+        """Classify using only ocr_title when page_text body is empty (scanned page).
+
+        Legacy path kept for callers that do not provide the hybrid booleans.
+        Use ``_classify_from_hybrid`` for the rev-3 path.
+        """
         if not ocr_title or not ocr_title.strip():
             return PageClassification(
                 page=0,
@@ -337,6 +411,79 @@ class PageClassifier:
                 title_matched="LISTADO DE BARRAS",
                 confidence=_HIGH_CONFIDENCE,
             )
+        return PageClassification(
+            page=0,
+            kind="UNCLASSIFIED",
+            title_matched=None,
+            confidence=_LOW_CONFIDENCE,
+        )
+
+    @staticmethod
+    def _classify_from_hybrid(
+        ocr_title: str | None,
+        qr_is_guia: bool,
+        image_dominant: bool,
+    ) -> PageClassification:
+        """Rev-3 path: classify a scanned page (empty body) using hybrid signals.
+
+        When the cleaned body is empty (page is scanned / header-only), apply:
+          1. Condition A: qr_is_guia → GUIA (QR_IDENTITY), highest weight.
+          2. ocr_title title match (Condition C legacy path).
+          3. Condition B: image_dominant (since body is empty, char count is 0
+             which is always <= _FORMA_HEADER_MAX_CHARS) → GUIA heuristic.
+          4. UNCLASSIFIED.
+        """
+        # Condition A: authoritative QR signal
+        if qr_is_guia:
+            return PageClassification(
+                page=0,
+                kind="GUIA",
+                title_matched="QR_IDENTITY",
+                confidence=_HIGH_CONFIDENCE,
+            )
+
+        # Condition C via ocr_title
+        if ocr_title and ocr_title.strip():
+            n = _normalize(ocr_title)
+            if "PROTOCOLO DE RECEPCI" in n:
+                return PageClassification(
+                    page=0,
+                    kind="DECLARED",
+                    title_matched="PROTOCOLO DE RECEPCION",
+                    confidence=_HIGH_CONFIDENCE,
+                )
+            if "GUIA DE REMISI" in n or "GUÍA DE REMISI" in n:
+                return PageClassification(
+                    page=0,
+                    kind="GUIA",
+                    title_matched="GUIA DE REMISION",
+                    confidence=_HIGH_CONFIDENCE,
+                )
+            if "PLANILLA RESUMEN" in n:
+                return PageClassification(
+                    page=0,
+                    kind="IGNORED",
+                    title_matched="PLANILLA RESUMEN",
+                    confidence=_HIGH_CONFIDENCE,
+                )
+            if "LISTADO DE BARRAS" in n:
+                return PageClassification(
+                    page=0,
+                    kind="IGNORED",
+                    title_matched="LISTADO DE BARRAS",
+                    confidence=_HIGH_CONFIDENCE,
+                )
+
+        # Condition B: image-dominant scanned page with header-only text
+        # (body is empty so char count = 0 <= _FORMA_HEADER_MAX_CHARS always holds here)
+        if image_dominant:
+            return PageClassification(
+                page=0,
+                kind="GUIA",
+                title_matched="FORMA_HEADER_HEURISTIC",
+                confidence=_HIGH_CONFIDENCE,
+            )
+
         return PageClassification(
             page=0,
             kind="UNCLASSIFIED",

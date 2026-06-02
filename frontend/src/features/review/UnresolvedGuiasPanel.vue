@@ -46,8 +46,9 @@
           <span class="unresolved-panel__item-source">
             {{ guia.identity_source === 'qr' ? 'QR' : 'OCR fallback' }}
           </span>
+          <!-- REV-C06: first_page=0 is valid (page 0); first_page=null → show source_pages range -->
           <span class="unresolved-panel__item-pages">
-            Págs. {{ guia.source_pages.join(', ') }}
+            {{ firstPageLabel(guia) }}
           </span>
         </div>
 
@@ -96,6 +97,22 @@ const isOpen = ref(true)
 
 function onAssign(guiaId: string): void {
   emit('assignGuia', guiaId)
+}
+
+/**
+ * REV-C06 / D6: first_page null safety.
+ *
+ * - first_page !== null → "Pág. {N}" (0 is a valid page index, displayed as-is).
+ * - first_page === null → fall back to source_pages list, or "—" if empty.
+ */
+function firstPageLabel(guia: UnresolvedGuiaResponse): string {
+  if (guia.first_page !== null && guia.first_page !== undefined) {
+    return `Pág. ${guia.first_page}`
+  }
+  if (guia.source_pages.length > 0) {
+    return `Págs. ${guia.source_pages.join(', ')}`
+  }
+  return '—'
 }
 </script>
 

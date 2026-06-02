@@ -91,6 +91,11 @@
         <span class="recon-row__flag-icon" aria-hidden="true">⚠</span>
         <span class="recon-row__flag-label">Revisar</span>
       </span>
+      <!-- Rev-3 D5 / REV-C05: advisory yellow badge when any guía used year inference -->
+      <YearInferredBadge
+        v-if="row.any_year_inferred"
+        compact
+      />
     </td>
 
     <!-- Col 10: Páginas origen -->
@@ -135,6 +140,7 @@ import type { ReconciliationRowResponse } from '@/api/types'
 import ConfidenceBadge from './ConfidenceBadge.vue'
 import SourcePages from './SourcePages.vue'
 import GuiaDrillDown from './GuiaDrillDown.vue'
+import YearInferredBadge from './YearInferredBadge.vue'
 
 const props = defineProps<{
   row: ReconciliationRowResponse

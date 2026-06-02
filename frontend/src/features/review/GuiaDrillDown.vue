@@ -10,6 +10,7 @@
             <th class="guia-drill-down__th" scope="col">Unidad</th>
             <th class="guia-drill-down__th" scope="col">Confianza</th>
             <th class="guia-drill-down__th" scope="col">Identidad</th>
+            <th class="guia-drill-down__th" scope="col">Fecha</th>
             <th class="guia-drill-down__th" scope="col" aria-label="Acciones" />
           </tr>
         </thead>
@@ -86,6 +87,15 @@
               </span>
             </td>
 
+            <!-- Fecha advisory (year_inferred) -->
+            <td class="guia-drill-down__td">
+              <YearInferredBadge
+                v-if="guia.year_inferred"
+                compact
+              />
+              <span v-else class="guia-drill-down__fecha-ok" aria-hidden="true">—</span>
+            </td>
+
             <!-- Actions -->
             <td class="guia-drill-down__td guia-drill-down__td--actions">
               <button
@@ -122,10 +132,11 @@ import { ref, nextTick } from 'vue'
 import type { GuiaContributionResponse } from '@/api/types'
 import { useGuiaLineEdit } from '@/composables/useReconciliationApi'
 import ConfidenceBadge from './ConfidenceBadge.vue'
+import YearInferredBadge from './YearInferredBadge.vue'
 
-// The row spans all aggregate columns (10 data + 1 expand + 1 actions = 12).
+// The row spans all aggregate columns (10 data + 1 expand + 1 actions = 12; rev-3 +1 for Fecha = 13).
 // Using a high number is safe — browsers clip at the actual column count.
-const COLSPAN = 12
+const COLSPAN = 13
 
 const props = defineProps<{
   /** Contributing guías from the already-fetched ReconciliationRowResponse.guias[] */
@@ -388,6 +399,12 @@ defineExpose({ editingGuiaId, editValue })
   text-transform: none;
   letter-spacing: 0;
   font-weight: 400;
+  font-size: var(--text-xs);
+}
+
+/* Year-inferred OK placeholder */
+.guia-drill-down__fecha-ok {
+  color: var(--text-tertiary);
   font-size: var(--text-xs);
 }
 

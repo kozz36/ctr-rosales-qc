@@ -43,6 +43,8 @@ LOCKED_COLUMNS = [
     "Año inferido",
     # R8.11 (MAT-008/S10): canonical key derivation method.
     "Método",
+    # MAT-008 / verify W2: requires_review flag surfaced for the engineer.
+    "Revisión",
 ]
 
 
@@ -102,7 +104,7 @@ class TestProtocolConformance:
 
 class TestXlsxColumnSet:
     def test_locked_columns_constant(self) -> None:
-        """The _COLUMNS constant must match exactly the 11 locked columns (rev-3: +Año inferido)."""
+        """The _COLUMNS constant must match exactly the 13 locked columns (+Método, +Revisión)."""
         assert _COLUMNS == LOCKED_COLUMNS
 
     def test_reconciliacion_sheet_headers(
@@ -456,7 +458,7 @@ class TestMetodoColumn:
         val = ws.cell(row=2, column=metodo_col).value
         assert val == "unresolved"
 
-    def test_xlsx_total_column_count_is_12(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+    def test_xlsx_total_column_count_is_13(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
         rows = [self._make_row_with_method("deterministic")]
         dst = tmp_path / "out.xlsx"
         adapter.export(rows, [], dst, "xlsx")
@@ -464,7 +466,7 @@ class TestMetodoColumn:
         ws = wb["Reconciliacion"]
         # Count non-None header cells
         col_count = sum(1 for i in range(20) if ws.cell(row=1, column=i+1).value is not None)
-        assert col_count == 12
+        assert col_count == 13
 
     def test_csv_metodo_column_present(self, tmp_path: Path) -> None:
         from reconciliation.adapters.report.xlsx_report import ExcelReportAdapter
@@ -477,7 +479,7 @@ class TestMetodoColumn:
             headers = next(reader)
         assert "Método" in headers
 
-    def test_csv_total_column_count_is_12(self, tmp_path: Path) -> None:
+    def test_csv_total_column_count_is_13(self, tmp_path: Path) -> None:
         from reconciliation.adapters.report.xlsx_report import ExcelReportAdapter
         adapter = ExcelReportAdapter()
         rows = [self._make_row_with_method("deterministic")]
@@ -486,7 +488,68 @@ class TestMetodoColumn:
         with open(dst, encoding="utf-8-sig") as f:
             reader = csv.reader(f)
             headers = next(reader)
-        assert len(headers) == 12
+        assert len(headers) == 13
+
+
+class TestRevisionColumn:
+    """MAT-008 / verify W2: 'Revisión' (requires_review) column in xlsx and csv."""
+
+    def _make_row_with_review(
+        self,
+        requires_review: bool,
+        registro: str = "232",
+    ) -> ReconciliationRow:
+        return ReconciliationRow(
+            registro=registro,
+            fecha=date(2026, 5, 28),
+            material_canonical="BARRA A615 G60 1/2\" 9M",
+            unidad="TN",
+            declared_qty=Decimal("4.124"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[5, 6, 8],
+            requires_review=requires_review,
+        )
+
+    def test_xlsx_revision_column_in_header(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        rows = [self._make_row_with_review(True)]
+        dst = tmp_path / "out.xlsx"
+        adapter.export(rows, [], dst, "xlsx")
+        wb = openpyxl.load_workbook(str(dst))
+        ws = wb["Reconciliacion"]
+        headers = [c.value for c in ws[1] if c.value is not None]
+        assert "Revisión" in headers
+
+    def test_xlsx_revision_value_true(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        rows = [self._make_row_with_review(True)]
+        dst = tmp_path / "out.xlsx"
+        adapter.export(rows, [], dst, "xlsx")
+        wb = openpyxl.load_workbook(str(dst))
+        ws = wb["Reconciliacion"]
+        headers = [c.value for c in ws[1]]
+        rev_col = headers.index("Revisión") + 1
+        assert ws.cell(row=2, column=rev_col).value == "Sí"
+
+    def test_xlsx_revision_value_false(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        rows = [self._make_row_with_review(False)]
+        dst = tmp_path / "out.xlsx"
+        adapter.export(rows, [], dst, "xlsx")
+        wb = openpyxl.load_workbook(str(dst))
+        ws = wb["Reconciliacion"]
+        headers = [c.value for c in ws[1]]
+        rev_col = headers.index("Revisión") + 1
+        assert ws.cell(row=2, column=rev_col).value == "No"
+
+    def test_csv_revision_column_present(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        rows = [self._make_row_with_review(True)]
+        dst = tmp_path / "out.csv"
+        adapter.export(rows, [], dst, "csv")
+        with dst.open(encoding="utf-8-sig") as fh:
+            reader = csv.reader(fh)
+            headers = next(reader)
+            first = next(reader)
+        assert "Revisión" in headers
+        assert first[headers.index("Revisión")] == "Sí"
 
 
 class TestErrorHandling:

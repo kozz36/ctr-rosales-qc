@@ -73,6 +73,14 @@ class GuiaContribution(BaseModel):
     # Rev-3 D5: provenance flag — True when the year component of fecha was
     # reconstructed via bounded inference (EXT-021), not read directly from vision.
     year_inferred: bool = False
+    # R9.2 (ADR-4): fecha-divergence side-channel — mirrors the year_inferred
+    # pattern (rev-3 D5).  ``fecha`` carries the guía's handwritten reception date
+    # for display and the day-month divergence compare; ``fecha_divergence`` is set
+    # by ReconciliationService when the guía date diverges from the registro's
+    # authoritative declared date.  All defaults are backward-compatible.
+    fecha: date | None = None
+    fecha_divergence: bool = False
+    divergence_reason: Literal["fecha_divergence"] | None = None
 
 
 class GuiaDeRemision(BaseModel):
@@ -119,6 +127,11 @@ class Registro(BaseModel):
     Protocolo de Recepción (``None`` for detail-page-only registros — they carry
     no Protocolo "Fecha:" field).  The pipeline's declared-date vision sub-stage
     needs it to know which PDF page to render and crop.
+
+    R9.2 (ADR-2): the handwritten declared date is read by that sub-stage and
+    stored in ``fecha_declarada_handwritten`` (authoritative per #2709);
+    ``fecha_authoritative`` prefers it over the electronic ``fecha_declarada``
+    (kept for audit and as the rollback fallback).  All new fields default safely.
     """
 
     numero: str
@@ -128,6 +141,22 @@ class Registro(BaseModel):
     # None when the Registro originates from a detail page, not a Protocolo.
     # 0 is a VALID concrete page index — never treat as falsy.
     protocolo_page: int | None = None
+    # R9.2 (ADR-2): handwritten declared date from the Protocolo vision read —
+    # authoritative per decision #2709.  None when not read or low-confidence.
+    fecha_declarada_handwritten: date | None = None
+    fecha_declarada_confidence: float | None = None
+    fecha_declarada_year_inferred: bool = False
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def fecha_authoritative(self) -> date | None:
+        """Handwritten Protocolo date when available; else electronic fallback.
+
+        ADR-2: the single read-point that honours the handwritten-first,
+        electronic-fallback priority.  Falling back to ``fecha_declarada`` is the
+        rollback path when the declared vision read is disabled or unavailable.
+        """
+        return self.fecha_declarada_handwritten or self.fecha_declarada
 
 
 class PageClassification(BaseModel):
@@ -190,6 +219,16 @@ class ReconciliationRow(BaseModel):
         transparency signal for the engineer.  Does NOT affect MATCH/MISMATCH logic.
         """
         return any(g.year_inferred for g in self.guias)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def has_fecha_divergence(self) -> bool:
+        """True when at least one contributing guía has a fecha divergence.
+
+        R9.2 (ADR-4): group-level indicator mirroring ``any_year_inferred``.
+        Advisory side-channel — does NOT affect MATCH/MISMATCH/delta logic.
+        """
+        return any(g.fecha_divergence for g in self.guias)
 
 
 class VisionResult(BaseModel):

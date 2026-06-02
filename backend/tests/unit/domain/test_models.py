@@ -166,6 +166,44 @@ class TestRegistro:
         assert reg.protocolo_page is None
 
 
+class TestRegistroHandwrittenDate:
+    """R9.2 (ADR-2): handwritten declared date + fecha_authoritative computed field."""
+
+    def test_fields_default_to_none_and_false(self) -> None:
+        reg = Registro(numero="232", fecha_declarada=None, declared_lines=[])
+        assert reg.fecha_declarada_handwritten is None
+        assert reg.fecha_declarada_confidence is None
+        assert reg.fecha_declarada_year_inferred is False
+
+    def test_fecha_authoritative_prefers_handwritten(self) -> None:
+        reg = Registro(
+            numero="232",
+            fecha_declarada=date(2026, 5, 20),
+            declared_lines=[],
+            fecha_declarada_handwritten=date(2026, 5, 28),
+        )
+        assert reg.fecha_authoritative == date(2026, 5, 28)
+
+    def test_fecha_authoritative_falls_back_to_electronic(self) -> None:
+        reg = Registro(
+            numero="232",
+            fecha_declarada=date(2026, 5, 20),
+            declared_lines=[],
+            fecha_declarada_handwritten=None,
+        )
+        assert reg.fecha_authoritative == date(2026, 5, 20)
+
+    def test_fecha_authoritative_none_when_both_none(self) -> None:
+        reg = Registro(numero="232", fecha_declarada=None, declared_lines=[])
+        assert reg.fecha_authoritative is None
+
+    def test_backward_compat_model_validate_old_dict(self) -> None:
+        reg = Registro.model_validate(
+            {"numero": "232", "fecha_declarada": "2026-05-20", "declared_lines": []}
+        )
+        assert reg.fecha_authoritative == date(2026, 5, 20)
+
+
 class TestPageClassification:
     def test_instantiation_guia(self) -> None:
         pc = PageClassification(
@@ -372,6 +410,37 @@ class TestGuiaContribution:
             )
             assert gc.unidad == unit
 
+    def test_divergence_fields_default(self) -> None:
+        """R9.2 (ADR-4): divergence side-channel fields default safely."""
+        gc = GuiaContribution(
+            guia_id="X-1",
+            source_pages=[1],
+            cantidad=Decimal("1"),
+            unidad="KG",
+            confidence=1.0,
+            identity_source="qr",
+        )
+        assert gc.fecha is None
+        assert gc.fecha_divergence is False
+        assert gc.divergence_reason is None
+
+    def test_divergence_fields_populated(self) -> None:
+        """R9.2 (ADR-4): divergence fields store correctly when set."""
+        gc = GuiaContribution(
+            guia_id="X-1",
+            source_pages=[1],
+            cantidad=Decimal("1"),
+            unidad="KG",
+            confidence=1.0,
+            identity_source="qr",
+            fecha=date(2026, 4, 15),
+            fecha_divergence=True,
+            divergence_reason="fecha_divergence",
+        )
+        assert gc.fecha == date(2026, 4, 15)
+        assert gc.fecha_divergence is True
+        assert gc.divergence_reason == "fecha_divergence"
+
 
 class TestGuiaDeRemisionRev2Fields:
     """GuiaDeRemision rev-2 identity fields default safely (EXT-015 / design §7)."""
@@ -454,6 +523,54 @@ class TestReconciliationRowGuias:
         )
         assert len(row.guias) == 1
         assert row.guias[0].guia_id == "T009-0741770"
+
+
+class TestReconciliationRowHasFechaDivergence:
+    """R9.2 (ADR-4): has_fecha_divergence group indicator (mirrors any_year_inferred)."""
+
+    def _row(self, guias: list[GuiaContribution]) -> ReconciliationRow:
+        return ReconciliationRow(
+            registro="232",
+            fecha=date(2026, 5, 28),
+            material_canonical="barra a615 g60 1/2\"",
+            unidad="KG",
+            declared_qty=Decimal("1250.00"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[10],
+            guias=guias,
+        )
+
+    def _gc(self, *, diverges: bool, guia_id: str = "G") -> GuiaContribution:
+        return GuiaContribution(
+            guia_id=guia_id,
+            source_pages=[1],
+            cantidad=Decimal("1"),
+            unidad="KG",
+            confidence=1.0,
+            identity_source="qr",
+            fecha_divergence=diverges,
+            divergence_reason="fecha_divergence" if diverges else None,
+        )
+
+    def test_no_guias_is_false(self) -> None:
+        assert self._row([]).has_fecha_divergence is False
+
+    def test_all_non_diverging_is_false(self) -> None:
+        row = self._row(
+            [self._gc(diverges=False, guia_id="A"), self._gc(diverges=False, guia_id="B")]
+        )
+        assert row.has_fecha_divergence is False
+
+    def test_one_diverging_is_true(self) -> None:
+        row = self._row([self._gc(diverges=True)])
+        assert row.has_fecha_divergence is True
+
+    def test_mixed_is_true(self) -> None:
+        row = self._row(
+            [self._gc(diverges=False, guia_id="A"), self._gc(diverges=True, guia_id="B")]
+        )
+        assert row.has_fecha_divergence is True
 
 
 # ---------------------------------------------------------------------------

@@ -60,6 +60,7 @@ function makeRow(overrides: Partial<ReconciliationRowResponse> = {}): Reconcilia
     requires_review: false,
     guias: [] as GuiaContributionResponse[],
     any_year_inferred: false,
+    has_fecha_divergence: false,
     ...overrides,
   }
 }

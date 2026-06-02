@@ -19,6 +19,7 @@
             v-for="guia in guias"
             :key="guia.guia_id"
             class="guia-drill-down__row"
+            :class="{ 'guia-drill-down__row--divergent': guia.fecha_divergence }"
             :data-identity="guia.identity_source"
           >
             <!-- Guía ID -->
@@ -87,13 +88,20 @@
               </span>
             </td>
 
-            <!-- Fecha advisory (year_inferred) -->
+            <!-- Fecha advisory (year_inferred) + divergence (red) -->
             <td class="guia-drill-down__td">
+              <FechaDivergenceBadge
+                v-if="guia.fecha_divergence"
+              />
               <YearInferredBadge
                 v-if="guia.year_inferred"
                 compact
               />
-              <span v-else class="guia-drill-down__fecha-ok" aria-hidden="true">—</span>
+              <span
+                v-if="!guia.fecha_divergence && !guia.year_inferred"
+                class="guia-drill-down__fecha-ok"
+                aria-hidden="true"
+              >—</span>
             </td>
 
             <!-- Actions -->
@@ -133,6 +141,7 @@ import type { GuiaContributionResponse } from '@/api/types'
 import { useGuiaLineEdit } from '@/composables/useReconciliationApi'
 import ConfidenceBadge from './ConfidenceBadge.vue'
 import YearInferredBadge from './YearInferredBadge.vue'
+import FechaDivergenceBadge from './FechaDivergenceBadge.vue'
 
 // The row spans all aggregate columns (10 data + 1 expand + 1 actions = 12; rev-3 +1 for Fecha = 13).
 // Using a high number is safe — browsers clip at the actual column count.
@@ -270,6 +279,16 @@ defineExpose({ editingGuiaId, editValue })
 
 .guia-drill-down__row:hover {
   background-color: var(--surface-hover);
+}
+
+/* R9 (FDR-009): RED highlight for a guía with a diverging reception date. */
+.guia-drill-down__row--divergent {
+  border-left: 3px solid var(--status-mismatch-fg);
+  background-color: var(--status-mismatch-bg);
+}
+
+.guia-drill-down__row--divergent:hover {
+  background-color: var(--status-mismatch-bg);
 }
 
 .guia-drill-down__td {

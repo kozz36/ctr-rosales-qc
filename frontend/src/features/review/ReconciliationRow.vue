@@ -96,6 +96,11 @@
         v-if="row.any_year_inferred"
         compact
       />
+      <!-- R9 / FDR-009: RED group indicator when any contributing guía diverges -->
+      <FechaDivergenceBadge
+        v-if="row.has_fecha_divergence"
+        compact
+      />
     </td>
 
     <!-- Col 10: Páginas origen -->
@@ -141,6 +146,7 @@ import ConfidenceBadge from './ConfidenceBadge.vue'
 import SourcePages from './SourcePages.vue'
 import GuiaDrillDown from './GuiaDrillDown.vue'
 import YearInferredBadge from './YearInferredBadge.vue'
+import FechaDivergenceBadge from './FechaDivergenceBadge.vue'
 
 const props = defineProps<{
   row: ReconciliationRowResponse

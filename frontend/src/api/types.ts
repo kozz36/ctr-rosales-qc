@@ -65,6 +65,18 @@ export interface GuiaContributionResponse {
    * from vision output. Advisory flag — does NOT affect MATCH/MISMATCH logic.
    */
   year_inferred: boolean
+  /**
+   * R9 (FDR-008): guía handwritten reception date (ISO-8601 string or null).
+   */
+  fecha: string | null
+  /**
+   * R9 (FDR-008): true when this guía's handwritten date diverges (day-month
+   * mismatch) from the registro's authoritative declared date. RED indicator —
+   * a misfiled-guía signal; does NOT affect MATCH/MISMATCH logic.
+   */
+  fecha_divergence: boolean
+  /** R9 (FDR-008): divergence reason code, or null when not divergent. */
+  divergence_reason: 'fecha_divergence' | null
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +117,12 @@ export interface ReconciliationRowResponse {
    * yellow badge in UI; does NOT affect MATCH/MISMATCH logic.
    */
   any_year_inferred: boolean
+  /**
+   * R9 (FDR-008): true when at least one contributing guía has a fecha divergence
+   * (group-level roll-up of guias[*].fecha_divergence). RED group indicator;
+   * advisory only — does NOT affect MATCH/MISMATCH logic.
+   */
+  has_fecha_divergence: boolean
 }
 
 // ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ function makeRow(partial: Partial<ReconciliationRowResponse> = {}): Reconciliati
     requires_review: false,
     guias: [],
     any_year_inferred: false,
+    has_fecha_divergence: false,
     ...partial,
   }
 }

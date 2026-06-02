@@ -55,6 +55,9 @@ function makeGuia(overrides: Partial<GuiaContributionResponse> = {}): GuiaContri
     confidence: 0.92,
     identity_source: 'qr',
     year_inferred: false,
+    fecha: '2026-05-28',
+    fecha_divergence: false,
+    divergence_reason: null,
     ...overrides,
   }
 }
@@ -236,5 +239,48 @@ describe('GuiaDrillDown', () => {
     // Check all column headers include "Fecha"
     const headers = wrapper.findAll('th').map((th) => th.text())
     expect(headers.some((h) => h === 'Fecha')).toBe(true)
+  })
+
+  // ---------------------------------------------------------------------------
+  // R9 / FDR-009: per-guía fecha divergence (RED row + FechaDivergenceBadge)
+  // ---------------------------------------------------------------------------
+
+  it('applies divergent row class + FechaDivergenceBadge when fecha_divergence=true (FDR-S15)', () => {
+    const wrapper = mount(GuiaDrillDown, {
+      props: {
+        guias: [makeGuia({ fecha_divergence: true, divergence_reason: 'fecha_divergence' })],
+        runId: 'run-abc',
+      },
+    })
+    expect(wrapper.find('.guia-drill-down__row--divergent').exists()).toBe(true)
+    expect(wrapper.find('.fecha-divergence-badge').exists()).toBe(true)
+  })
+
+  it('no divergent class nor badge when fecha_divergence=false', () => {
+    const wrapper = mount(GuiaDrillDown, {
+      props: { guias: [makeGuia({ fecha_divergence: false })], runId: 'run-abc' },
+    })
+    expect(wrapper.find('.guia-drill-down__row--divergent').exists()).toBe(false)
+    expect(wrapper.find('.fecha-divergence-badge').exists()).toBe(false)
+  })
+
+  it('only the diverging row is flagged in a mixed list', () => {
+    const guias = [
+      makeGuia({ guia_id: 'T009-OK', fecha_divergence: false }),
+      makeGuia({ guia_id: 'T009-DIVERGENT', fecha_divergence: true, divergence_reason: 'fecha_divergence' }),
+    ]
+    const wrapper = mount(GuiaDrillDown, { props: { guias, runId: 'run-abc' } })
+    expect(wrapper.findAll('.guia-drill-down__row--divergent')).toHaveLength(1)
+    expect(wrapper.findAll('.fecha-divergence-badge')).toHaveLength(1)
+  })
+
+  it('source pages stay visible on a diverging row (page reference, FDR-S07)', () => {
+    const wrapper = mount(GuiaDrillDown, {
+      props: {
+        guias: [makeGuia({ source_pages: [42], fecha_divergence: true, divergence_reason: 'fecha_divergence' })],
+        runId: 'run-abc',
+      },
+    })
+    expect(wrapper.text()).toContain('42')
   })
 })

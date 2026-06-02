@@ -60,6 +60,9 @@ function makeGuia(overrides: Partial<GuiaContributionResponse> = {}): GuiaContri
     confidence: 0.92,
     identity_source: 'qr',
     year_inferred: false,
+    fecha: '2025-03-15',
+    fecha_divergence: false,
+    divergence_reason: null,
     ...overrides,
   }
 }
@@ -80,6 +83,7 @@ function makeRow(overrides: Partial<ReconciliationRowResponse> = {}): Reconcilia
     requires_review: false,
     guias: [makeGuia()],
     any_year_inferred: false,
+    has_fecha_divergence: false,
     ...overrides,
   }
 }
@@ -270,5 +274,25 @@ describe('ReconciliationRow', () => {
     })
     expect(wrapper.find('.year-inferred-badge').exists()).toBe(true)
     expect(wrapper.find('.recon-row__flag--review').exists()).toBe(true)
+  })
+
+  // ---------------------------------------------------------------------------
+  // R9 / FDR-009: has_fecha_divergence group indicator (FechaDivergenceBadge)
+  // ---------------------------------------------------------------------------
+
+  it('shows FechaDivergenceBadge in Col 9 when has_fecha_divergence=true (FDR-S16)', () => {
+    const row = makeRow({ has_fecha_divergence: true })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    expect(wrapper.find('.fecha-divergence-badge').exists()).toBe(true)
+  })
+
+  it('does not show FechaDivergenceBadge when has_fecha_divergence=false (FDR-S17)', () => {
+    const row = makeRow({ has_fecha_divergence: false })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    expect(wrapper.find('.fecha-divergence-badge').exists()).toBe(false)
   })
 })

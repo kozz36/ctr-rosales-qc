@@ -838,42 +838,42 @@ Chain strategy: stacked-to-main
 > Spec refs: EXT-019 (hybrid classifier), EXT-022 (first_page None), D1 (decode_identities pre-pass +
 > PageClassifier hybrid OR-gate), D2 (dual-QR multi-res COLOR decode), D6 (first_page sentinel).
 
-- [ ] R1.1 — Add `DecodeOutcome` application-layer dataclass to `application/pipeline.py`
+- [x] R1.1 — Add `DecodeOutcome` application-layer dataclass to `application/pipeline.py`
   **Spec/Design**: D1 (Decode location). Fields: `identity: GuiaIdentity | None`, `hashqr_url: str | None`, `decoded: bool`. No domain import — pure application dataclass.
   **Files**: `backend/src/reconciliation/application/pipeline.py`.
   **Dependency**: independent; start immediately.
 
-- [ ] R1.2 — Implement `_stage_decode_identities(page_count) → dict[int, DecodeOutcome]` in `ReconciliationPipeline`
+- [x] R1.2 — Implement `_stage_decode_identities(page_count) → dict[int, DecodeOutcome]` in `ReconciliationPipeline`
   **Spec/Design**: D1, EXT-019 (Condition A must reuse the identity already decoded — no second scan). Renders each page once via `DocumentSourcePort.render_page`, calls `self._identity.decode_identity(image, page_idx)` when adapter wired; stores outcome in page→DecodeOutcome map. Graceful: when `self._identity is None`, returns empty map (classifier falls back to Condition B/C only).
   **Files**: `backend/src/reconciliation/application/pipeline.py`.
   **Dependency**: R1.1 done.
 
-- [ ] R1.3 — Add `image_coverage_ratio(idx: int) → float` optional method to `DocumentSourcePort`; implement in `PdfStructureAdapter`
+- [x] R1.3 — Add `image_coverage_ratio(idx: int) → float` optional method to `DocumentSourcePort`; implement in `PdfStructureAdapter`
   **Spec/Design**: D1 (`image_dominant` signal). Returns ratio 0.0–1.0 of page area covered by raster images. `image_dominant = ratio >= 0.5` computed in pipeline (not domain). Default 0.0 when not supported (graceful).
   **Files**: `backend/src/reconciliation/domain/ports.py`, `backend/src/reconciliation/adapters/pdf/pdf_structure.py`.
   **Dependency**: independent; parallel with R1.1/R1.2.
 
-- [ ] R1.4 — Extend `PageClassifier.classify_page` with `qr_is_guia: bool` and `image_dominant: bool`; implement hybrid OR-gate
+- [x] R1.4 — Extend `PageClassifier.classify_page` with `qr_is_guia: bool` and `image_dominant: bool`; implement hybrid OR-gate
   **Spec/Design**: D1 §3, EXT-019. Eval order: declared/protocolo title first → Condition A (`qr_is_guia`) → Condition C (digital/ocr title) → Condition B (body < 200 AND Forma-header AND `image_dominant`). `title_matched="QR_IDENTITY"` / `"FORMA_HEADER_HEURISTIC"`. Guard: Condition B MUST NOT fire when body >= 200 chars (EXT-S25).
   **Files**: `backend/src/reconciliation/domain/classifier.py`.
   **Dependency**: independent; parallel with R1.1–R1.3.
 
-- [ ] R1.5 — Wire `_stage_decode_identities` into pipeline before `_stage_classify`; pass booleans to classifier; reuse cached decode map in `assemble_blocks`
+- [x] R1.5 — Wire `_stage_decode_identities` into pipeline before `_stage_classify`; pass booleans to classifier; reuse cached decode map in `assemble_blocks`
   **Spec/Design**: D1 — pipeline orchestrates pre-pass, computes `qr_is_guia` + `image_dominant` per page from cached map, feeds into `classify_page`. `assemble_blocks` reads SAME cached map (no re-scan). Render cache: reuse rendered bytes from decode_identities in extract_ocr/assemble_blocks.
   **Files**: `backend/src/reconciliation/application/pipeline.py`.
   **Dependency**: R1.2 + R1.4 done.
 
-- [ ] R1.6 — Upgrade `QrBarcodeExtractionAdapter` to multi-resolution COLOR decode
+- [x] R1.6 — Upgrade `QrBarcodeExtractionAdapter` to multi-resolution COLOR decode
   **Spec/Design**: D2. Keep single `decode_identity(image)` port signature. Adapter internally produces 200-dpi-equivalent and 400-dpi-equivalent scaled variants; decodes each in COLOR (drop `convert("L")`). `_decode_union` returns BOTH compact identity AND `hashqr_url` from URL-variant QR. Propagation: `assemble_blocks` takes first non-null `hashqr_url` across block pages.
   **Files**: `backend/src/reconciliation/adapters/identity/qr_barcode.py`.
   **Dependency**: independent; parallel with R1.1–R1.5.
 
-- [ ] R1.7 — Change `GuiaDeRemision.first_page` from `int` (default 0) to `int | None` (default None)
+- [x] R1.7 — Change `GuiaDeRemision.first_page` from `int` (default 0) to `int | None` (default None)
   **Spec/Design**: D6, EXT-022. Fix `UnresolvedGuiaResponse` fallback: `!= 0` idiom → `is not None`. `_GuiaBlock`/`_build_guia_from_block` set concrete index (happy path unaffected). Document semantic shift in `docs/DECISIONS.md`.
   **Files**: `backend/src/reconciliation/domain/models.py`, `backend/src/reconciliation/application/pipeline.py` (UnresolvedGuiaResponse fallback), `docs/DECISIONS.md`.
   **Dependency**: independent; parallel with all above.
 
-- [ ] R1.8 — Tests for R1.1–R1.7
+- [x] R1.8 — Tests for R1.1–R1.7
   **Spec refs**: EXT-S23, EXT-S24, EXT-S25, EXT-S29, D2.
   **Deliverables**:
   - `tests/unit/domain/test_classifier.py` — `qr_is_guia=True` → GUIA Condition A (EXT-S23); `image_dominant=True` + short body → GUIA Condition B (EXT-S24); 1200-char body → never GUIA via Condition B (EXT-S25).
@@ -883,7 +883,7 @@ Chain strategy: stacked-to-main
   **Files**: `tests/unit/domain/test_classifier.py`, `tests/unit/adapters/test_qr_barcode.py`, `tests/unit/domain/test_models.py`, `tests/unit/application/test_pipeline.py`.
   **Dependency**: R1.1–R1.7 done.
 
-- [ ] R1.9 — Real-data e2e assertion for R1 (pages 0–45, registros 230/231/232)
+- [x] R1.9 — Real-data e2e assertion for R1 (pages 0–45, registros 230/231/232)
   **Spec refs**: EXT-019, EXT-022, D1, D2.
   **Deliverables** (`tests/integration/test_pipeline_e2e_rev3.py`):
   - Assert registros 230/231/232 produce non-empty `guias` contributions (status != `GUIA_MISSING`) — the critical unblock verification.

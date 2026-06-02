@@ -9,15 +9,20 @@ Newest context at the bottom of each section.
 
 - **Two identifiers**: `#4252` = Autodesk Forma section/Contents ID; `232` = business
   **Registro N°** (from detail Description + Protocolo). Group by the **Registro N°**.
-- **Grouping key**: `(registro, fecha, material_canonical, unidad)`.
+- **Grouping key**: `(registro, material_canonical, unidad)` — **`fecha` removed** (rev-3 R8/MAT-001;
+  it split declared↔guía groups on vision-date noise and killed MATCH). Material reconciliation is
+  date-independent; `fecha` is a divergence/misfiled signal only (see §dates, R8, R9).
 - **Units** KG / TN / RD / Rollo are **summed independently — never converted**.
 - **Page classification by document TITLE**, not supplier name. `GUÍA DE REMISIÓN` feeds the
   sum; `Planilla Resumen`, `Listado de Barras`, photos, cover, contents do **not**.
 - **Declared side is trusted digital text** (Protocolo canonical, detail = cross-check).
   Reconciliation vs declared **is the validation gate** that surfaces OCR errors.
-- **Dates** (§dates): the grouping `fecha` is the **handwritten reception date** read by
-  vision from the scan — NOT the electronic GRE date. They can differ; divergence = the
-  **misfiled-guía** case → reassignment.
+- **Dates** (§dates, R9): the declared reception date is the **handwritten `Fecha:` on the
+  Protocolo de Recepción** (vision-read, linked to the Registro N°) — NOT the electronic date.
+  Guías should carry that same handwritten date. `fecha` is **not** a grouping axis; a guía whose
+  handwritten date **diverges** (compared by **day-month**; year reconstructed by bounded inference)
+  is the **misfiled-guía** signal → non-blocking no-match **WARNING** with page number + red
+  highlight (individual/group) → human review + manual reassign. Never auto-corrected.
 
 ## Stack & architecture (locked)
 
@@ -270,6 +275,24 @@ runtime is resolved.
 **Mitigations to try**: `FLAGS_enable_pir_api=0`, `FLAGS_use_mkldnn=0`, or a GPU/different
 paddlepaddle build. SUNAT fetch (quantities only) may be used as an explicit bounded air-gap
 exception during validation.
+
+### R8 — canonical material matching (MAT-001; own SDD change `r8-material-matching`)
+
+Declared (Forma) and guía (SUNAT GRE) name the same rebar with different text → exact-string
+grouping = zero MATCH. Fix: a **canonical key** `(familia, grado, diámetro, presentación, unidad)`
+via deterministic regex (grade collapse `A615 G60`, diameter table, `9M` vs `DOB` never merged) +
+local-LLM fallback (qwen3.5:9b) for the ambiguous tail, LLM-inferred rows always `requires_review`.
+Domain stays pure (`MaterialInferencePort` Protocol + lazy Ollama adapter). **`fecha` removed from
+the grouping key** — it split groups on vision-date noise. See `docs/MATERIAL-MATCHING.md`.
+
+### R9 — reception-date authority + fecha-divergence review (own SDD change `r9-fecha-divergence-review`)
+
+Declared reception date = **handwritten `Fecha:` on the Protocolo de Recepción** (vision-read,
+per Registro N°), not the electronic date. Guías should carry that handwritten date. A guía whose
+handwritten date diverges (compared **day-month**; year via bounded inference) → non-blocking
+no-match **WARNING** that flags `requires_review` with the guía **page number** + **red highlight**
+(individual / per-registro group) for human review + manual reassign. Never auto-corrected.
+Engram: `architecture/reception-date-authority` (#2709).
 
 ---
 

@@ -26,14 +26,21 @@ Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
 
 ## Domain rules (invariants — encode as MUST, never silently break)
 
-- Group by `(registro, fecha, material_canonical, unidad)`.
+- Group by `(registro, material_canonical, unidad)` — **`fecha` is NOT a grouping axis** (rev-3
+  R8/MAT-001). Including it split declared↔guía groups whenever the vision-read date differed
+  (year unreliable), killing MATCH. Material reconciliation is date-independent.
 - Units **KG/TN/RD/Rollo summed independently — NEVER converted**.
 - Classify pages by **TITLE**, not supplier name (Aceros Arequipa is on non-guía sheets too).
 - **MATCH tolerance EXACT (0)**; **confidence auto-flag at 0.85**; MISMATCH always flags.
 - Reconciliation vs the trusted digital declared side **is the OCR validation gate** —
   mismatches are flagged for human review, never auto-corrected.
-- The grouping **`fecha` is the HANDWRITTEN reception date** (vision-read), not the electronic
-  GRE date. They can differ; divergence = misfiled guía → reassignment.
+- **Reception-date authority** (rev-3 R9): the declared reception date is the **HANDWRITTEN
+  `Fecha:` on the Protocolo de Recepción** (vision-read), linked to the Registro N° — NOT the
+  electronic `fecha_declarada` nor the GRE date. Guías should carry that same handwritten date.
+  A guía whose handwritten date **diverges** (compared by **day-month**; year is vision-unreliable
+  and reconstructed by bounded inference) is a **misfiled signal** → non-blocking no-match
+  **WARNING** that flags the guía `requires_review` with its **page number** and a **red highlight**
+  (individual or per-registro group) for human review + manual reassign. Never auto-corrected.
 - **Three identifiers, don't confuse them**: Contents-ID `#4252` (section) ≠ Registro N° `232`
   (business key, group by this) ≠ QR `serie-numero` (deterministic guía id from rev-2).
 - Input PDF is **read-only**; each run writes its own isolated output dir. **Local-first**:

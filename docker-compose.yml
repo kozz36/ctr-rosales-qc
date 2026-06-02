@@ -34,9 +34,10 @@ services:
       RECONCILIATION__VISION__OLLAMA__BASE_URL: "http://host.docker.internal:11434/v1"
       # max_tokens: 640 sits in the 512-768 range — survives the <think> phase
       RECONCILIATION__VISION__MAX_TOKENS: "640"
-      # Protocolo crop: upper-right header table (0.60,0.04,1.00,0.22) — starting estimate
+      # Protocolo crop: calibrated (0.60,0.14,1.00,0.22) — targets Registro N° + Fecha rows only.
+      # Excludes printed template revision date (Rev:02 Fecha:08/09/2025). R10.9 calibrated.
       RECONCILIATION__VISION__PROTOCOLO_CROP__X0: "0.60"
-      RECONCILIATION__VISION__PROTOCOLO_CROP__Y0: "0.04"
+      RECONCILIATION__VISION__PROTOCOLO_CROP__Y0: "0.14"
       RECONCILIATION__VISION__PROTOCOLO_CROP__X1: "1.00"
       RECONCILIATION__VISION__PROTOCOLO_CROP__Y1: "0.22"
       # SUNAT: enabled with cross-run cache (stable named volume)

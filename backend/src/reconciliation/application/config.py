@@ -97,10 +97,12 @@ class VisionConfig(BaseSettings):
     stamp_crop: StampCropConfig = Field(default_factory=StampCropConfig)
     # R9.5 (ADR-6): Protocolo "Fecha:" crop box for the declared-date read.
     # The Protocolo layout differs from the guía stamp, so it gets its own crop.
-    # R10.5: default tuned to upper-right header table (0.60,0.04,1.00,0.22).
-    # Env-tunable via RECONCILIATION__VISION__PROTOCOLO_CROP__X0 etc.
+    # R10.9: calibrated to (0.60,0.14,1.00,0.22) — targets only Registro N° + Fecha rows,
+    # excluding the printed template revision date (Rev:02 Fecha:08/09/2025) which would
+    # confuse the model.  Proven on qwen3.5:397b-cloud → 2026-05-28, confidence=1.00,
+    # total_tokens=717.  Env-tunable via RECONCILIATION__VISION__PROTOCOLO_CROP__X0 etc.
     protocolo_crop: StampCropConfig = Field(
-        default_factory=lambda: StampCropConfig(x0=0.60, y0=0.04, x1=1.00, y1=0.22)
+        default_factory=lambda: StampCropConfig(x0=0.60, y0=0.14, x1=1.00, y1=0.22)
     )
     # Rev-3 D4 Option B: DPI for full-page fallback when stamp_crop is disabled
     fallback_dpi: int = Field(default=300, gt=0)

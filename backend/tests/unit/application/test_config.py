@@ -268,10 +268,12 @@ class TestOcrConfig:
 
 class TestProtocoloCropDefault:
     def test_protocolo_crop_default_is_non_zero(self) -> None:
-        """R10.5: protocolo_crop default is (0.60,0.04,1.00,0.22) — non-degenerate."""
+        """R10.9: protocolo_crop default is calibrated (0.60,0.14,1.00,0.22) — non-degenerate.
+        Calibrated to exclude the printed template revision date row.
+        """
         cfg = AppConfig()
         assert cfg.vision.protocolo_crop.x0 == pytest.approx(0.60)
-        assert cfg.vision.protocolo_crop.y0 == pytest.approx(0.04)
+        assert cfg.vision.protocolo_crop.y0 == pytest.approx(0.14)
         assert cfg.vision.protocolo_crop.x1 == pytest.approx(1.00)
         assert cfg.vision.protocolo_crop.y1 == pytest.approx(0.22)
 

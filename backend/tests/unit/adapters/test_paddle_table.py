@@ -227,6 +227,45 @@ class TestPrintedTableAdapterErrorHandling:
         assert adapter._ocr_failed is True
         assert adapter._unavailable is True
 
+    def test_persistent_capability_failure_short_circuits(self) -> None:
+        """NotImplementedError (oneDNN/PIR) marks adapter unavailable → no retry.
+
+        On the oneDNN/PIR-broken env, predict() fails for EVERY page with a
+        capability error.  Without short-circuiting, all 469 guía pages retry
+        full inference.  The adapter must set _unavailable after the FIRST such
+        failure so the 2nd call returns [] WITHOUT calling predict again.
+        """
+        mock = MagicMock()
+        mock.predict.side_effect = NotImplementedError("ConvertPirAttribute oneDNN")
+        adapter = PrintedTableAdapter(_ocr=mock)
+
+        first = adapter.extract_printed_table(_make_png())
+        assert first == []
+        assert adapter._unavailable is True
+
+        second = adapter.extract_printed_table(_make_png())
+        assert second == []
+        # predict called exactly once — 2nd call short-circuited on _unavailable.
+        assert mock.predict.call_count == 1
+
+    def test_pir_message_marks_unavailable(self) -> None:
+        """A RuntimeError carrying a PIR/oneDNN message is treated as persistent."""
+        mock = MagicMock()
+        mock.predict.side_effect = RuntimeError("Unimplemented: ConvertPirAttribute")
+        adapter = PrintedTableAdapter(_ocr=mock)
+        adapter.extract_printed_table(_make_png())
+        assert adapter._unavailable is True
+
+    def test_per_image_error_does_not_mark_unavailable(self) -> None:
+        """A generic (non-capability) predict error stays per-page degradation."""
+        mock = MagicMock()
+        mock.predict.side_effect = RuntimeError("cuda died")
+        adapter = PrintedTableAdapter(_ocr=mock)
+        adapter.extract_printed_table(_make_png())
+        # Generic per-image failure must NOT disable the adapter permanently.
+        assert adapter._unavailable is False
+        assert adapter._ocr_failed is True
+
     def test_ocr_failed_reset_on_successful_call(self) -> None:
         """_ocr_failed is reset to False at the start of each call."""
         lines_data = [("BARRA 5.800 KG", 0.95)]

@@ -35,6 +35,8 @@ import io
 import logging
 from threading import Lock
 
+from reconciliation.adapters.ocr._capability import is_persistent_capability_failure
+
 logger = logging.getLogger(__name__)
 
 _INIT_LOCK = Lock()
@@ -94,7 +96,17 @@ class DeskewAdapter:
         try:
             return self._run_title_ocr(image, classifier)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("DeskewAdapter.extract_title: OCR failed: %s", exc)
+            if is_persistent_capability_failure(exc):
+                # Structural failure (oneDNN/PIR): predict() will fail for every
+                # page.  Disable the adapter so later pages short-circuit.
+                self._unavailable = True
+                logger.warning(
+                    "DeskewAdapter.extract_title: PaddleOCR inference structurally "
+                    "unavailable (%s); disabling for the remainder of the run",
+                    exc,
+                )
+            else:
+                logger.warning("DeskewAdapter.extract_title: OCR failed: %s", exc)
             return None
 
     def correct_orientation(self, image: bytes) -> bytes:
@@ -128,7 +140,17 @@ class DeskewAdapter:
                 return image
             return self._rotate_image(image, angle)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("DeskewAdapter: orientation correction failed: %s", exc)
+            if is_persistent_capability_failure(exc):
+                # Structural failure (oneDNN/PIR): every page would fail the same
+                # way.  Disable the adapter so later pages short-circuit.
+                self._unavailable = True
+                logger.warning(
+                    "DeskewAdapter: PaddleOCR inference structurally unavailable "
+                    "(%s); skipping orientation correction for the remainder of the run",
+                    exc,
+                )
+            else:
+                logger.warning("DeskewAdapter: orientation correction failed: %s", exc)
             return image
 
     # ------------------------------------------------------------------

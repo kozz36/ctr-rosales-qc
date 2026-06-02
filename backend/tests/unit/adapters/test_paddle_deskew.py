@@ -137,6 +137,20 @@ class TestDeskewAdapterFallbacks:
         result = adapter.correct_orientation(image)
         assert result == image
 
+    def test_persistent_capability_failure_short_circuits(self) -> None:
+        """NotImplementedError (oneDNN/PIR) on predict → adapter unavailable, no retry."""
+        clf = MagicMock()
+        clf.predict.side_effect = NotImplementedError("ConvertPirAttribute oneDNN")
+        adapter = DeskewAdapter(_classifier=clf)
+
+        first = adapter.correct_orientation(_make_png())
+        assert first is not None  # original bytes returned
+        assert adapter._unavailable is True
+
+        adapter.correct_orientation(_make_png())
+        # 2nd call short-circuits on _unavailable: predict only called once.
+        assert clf.predict.call_count == 1
+
     def test_unavailable_flag_skips_classifier(self) -> None:
         image = _make_png()
         clf = MagicMock()

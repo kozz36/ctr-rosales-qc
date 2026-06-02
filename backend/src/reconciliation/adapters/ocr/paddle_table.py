@@ -35,6 +35,7 @@ from decimal import Decimal, InvalidOperation
 from threading import Lock
 from typing import Final
 
+from reconciliation.adapters.ocr._capability import is_persistent_capability_failure
 from reconciliation.domain.models import MaterialLine
 from reconciliation.domain.normalizer import MaterialNormalizer
 
@@ -132,12 +133,23 @@ class PrintedTableAdapter:
         try:
             return self._run_ocr(ocr, image)
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "PrintedTableAdapter: OCR predict failed (%s); "
-                "guía quantities will be empty for this page",
-                exc,
-            )
             self._ocr_failed = True
+            if is_persistent_capability_failure(exc):
+                # Structural failure (oneDNN/PIR): predict() will fail for EVERY
+                # page.  Mark unavailable so subsequent pages short-circuit at the
+                # `if self._unavailable` guard instead of retrying full inference.
+                self._unavailable = True
+                logger.warning(
+                    "PrintedTableAdapter: PaddleOCR inference is structurally "
+                    "unavailable (%s); disabling OCR for the remainder of the run",
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "PrintedTableAdapter: OCR predict failed (%s); "
+                    "guía quantities will be empty for this page",
+                    exc,
+                )
             return []
 
     # ------------------------------------------------------------------

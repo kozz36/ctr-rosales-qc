@@ -13,6 +13,7 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import NamedTuple
 
+from reconciliation.domain.material_key import MatchMethod
 from reconciliation.domain.models import (
     GuiaContribution,
     GuiaDeRemision,
@@ -20,6 +21,15 @@ from reconciliation.domain.models import (
     ReconciliationRow,
     Registro,
 )
+
+# Worst-wins ordering for match_method aggregation (ADR-5, MAT-008).
+# Higher index = worse provenance.
+_MATCH_METHOD_PRIORITY: dict[str, int] = {
+    "deterministic": 0,
+    "codigo_sunat": 0,
+    "llm_inferred": 1,
+    "unresolved": 2,
+}
 
 # Internal grouping key type
 _GroupKey = NamedTuple(
@@ -149,6 +159,37 @@ class ReconciliationService:
                 for line in g.lines
             )
 
+            # R8.5 (MAT-008): worst-wins match_method aggregation (ADR-5).
+            # Scope: all declared lines + all contributing guía lines.
+            # Worst = highest _MATCH_METHOD_PRIORITY value.
+            # Also includes match_method from the declared_index lines (via the key lookup).
+            _all_methods: list[str] = []
+            for g in contributing_guias_list:
+                for line in g.lines:
+                    _all_methods.append(line.match_method)
+            # Declared lines are not directly accessible here via the index (only qty is stored).
+            # They are accessed from the declared Registro objects above; we infer them from
+            # the key scan below by scanning declared lines matching this group key.
+            # Simple approach: scan all declared lines matching this key's canonical+unidad.
+            for reg in declared:
+                for dline in reg.declared_lines:
+                    if (
+                        dline.description_canonical == key.material_canonical
+                        and dline.unidad == key.unidad
+                    ):
+                        _all_methods.append(dline.match_method)
+
+            if _all_methods:
+                worst = max(_all_methods, key=lambda m: _MATCH_METHOD_PRIORITY.get(m, 0))
+                row_match_method: MatchMethod = worst  # type: ignore[assignment]
+            else:
+                row_match_method = "deterministic"
+
+            # Additive: requires_review is True when match_method != deterministic OR
+            # any other review condition already flagged.
+            if row_match_method != "deterministic":
+                row_requires_review = True
+
             if declared_qty is None:
                 # Guía exists but no declared counterpart
                 status: str = "DECLARED_MISSING"
@@ -177,6 +218,7 @@ class ReconciliationService:
                     source_pages=source_pages,
                     min_confidence=min_confidence,
                     requires_review=row_requires_review,
+                    match_method=row_match_method,
                     guias=contributions,
                 )
             )

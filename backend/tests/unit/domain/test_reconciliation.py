@@ -557,3 +557,123 @@ class TestPurity:
         for imp in imports:
             for bad in forbidden:
                 assert bad not in imp, f"Impure import found: {imp}"
+
+
+# ---------------------------------------------------------------------------
+# R8.5: worst-wins match_method aggregation in ReconciliationService (MAT-008/011)
+# ---------------------------------------------------------------------------
+
+
+def _line_with_method(
+    canonical: str,
+    unidad: str,
+    cantidad: str,
+    method: str = "deterministic",
+) -> MaterialLine:
+    return MaterialLine(
+        description_raw=canonical.upper(),
+        description_canonical=canonical,
+        unidad=unidad,  # type: ignore[arg-type]
+        cantidad=Decimal(cantidad),
+        match_method=method,  # type: ignore[arg-type]
+    )
+
+
+class TestMatchMethodAggregation:
+    _svc = ReconciliationService()
+
+    def _run(
+        self,
+        declared_lines: list[MaterialLine],
+        guia_lines: list[MaterialLine],
+        declared_qty: str = "1.0",
+        guia_qty: str = "1.0",
+    ):
+        from datetime import date
+        from decimal import Decimal
+
+        registro = Registro(
+            numero="232",
+            fecha_declarada=date(2024, 1, 15),
+            declared_lines=declared_lines,
+        )
+        guia = GuiaDeRemision(
+            guia_id="T009-0001",
+            registro="232",
+            fecha=date(2024, 1, 15),
+            lines=guia_lines,
+            source_pages=[1],
+            identity_source="qr",
+            identity_confidence=1.0,
+        )
+        return self._svc.reconcile([registro], [guia])
+
+    def test_all_deterministic_row_is_deterministic(self) -> None:
+        mat = "BARRA A615 G60 1/2\" 9M"
+        rows = self._run(
+            declared_lines=[_line_with_method(mat, "TN", "1.0", "deterministic")],
+            guia_lines=[_line_with_method(mat, "TN", "1.0", "deterministic")],
+        )
+        match_rows = [r for r in rows if r.status == "MATCH"]
+        assert len(match_rows) == 1
+        assert match_rows[0].match_method == "deterministic"
+
+    def test_llm_inferred_line_escalates_row(self) -> None:
+        mat = "BARRA A615 G60 1/2\" 9M"
+        rows = self._run(
+            declared_lines=[_line_with_method(mat, "TN", "1.0", "deterministic")],
+            guia_lines=[_line_with_method(mat, "TN", "1.0", "llm_inferred")],
+        )
+        match_rows = [r for r in rows if r.status == "MATCH"]
+        assert len(match_rows) == 1
+        assert match_rows[0].match_method == "llm_inferred"
+
+    def test_unresolved_line_is_worst_wins(self) -> None:
+        """unresolved > llm_inferred > deterministic."""
+        mat = "BARRA A615 G60 1/2\" 9M"
+        rows = self._run(
+            declared_lines=[_line_with_method(mat, "TN", "1.0", "llm_inferred")],
+            guia_lines=[_line_with_method(mat, "TN", "1.0", "unresolved")],
+        )
+        match_rows = [r for r in rows if r.status == "MATCH"]
+        assert len(match_rows) == 1
+        assert match_rows[0].match_method == "unresolved"
+
+    def test_requires_review_true_when_llm_inferred(self) -> None:
+        mat = "BARRA A615 G60 1/2\" 9M"
+        rows = self._run(
+            declared_lines=[_line_with_method(mat, "TN", "1.0", "deterministic")],
+            guia_lines=[_line_with_method(mat, "TN", "1.0", "llm_inferred")],
+        )
+        match_rows = [r for r in rows if r.status == "MATCH"]
+        assert match_rows[0].requires_review is True
+
+    def test_requires_review_true_when_unresolved(self) -> None:
+        mat = "BARRA A615 G60 1/2\" 9M"
+        rows = self._run(
+            declared_lines=[_line_with_method(mat, "TN", "1.0", "unresolved")],
+            guia_lines=[_line_with_method(mat, "TN", "1.0", "deterministic")],
+        )
+        match_rows = [r for r in rows if r.status == "MATCH"]
+        assert match_rows[0].requires_review is True
+
+    def test_requires_review_false_when_all_deterministic(self) -> None:
+        mat = "BARRA A615 G60 1/2\" 9M"
+        rows = self._run(
+            declared_lines=[_line_with_method(mat, "TN", "1.0", "deterministic")],
+            guia_lines=[_line_with_method(mat, "TN", "1.0", "deterministic")],
+        )
+        match_rows = [r for r in rows if r.status == "MATCH"]
+        assert match_rows[0].requires_review is False
+        assert match_rows[0].match_method == "deterministic"
+
+    def test_match_all_deterministic_scenario(self) -> None:
+        mat = "BARRA A615 G60 1/2\" 9M"
+        rows = self._run(
+            declared_lines=[_line_with_method(mat, "TN", "4.124", "deterministic")],
+            guia_lines=[_line_with_method(mat, "TN", "4.124", "deterministic")],
+        )
+        match_rows = [r for r in rows if r.status == "MATCH"]
+        assert len(match_rows) == 1
+        assert match_rows[0].match_method == "deterministic"
+        assert match_rows[0].requires_review is False

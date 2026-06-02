@@ -55,7 +55,7 @@ Parallel opportunities:
 
 > Sequential. Must land before anything else reads `protocolo_page`.
 
-### [ ] R9.1 — `Registro.protocolo_page` propagation fix (digital_text_extractor + models)
+### [x] R9.1 — `Registro.protocolo_page` propagation fix (digital_text_extractor + models)
 
 **Spec refs**: FDR-001, FDR-008, ADR-1, ADR-2.
 **Depends on**: existing `Registro` model (models.py:115) and
@@ -112,7 +112,7 @@ return Registro(
 
 > R9.2 and R9.3 are sequential. R9.3 depends on the new model fields.
 
-### [ ] R9.2 — Domain model extensions: handwritten declared date + per-guía divergence fields
+### [x] R9.2 — Domain model extensions: handwritten declared date + per-guía divergence fields
 
 **Spec refs**: FDR-001, FDR-002, FDR-004, FDR-005, FDR-007, FDR-008, ADR-2, ADR-4.
 **Depends on**: R9.1 (`Registro.protocolo_page` stable).
@@ -186,7 +186,7 @@ class ReconciliationRow(BaseModel):
 
 ---
 
-### [ ] R9.3 — `DateDivergenceChecker` — pure domain service
+### [x] R9.3 — `DateDivergenceChecker` — pure domain service
 
 **Spec refs**: FDR-003, FDR-004, FDR-005, FDR-006, FDR-010, ADR-3.
 **Depends on**: R9.2 (model fields stable; `DivergenceResult` depends on no model field but
@@ -261,7 +261,7 @@ no I/O. This is a pure function — no class instantiation required at call site
 
 > Sequential. `reconciliation.py` is the core change that wires the domain pieces together.
 
-### [ ] R9.4 — `ReconciliationService` divergence wiring
+### [x] R9.4 — `ReconciliationService` divergence wiring
 
 **Spec refs**: FDR-003, FDR-004, FDR-005, FDR-006, FDR-009, FDR-011, ADR-4.
 **Depends on**: R9.2 (model fields), R9.3 (`check_fecha_divergence`).
@@ -361,7 +361,7 @@ This is the one-line display-fecha change described in ADR-2. Grouping key is un
 > Sequential after R9.2 (needs Registro model fields). Can start once R9.2 is done —
 > does NOT need R9.3 or R9.4. In single-executor apply, run after R9.4 for simplicity.
 
-### [ ] R9.5 — `protocolo_crop` config + `_stage_extract_declared_date` pipeline sub-stage
+### [x] R9.5 — `protocolo_crop` config + `_stage_extract_declared_date` pipeline sub-stage
 
 **Spec refs**: FDR-001, FDR-002, FDR-007, ADR-1, ADR-6, ADR-7.
 **Depends on**: R9.1 (`Registro.protocolo_page`), R9.2 (Registro handwritten-date fields).
@@ -480,7 +480,7 @@ new file `backend/tests/unit/application/test_stage_extract_declared_date.py`):
 
 > Sequential after R9.4 (domain fields must exist in DTO source).
 
-### [ ] R9.6 — API schema + routes: additive DTO fields
+### [x] R9.6 — API schema + routes: additive DTO fields
 
 **Spec refs**: FDR-008, ADR-5.
 **Depends on**: R9.4 (domain + reconciler fields stable).
@@ -538,7 +538,7 @@ has_fecha_divergence: bool = Field(
 
 > Sequential after R9.6 (types must match stable DTO).
 
-### [ ] R9.7 — Frontend: types + `FechaDivergenceBadge` + `GuiaDrillDown` + `ReconciliationRow`
+### [x] R9.7 — Frontend: types + `FechaDivergenceBadge` + `GuiaDrillDown` + `ReconciliationRow`
 
 **Spec refs**: FDR-009, ADR-8.
 **Depends on**: R9.6 (DTO shape finalised).
@@ -612,7 +612,7 @@ has_fecha_divergence: boolean
 
 > Sequential. Start only after R9.5–R9.7 all complete. This is the trusted gate.
 
-### [ ] R9.8 — Real-data e2e gate: Registro 232 divergence assertion + full regression guard
+### [x] R9.8 — Real-data e2e gate: Registro 232 divergence assertion + full regression guard
 
 **Spec refs**: FDR-S01, FDR-S03, FDR-S09, FDR-S19, ADR-7.
 **Depends on**: R9.5–R9.7 all complete (full pipeline + API + frontend wired).

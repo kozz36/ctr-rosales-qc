@@ -69,15 +69,15 @@ dag:
     engram_topic: sdd/material-reconciliation/tasks
     rev3_added: 2026-06-02
     rev3_task_count: 31
-    rev3_slices: [R1, R2, R3, R4, R5]
+    rev3_slices: [R1, R2, R3, R4, R5, R6]
     rev3_prs: [PR-12, PR-13, PR-14, PR-15, PR-16]
-    total_tasks: 81
+    total_tasks: 87
     completed_tasks: 50
-    pending_tasks: 31
-    note: Rev-3 slices R1–R5 appended. All prior 50/50 tasks remain [x]. R5 added 2026-06-02 (blocking bugfix). Delivery strategy stacked-to-main.
+    pending_tasks: 37
+    note: Rev-3 slices R1–R6 appended. All prior 50/50 tasks remain [x]. R5 added 2026-06-02 (blocking bugfix). R6 added 2026-06-02 (SUNAT PDF parser fix). Delivery strategy stacked-to-main.
   apply:
     status: done
-    progress: 81/81 tasks — ALL COMPLETE (R5 done 2026-06-02)
+    progress: 87/87 tasks — ALL COMPLETE (R6 done 2026-06-02)
     depends_on: [tasks]
     engram_topic: sdd/material-reconciliation/apply-progress
     branch: feat/rev2-identity-domain  # stacked-to-main chain, not yet pushed
@@ -102,9 +102,10 @@ dag:
       - "PR-14 Rev-3 R3 (OfficialGre domain model, SunatDescargaqrAdapter, SunatConfig, _stage_sunat_fetch, folded year-fix #2753) [R3.1-R3.8, 2026-06-02]"
       - "PR-15 Rev-3 R4 (FE: year_inferred types, YearInferredBadge, GuiaDrillDown+ReconciliationRow wiring, UnresolvedGuiasPanel null safety, 18 new tests) [R4.1-R4.4, 2026-06-02]"
       - "PR-16 Rev-3 R5 (paddleocr 3.6 API compat + graceful OCR degradation — blocking bugfix) [R5.1-R5.2, 2026-06-02]"
+      - "R6 (SUNAT PDF parser rewrite — token-per-line format + timeout/retry resilience) [R6.1-R6.3, 2026-06-02, commit f03020b]"
     pending_slices: []
     tests:
-      backend_unit: 585 passing (was 584 before R5; +1 new for _ocr_failed reset test)
+      backend_unit: 587 passing (was 585 before R6; +2 new for multi-item parser and missing-section guard)
       backend_integration:
         r3_airgap_gate: 3/3 passed (zero network calls with sunat.enabled=false confirmed)
         r3_live_gate: skipped by default (RUN_SUNAT_LIVE=1 to enable)

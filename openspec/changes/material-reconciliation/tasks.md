@@ -1107,4 +1107,33 @@ Cross-slice parallelism:
 - [x] `PrintedTableAdapter.extract_printed_table` catches all exceptions, returns `[]`, sets `_ocr_failed=True`; never raises
 - [x] `_stage_extract_ocr` detects `_ocr_failed`, appends human-readable warning, continues
 - [x] `PipelineResult.warnings` now includes OCR degradation warnings (prepended before vision warnings)
+
+---
+
+## R6 — SUNAT PDF parser fix + fetch resilience (real-run bugfix, 2026-06-02)
+
+> Real-run finding: `_parse_line_items` extracted nothing from live SUNAT PDFs because
+> the assumed slash-separated format does not exist — real PDFs output column headers and
+> item values as separate newline-delimited tokens (confirmed against `/tmp/gre_p6.bin`).
+
+### R6.1 — Rewrite `_parse_line_items` for real token-per-line format
+- [x] Locate `"Bienes por transportar:"` section anchor in full text
+- [x] Skip column header tokens by anchoring on the `"SUNAT"` sentinel (last header token)
+- [x] Group subsequent tokens as 6-token repeating value blocks: `[desc, codigo(digits), unidad(UoM), N°(int), indicator, cantidad(decimal)]`
+- [x] Add unit normalisation: `TONELADAS→TN`, `KILOGRAMOS→KG`, `UNIDAD→UND`, etc.
+- [x] Add `_ITEMS_END_RE` module-level constant for end markers (`Indicador de traslado` / `Datos del traslado` / `Peso Bruto`)
+- [x] Verify against `/tmp/gre_p6.bin`: `cantidad=0.192`, `unidad=TN`, `desc='BARRA A A615-G60 3/8" X 9M'`, `codigo='407797'`
+
+### R6.2 — Fetch resilience: higher timeout + exponential-backoff retry
+- [x] Raise default `timeout_s` from 10 s → 30 s (module constant `_DEFAULT_TIMEOUT_S`)
+- [x] Add `_MAX_RETRIES=3` and `_BACKOFF_BASE=1.0` module constants
+- [x] `_download_httpx`: retry loop on `httpx.TimeoutException` with `wait = _BACKOFF_BASE * (attempt + 1)` seconds; log each attempt; final give-up after all attempts exhausted
+
+### R6.3 — Unit tests for new parser
+- [x] Update `_make_sample_sunat_pdf_text()` fixture to real token-per-line format (no slashes)
+- [x] Update `test_parse_line_items_sample_text`: assert `unidad=="TN"` (was `"TONELADAS"`)
+- [x] Add `_make_multi_item_sunat_pdf_text()` with 2 items (TONELADAS + KILOGRAMOS)
+- [x] Add `test_parse_line_items_multi_item`: assert 2 items with correct units and quantities
+- [x] Add `test_parse_line_items_missing_section_returns_empty`
+- [x] 587 unit tests pass (baseline 585 + 2 new)
 - [x] Unit tests updated: `ExtractionError` propagation tests → graceful degradation tests

@@ -35,6 +35,14 @@ class GuiaContributionResponse(BaseModel):
     identity_source: Literal["qr", "ocr_fallback"] = Field(
         description="How the guía identity was determined."
     )
+    # Rev-3 D5 (REC-C07): year_inferred provenance flag.
+    year_inferred: bool = Field(
+        default=False,
+        description=(
+            "True when the year component of this guía's reception date was reconstructed "
+            "via bounded inference (EXT-021), not read directly from vision output."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +123,15 @@ class ReconciliationRowResponse(BaseModel):
     guias: list[GuiaContributionResponse] = Field(
         default_factory=list,
         description="Per-guía contributions to this reconciliation group.",
+    )
+    # Rev-3 D5 (REC-C07): advisory flag — true when any contributing guía used
+    # year inference.  Does NOT affect MATCH/MISMATCH; transparency signal only.
+    any_year_inferred: bool = Field(
+        default=False,
+        description=(
+            "True when at least one contributing guía's reception-date year was "
+            "reconstructed via bounded inference (EXT-021). Advisory only."
+        ),
     )
 
 

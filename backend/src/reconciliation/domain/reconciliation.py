@@ -122,6 +122,8 @@ class ReconciliationService:
                     unidad=key.unidad,
                     confidence=g.identity_confidence,
                     identity_source=g.identity_source,
+                    # Rev-3 D5 (REC-C07): propagate year_inferred provenance.
+                    year_inferred=g.year_inferred,
                 )
                 for g, total_qty in contrib_map.values()
             ]

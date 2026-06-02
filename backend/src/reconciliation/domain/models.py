@@ -55,6 +55,9 @@ class GuiaContribution(BaseModel):
     Carries the unit so contributions can be mapped to the correct
     ``(registro, fecha, material_canonical, unidad)`` group without cross-unit
     conversion (domain invariant: units are summed independently).
+
+    Rev-3 (D5 / REC-C07): ``year_inferred`` propagates from the source
+    ``GuiaDeRemision.year_inferred`` flag.  ``False`` by default (backward compat).
     """
 
     guia_id: str
@@ -63,6 +66,9 @@ class GuiaContribution(BaseModel):
     unidad: str
     confidence: float
     identity_source: Literal["qr", "ocr_fallback"]
+    # Rev-3 D5: provenance flag — True when the year component of fecha was
+    # reconstructed via bounded inference (EXT-021), not read directly from vision.
+    year_inferred: bool = False
 
 
 class GuiaDeRemision(BaseModel):
@@ -75,6 +81,10 @@ class GuiaDeRemision(BaseModel):
     Rev-3 (D6): ``first_page`` is now ``int | None`` (default ``None``).
     ``None`` means "first page unknown"; ``0`` is the valid concrete page-0 index.
     Fix all ``!= 0`` sentinel idioms: use ``is not None`` instead.
+
+    Rev-3 (D5 / EXT-021): ``year_inferred`` records whether the year component
+    of ``fecha`` was reconstructed via bounded inference rather than read directly
+    from vision output.  ``False`` by default (backward compat, explicit vision read).
     """
 
     guia_id: str
@@ -91,6 +101,11 @@ class GuiaDeRemision(BaseModel):
     identity_confidence: float = 0.0
     identity_source: Literal["qr", "ocr_fallback"] = "ocr_fallback"
     first_page: int | None = None
+    # Rev-3 D5: True when the year was inferred via bounded inference (EXT-021).
+    year_inferred: bool = False
+    # Rev-3 D5: Raw string from VisionResult.raw; needed by _stage_normalize_dates
+    # to extract day/month when fecha is None (year missing in model output).
+    fecha_raw: str = ""
 
 
 class Registro(BaseModel):
@@ -149,13 +164,31 @@ class ReconciliationRow(BaseModel):
         """Derived from guias — MUST NOT be written directly (REC-C04, S1.6 invariant)."""
         return sum((g.cantidad for g in self.guias), start=Decimal(0))
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def any_year_inferred(self) -> bool:
+        """True when at least one contributing GuiaContribution has year_inferred=True.
+
+        Advisory flag (REC-C07 / D5): surfaces in the review UI and export as a
+        transparency signal for the engineer.  Does NOT affect MATCH/MISMATCH logic.
+        """
+        return any(g.year_inferred for g in self.guias)
+
 
 class VisionResult(BaseModel):
-    """Structured response from a VisionLLMPort date-extraction call."""
+    """Structured response from a VisionLLMPort date-extraction call.
+
+    Rev-3 (D5 / EXT-021): ``year_inferred`` is set to ``True`` by
+    ``_stage_normalize_dates`` AFTER vision returns, when the year component
+    was absent or low-confidence and was reconstructed via bounded inference.
+    Adapters always produce ``year_inferred=False`` (they read raw output only).
+    """
 
     date: date | None
     confidence: float
     raw: str
+    # Rev-3 D5: set to True by _stage_normalize_dates when the year was reconstructed.
+    year_inferred: bool = False
 
 
 class ReconciliationResult(BaseModel):

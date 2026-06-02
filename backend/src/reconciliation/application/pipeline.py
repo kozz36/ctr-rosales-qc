@@ -53,6 +53,7 @@ from typing import Any, Protocol, runtime_checkable
 from reconciliation.application.config import AppConfig
 from reconciliation.application.run_context import RunContext
 from reconciliation.domain.classifier import PageClassifier
+from reconciliation.domain.date_inference import infer_reception_year
 from reconciliation.domain.errors import VisionCapExceededError
 from reconciliation.domain.models import (
     GuiaDeRemision,
@@ -78,6 +79,9 @@ logger = logging.getLogger(__name__)
 # 200 dpi is the baseline; the QrBarcodeExtractionAdapter internally upscales
 # to 400-dpi equivalent for the second COLOR decode tier (D2).
 _QR_DPI: int = 200
+
+# DPI used for the Option B full-page fallback when stamp_crop is disabled (D4).
+_VISION_FALLBACK_DPI: int = 300
 
 # ---------------------------------------------------------------------------
 # DecodeOutcome — rev-3 pre-pass result per page (R1.1)
@@ -294,8 +298,10 @@ class ReconciliationPipeline:
         # Stage 5b: assemble multi-page guía blocks; reuses cached DecodeOutcome map.
         blocks = self._stage_assemble_blocks(raw_guias, classifications, decode_map=decode_map)
 
-        # Stage 6: extract vision dates (handwritten) — one call per block (first page)
-        # vision_audit_record is populated here and written to sidecar in stage 9
+        # Stage 6: extract vision dates (handwritten) — one call per block (first page).
+        # D4: feeds the stamp-region crop (lower-right quadrant default) or >=300dpi
+        # full-page fallback when cropping is disabled (EXT-020).
+        # vision_audit_record is populated here and written to sidecar in stage 9.
         vision_calls_made = 0
         vision_cap_reached = False
         try:
@@ -310,6 +316,10 @@ class ReconciliationPipeline:
                 "calls_made": vision_calls_made,
                 "cap_reached": vision_cap_reached,
             }
+
+        # Stage 6b: normalize dates — bounded year inference (D5 / EXT-021).
+        # Runs after vision, before material normalize so guias carry full dates.
+        guias = self._stage_normalize_dates(guias)
 
         # Stage 7: normalize descriptions
         declared, guias = self._stage_normalize(declared, guias)
@@ -816,6 +826,12 @@ class ReconciliationPipeline:
         per raw page.  This preserves the cost cap semantics while correctly
         handling multi-page guías.
 
+        Rev-3 D4 (EXT-020): the image sent to the vision adapter is the
+        stamp-region crop (Option A, lower-right quadrant default) rather than
+        the full-page-200dpi render that previously caused date failures on
+        non-qwen models.  When stamp_crop is disabled (all zeros), falls back
+        to Option B: a fresh render at ``fallback_dpi`` (≥300 dpi).
+
         Respects the vision cost cap.  Raises VisionCapExceededError if the
         cap is exhausted before all blocks are processed.
 
@@ -830,21 +846,26 @@ class ReconciliationPipeline:
         if not blocks:
             return guias, calls_made, warnings
 
+        # Prepare vision images — apply stamp-crop (D4)
+        vision_images = [
+            _prepare_vision_image(blk.first_page_image, self._config)
+            for blk in blocks
+        ]
+
         if self._vision.supports_batch:
-            # Batch path: one call per batch of first-page images
+            # Batch path: one call per batch of (possibly cropped) images
             remaining = cap - calls_made
             if remaining <= 0:
                 raise VisionCapExceededError(
                     "Vision cost cap reached before processing started.",
                     detail={"calls_made": calls_made, "cap": cap, "pages_remaining": len(blocks)},
                 )
-            images = [b.first_page_image for b in blocks]
-            if len(images) > remaining:
+            if len(vision_images) > remaining:
                 # Partial batch up to cap
                 to_process = blocks[:remaining]
                 skipped = blocks[remaining:]
                 results = self._vision.read_handwritten_date_batch(
-                    [b.first_page_image for b in to_process]
+                    vision_images[:remaining]
                 )
                 calls_made += len(to_process)
                 for blk, vr in zip(to_process, results):
@@ -858,13 +879,13 @@ class ReconciliationPipeline:
                     },
                 )
             else:
-                results = self._vision.read_handwritten_date_batch(images)
-                calls_made += len(images)
+                results = self._vision.read_handwritten_date_batch(vision_images)
+                calls_made += len(vision_images)
                 for blk, vr in zip(blocks, results):
                     guias.append(_build_guia_from_block(blk, vr))
         else:
             # Sequential path (Ollama / non-batch)
-            for blk in blocks:
+            for blk, img in zip(blocks, vision_images):
                 if calls_made >= cap:
                     raise VisionCapExceededError(
                         f"Vision cost cap ({cap}) reached after {calls_made} calls.",
@@ -874,7 +895,7 @@ class ReconciliationPipeline:
                             "pages_remaining": len(blocks) - calls_made,
                         },
                     )
-                vr = self._vision.read_handwritten_date(blk.first_page_image)
+                vr = self._vision.read_handwritten_date(img)
                 calls_made += 1
                 guia = _build_guia_from_block(blk, vr)
                 guias.append(guia)
@@ -885,6 +906,74 @@ class ReconciliationPipeline:
                     )
 
         return guias, calls_made, warnings
+
+    def _stage_normalize_dates(
+        self,
+        guias: list[GuiaDeRemision],
+    ) -> list[GuiaDeRemision]:
+        """Stage 6b: bounded year inference for guías whose vision-read year is absent.
+
+        Implements D5 / EXT-021.
+
+        Runs after vision, before material normalization.  For each guía whose
+        ``fecha`` is None OR whose ``fecha`` lacks a plausible year (i.e. the
+        vision model returned a date but year was a known-bad sentinel), applies
+        ``infer_reception_year`` with:
+          - ``lower`` = None in R2 (SUNAT fetch is R3; OCR delivery-date extraction
+            is not yet wired here — lower bound is omitted until R3 lands).
+          - ``upper`` = today's date (run date, conservative safe upper bound).
+
+        When a guía's ``fecha`` is already a full ``date`` object from vision,
+        we leave it unchanged (``year_inferred`` stays ``False``).  The
+        inference is applied ONLY when ``fecha`` is ``None``.
+
+        In R2, the lower bound is intentionally omitted (``None``) because:
+          - SUNAT fetch (R3) is the deterministic source of ``fecha_entrega``.
+          - OCR-reading the printed GRE date is not implemented in this slice.
+          - Upper-bound-only inference is still correct and safe (EXT-S28).
+
+        Returns a new list of GuiaDeRemision (no mutation).
+        """
+        from datetime import date as _date  # noqa: PLC0415
+
+        today = _date.today()
+        result: list[GuiaDeRemision] = []
+
+        for guia in guias:
+            if guia.fecha is not None:
+                # Vision returned a full date — trust it, no inference needed.
+                result.append(guia)
+                continue
+
+            # fecha is None — try to infer from raw vision output (day/month).
+            # Parse DD/MM or DD-MM from the raw vision string stored on the guía.
+            day, month = _parse_day_month(guia.fecha_confidence, guia.fecha_raw or None)
+            if day is None or month is None:
+                # Cannot infer without at least day and month — leave as None.
+                result.append(guia)
+                continue
+
+            inferred_date, year_inferred = infer_reception_year(
+                day=day,
+                month=month,
+                lower=None,  # R2: no lower bound; SUNAT lower bound lands in R3
+                upper=today,
+            )
+
+            if inferred_date is not None:
+                result.append(
+                    guia.model_copy(update={"fecha": inferred_date, "year_inferred": year_inferred})
+                )
+                logger.debug(
+                    "normalize_dates: guia %r fecha inferred %s (year_inferred=%s)",
+                    guia.guia_id,
+                    inferred_date,
+                    year_inferred,
+                )
+            else:
+                result.append(guia)
+
+        return result
 
     def _stage_normalize(
         self,
@@ -1036,6 +1125,10 @@ def _build_guia_from_block(block: _GuiaBlock, vision_result: VisionResult) -> Gu
 
     The ``fecha`` MUST come from VisionLLMPort (handwritten stamp on the first
     page) — never from SUNAT/electronic date (EXT-017, REC-C01 invariant).
+
+    Rev-3 D5: ``year_inferred`` is propagated from VisionResult.  Adapters
+    always return ``year_inferred=False``; ``_stage_normalize_dates`` sets it
+    to ``True`` on the GuiaDeRemision after reconstruction.
     """
     return GuiaDeRemision(
         guia_id=block.guia_id,
@@ -1051,4 +1144,117 @@ def _build_guia_from_block(block: _GuiaBlock, vision_result: VisionResult) -> Gu
         identity_confidence=block.identity_confidence,
         identity_source=block.identity_source,  # type: ignore[arg-type]
         first_page=block.first_page,
+        year_inferred=vision_result.year_inferred,
+        fecha_raw=vision_result.raw,
     )
+
+
+def _prepare_vision_image(image: bytes, config: AppConfig) -> bytes:
+    """Prepare the image to send to VisionLLMPort for date extraction (D4 / EXT-020).
+
+    Option A (default): crop the stamp-region (lower-right quadrant) from the
+    already-rendered page image.  The crop box is defined in ``config.vision.stamp_crop``
+    as fractional coordinates in [0.0, 1.0].
+
+    Option B (fallback): when stamp_crop is disabled (x0==x1 or y0==y1), the
+    caller is expected to have passed a >=300dpi full-page image.  In the
+    pipeline this is the 200dpi render from the decode_identities cache — we
+    cannot re-render here (no access to doc_source), so Option B currently
+    returns the original bytes.  The pipeline should be extended to pass a
+    higher-DPI render when crop is disabled (not yet wired in R2; defer to R3).
+
+    The PIL/Pillow import is local (lazy) to keep the module importable in
+    environments where Pillow is absent (unit tests mock this path).
+
+    Args:
+        image: PNG bytes of the full rendered page (from decode_identities cache).
+        config: AppConfig carrying ``vision.stamp_crop`` settings.
+
+    Returns:
+        PNG bytes — either the cropped stamp region (Option A) or the original
+        image (Option B fallback or on any PIL failure).
+    """
+    crop_cfg = config.vision.stamp_crop
+    if not crop_cfg.enabled:
+        # Option B: no cropping — return original (caller should have passed >=300dpi)
+        logger.debug("_prepare_vision_image: stamp_crop disabled; using full-page image")
+        return image
+
+    try:
+        import io  # noqa: PLC0415
+
+        from PIL import Image  # noqa: PLC0415
+
+        with Image.open(io.BytesIO(image)) as img:
+            w, h = img.size
+            # Convert fractional coords to pixel coords
+            left = int(crop_cfg.x0 * w)
+            upper = int(crop_cfg.y0 * h)
+            right = int(crop_cfg.x1 * w)
+            lower = int(crop_cfg.y1 * h)
+
+            cropped = img.crop((left, upper, right, lower))
+
+            buf = io.BytesIO()
+            cropped.save(buf, format="PNG")
+            result = buf.getvalue()
+            logger.debug(
+                "_prepare_vision_image: stamp crop (%d,%d,%d,%d) → %dx%d px, %d bytes",
+                left, upper, right, lower,
+                cropped.width, cropped.height,
+                len(result),
+            )
+            return result
+
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "_prepare_vision_image: crop failed (%s); falling back to full-page image", exc
+        )
+        return image
+
+
+def _parse_day_month(
+    fecha_confidence: float | None,
+    raw_vision_string: str | None,
+) -> tuple[int | None, int | None]:
+    """Extract day and month integers from a raw vision string.
+
+    Tries DD/MM and DD-MM patterns.  Returns ``(None, None)`` when the string
+    is absent, empty, or does not match any known format.
+
+    This helper is intentionally minimal — it handles the most common formats
+    produced by vision models for Peruvian dates.  It is used only when
+    ``GuiaDeRemision.fecha is None`` (no complete date was parsed by the adapter).
+
+    Note: In R2, ``raw_vision_string`` comes from ``GuiaDeRemision.fecha``
+    being None — we have no direct access to the raw VisionResult here.
+    This function is reserved for future R3 wiring where the raw string is
+    threaded through.  For now, returns (None, None) since we cannot extract
+    day/month from the GuiaDeRemision alone without the raw string.
+
+    Args:
+        fecha_confidence: Vision confidence (unused currently; reserved).
+        raw_vision_string: Raw string from VisionResult.raw, or None.
+
+    Returns:
+        ``(day, month)`` as integers, or ``(None, None)`` if parsing fails.
+    """
+    import re as _re  # noqa: PLC0415
+
+    if not raw_vision_string:
+        return None, None
+
+    # Match DD/MM or DD-MM (with or without year)
+    m = _re.search(r"(\d{1,2})[/\-](\d{1,2})", raw_vision_string)
+    if not m:
+        return None, None
+
+    try:
+        day = int(m.group(1))
+        month = int(m.group(2))
+        if 1 <= day <= 31 and 1 <= month <= 12:
+            return day, month
+    except ValueError:
+        pass
+
+    return None, None

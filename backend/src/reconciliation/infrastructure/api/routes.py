@@ -81,7 +81,10 @@ AppConfigDep = Annotated[Any, Depends(_get_config)]
 
 
 def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
-    """Convert a domain ReconciliationRow to the API DTO (rev-2: includes guias[])."""
+    """Convert a domain ReconciliationRow to the API DTO (rev-2: includes guias[]).
+
+    Rev-3 D5 (REC-C07): maps year_inferred + any_year_inferred provenance fields.
+    """
     guia_responses = [
         GuiaContributionResponse(
             guia_id=g.guia_id,
@@ -90,6 +93,7 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
             unidad=g.unidad,
             confidence=g.confidence,
             identity_source=g.identity_source,
+            year_inferred=g.year_inferred,
         )
         for g in row.guias
     ]
@@ -107,6 +111,7 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
         min_confidence=row.min_confidence,
         requires_review=row.requires_review,
         guias=guia_responses,
+        any_year_inferred=row.any_year_inferred,
     )
 
 

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import csv
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 from typing import Final, Literal
 
@@ -48,6 +47,8 @@ _COLUMNS: Final[list[str]] = [
     "Estado",
     "Confianza mín",
     "Páginas origen",
+    # Rev-3 D5 (REC-C07): advisory year-inference flag (EXT-021).
+    "Año inferido",
 ]
 
 # Status → fill colour (ARGB)
@@ -69,12 +70,14 @@ _HEADER_FONT_COLOUR: Final[str] = "FFFFFFFF"
 
 
 def _row_to_values(row: ReconciliationRow) -> list[object]:
-    """Serialise a ReconciliationRow to 10 ordered cell values."""
+    """Serialise a ReconciliationRow to 11 ordered cell values (rev-3: +Año inferido)."""
     fecha_str = row.fecha.isoformat() if isinstance(row.fecha, date) else (row.fecha or "")
     pages_str = ", ".join(str(p) for p in sorted(row.source_pages)) if row.source_pages else ""
     conf_str = (
         f"{row.min_confidence:.2f}" if row.min_confidence is not None else ""
     )
+    # Rev-3 D5: advisory year-inference flag (REC-C07).
+    any_year_inferred_str = "Sí" if row.any_year_inferred else ""
     return [
         row.registro,
         fecha_str,
@@ -86,6 +89,7 @@ def _row_to_values(row: ReconciliationRow) -> list[object]:
         row.status,
         conf_str,
         pages_str,
+        any_year_inferred_str,
     ]
 
 

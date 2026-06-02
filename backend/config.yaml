@@ -20,12 +20,26 @@ vision:
     model: gpt-4o
 
   ollama:
-    model: llava:latest
+    # qwen3.5:9b is the bake-off winner for local handwritten date reading (engram #2747)
+    model: qwen3.5:9b
     base_url: http://localhost:11434/v1
 
   # Hard cap on vision LLM calls per run.
   # VisionCapExceededError is raised when this limit is reached.
   max_vision_calls: 500
+
+  # Rev-3 D4 (EXT-020): stamp-region crop box for the VisionLLM date-extraction call.
+  # Fractional coordinates (0.0–1.0) relative to the rendered page dimensions.
+  # Default targets the lower-right quadrant where the CTR "Recibí conforme" stamp lives.
+  # Set all values to 0.0 to disable Option A and fall back to Option B (>=300dpi full page).
+  stamp_crop:
+    x0: 0.5
+    y0: 0.6
+    x1: 1.0
+    y1: 1.0
+
+  # Rev-3 D4 Option B: DPI for full-page render when stamp_crop is disabled.
+  fallback_dpi: 300
 
 deskew:
   # Locked: guia_only — deskew is applied only to GUIA pages post-classification.

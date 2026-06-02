@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-import yaml
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
@@ -23,7 +22,6 @@ from pydantic_settings import (
     SettingsConfigDict,
     YamlConfigSettingsSource,
 )
-
 
 # ---------------------------------------------------------------------------
 # Sub-config blocks
@@ -39,6 +37,32 @@ class VisionProviderConfig(BaseSettings):
     base_url: str | None = None
     # api_key is env-only; never serialise to disk
     api_key: str | None = Field(default=None, exclude=True)
+
+
+class StampCropConfig(BaseSettings):
+    """Stamp-region crop box for the VisionLLMPort date-extraction call (D4 / EXT-020).
+
+    Defines a fractional crop box ``(x0, y0, x1, y1)`` relative to the full
+    rendered page dimensions (values in [0.0, 1.0]).  The default targets the
+    lower-right quadrant where the CTR "Recibí conforme" stamp is located.
+
+    Set all four values to ``0.0`` to disable cropping (falls back to Option B:
+    >=300 dpi full-page render).
+    """
+
+    model_config = SettingsConfigDict(extra="allow")
+
+    # Fractional coordinates relative to rendered page (0.0 – 1.0).
+    # Default: lower-right quadrant (x: 50–100%, y: 60–100%).
+    x0: float = Field(default=0.5, ge=0.0, le=1.0)
+    y0: float = Field(default=0.6, ge=0.0, le=1.0)
+    x1: float = Field(default=1.0, ge=0.0, le=1.0)
+    y1: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    @property
+    def enabled(self) -> bool:
+        """True when the crop box is non-degenerate (x1 > x0 and y1 > y0)."""
+        return self.x1 > self.x0 and self.y1 > self.y0
 
 
 class VisionConfig(BaseSettings):
@@ -65,9 +89,13 @@ class VisionConfig(BaseSettings):
         )
     )
     max_vision_calls: int = Field(default=500, gt=0)
+    # Rev-3 D4: stamp-crop config — lower-right quadrant default (EXT-020)
+    stamp_crop: StampCropConfig = Field(default_factory=StampCropConfig)
+    # Rev-3 D4 Option B: DPI for full-page fallback when stamp_crop is disabled
+    fallback_dpi: int = Field(default=300, gt=0)
 
     @model_validator(mode="after")
-    def _inject_env_api_keys(self) -> "VisionConfig":
+    def _inject_env_api_keys(self) -> VisionConfig:
         """Pull per-provider api_key from env if not already set via settings."""
         env_keys = {
             "anthropic": "ANTHROPIC_API_KEY",
@@ -146,7 +174,7 @@ class AppConfig(BaseSettings):
     output_dir: Path = Field(default=Path("runs"))
 
     @classmethod
-    def from_yaml(cls, path: Path | str | None = None) -> "AppConfig":
+    def from_yaml(cls, path: Path | str | None = None) -> AppConfig:
         """Load config from a YAML file, then apply env overrides on top.
 
         Priority order (highest → lowest):

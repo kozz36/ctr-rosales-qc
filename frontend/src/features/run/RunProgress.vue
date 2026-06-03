@@ -234,11 +234,14 @@ const elapsedFormatted = computed(() => formatDuration(elapsedSeconds.value))
 
 /**
  * ETA = elapsed * (100 - percent) / percent.
- * Only computed when percent >= 1 to avoid wild / infinite estimates.
+ * Only computed when percent >= 5 so the running average has enough signal —
+ * below that the estimate is wildly inflated (at 1% it is elapsed * 99).
  */
+const ETA_MIN_PERCENT = 5
+
 const etaFormatted = computed<string | null>(() => {
   const pct = progressPercent.value
-  if (pct < 1) return null
+  if (pct < ETA_MIN_PERCENT) return null
   const eta = Math.round(elapsedSeconds.value * (100 - pct) / pct)
   return formatDuration(eta)
 })

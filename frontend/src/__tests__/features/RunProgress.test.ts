@@ -15,8 +15,8 @@
  *  - Indeterminate fallback: no aria-valuenow when progress is null
  *  - Stage label and item counts render from progress
  *  - Elapsed time formatted from started_at (fake timers)
- *  - ETA appears only when percent >= 1 and is labeled "estimado"
- *  - ETA hidden when percent is 0
+ *  - ETA appears only when percent >= 5 and is labeled "estimado"
+ *  - ETA hidden when percent is 0 or below the 5% floor (inflated-estimate guard)
  *  - Status transitions (review/error) still emit completed/failed
  *
  * TanStack Query useRunStatus is mocked to return controlled data.
@@ -294,7 +294,29 @@ describe('RunProgress', () => {
     expect(elapsed.text()).toMatch(/\d+m \d+s transcurrido/)
   })
 
-  it('ETA appears when percent >= 1 and is labeled "estimado"', async () => {
+  it('ETA is hidden below the 5% floor (inflated-estimate guard)', async () => {
+    const startedAt = new Date(Date.now() - 5_000).toISOString()
+    setMockStatus('processing', {
+      started_at: startedAt,
+      progress: {
+        stage_label: 'Decodificando identidades',
+        stage_index: 1,
+        stage_total: 5,
+        item_done: 1,
+        item_total: 50,
+        percent: 2,
+      },
+    })
+    const wrapper = buildWrapper()
+    await flushPromises()
+
+    vi.advanceTimersByTime(1000)
+    await flushPromises()
+
+    expect(wrapper.find('.run-progress__eta').exists()).toBe(false)
+  })
+
+  it('ETA appears when percent >= 5 and is labeled "estimado"', async () => {
     const startedAt = new Date(Date.now() - 60_000).toISOString()
     setMockStatus('processing', {
       started_at: startedAt,

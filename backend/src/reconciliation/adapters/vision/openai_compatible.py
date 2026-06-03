@@ -117,12 +117,29 @@ def _parse_vision_json(raw: str) -> VisionResult:
     return VisionResult(date=parsed_date, confidence=confidence, raw=raw)
 
 
-def _build_messages(image: bytes, hint: str | None = None) -> list[dict[str, Any]]:
-    """Construct the chat messages payload for a single image."""
+def _build_messages(
+    image: bytes,
+    hint: str | None = None,
+    disable_thinking: bool = False,
+) -> list[dict[str, Any]]:
+    """Construct the chat messages payload for a single image.
+
+    Args:
+        image: PNG bytes.
+        hint: Optional context text appended to the user message.
+        disable_thinking: When True, appends the literal token ``/no_think`` to
+            the user message.  This is the Qwen convention for disabling the
+            model's extended-thinking (<think>…</think>) phase via the
+            OpenAI-compatible/Ollama path.  The token must appear in the user
+            message text (not extra_body) because the Ollama chat-template
+            processes it from the message content, not from extra parameters.
+    """
     b64 = base64.b64encode(image).decode("ascii")
     user_text = "Extract the handwritten date from this image."
     if hint:
         user_text += f" Context hint: {hint}"
+    if disable_thinking:
+        user_text += " /no_think"
     return [
         {
             "role": "system",
@@ -164,8 +181,12 @@ class OpenAICompatibleVisionAdapter:
         timeout: Per-request timeout in seconds applied to both the OpenAI
                  client constructor (socket-level) and each
                  ``chat.completions.create()`` call (belt-and-suspenders so a
-                 stalled read fails fast).  Default 90 s — matches
-                 ``VisionConfig.timeout_s``.
+                 stalled read fails fast).  Default 30 s — normal no-think
+                 calls complete in 2-3 s; 30 s bounds worst-case stalls without
+                 retry amplification.
+        disable_thinking: When True, appends ``/no_think`` to the user message
+                          so Qwen3.5 skips its extended-thinking phase.  Safe
+                          no-op for non-Qwen models.
         client: Injected ``openai.OpenAI`` instance for testing.  When
                 provided, the lazy-import path is skipped entirely.
     """
@@ -177,7 +198,8 @@ class OpenAICompatibleVisionAdapter:
         api_key: str | None = None,
         max_tokens: int = 4096,
         supports_batch: bool = True,
-        timeout: float = 90.0,
+        timeout: float = 30.0,
+        disable_thinking: bool = False,
         client: object | None = None,
     ) -> None:
         self._model = model
@@ -186,6 +208,7 @@ class OpenAICompatibleVisionAdapter:
         self._max_tokens = max_tokens
         self.supports_batch = supports_batch
         self._timeout = timeout
+        self._disable_thinking = disable_thinking
         self._client = client
         # R10.6: per-instance token-consumption meter (CONT-S08)
         self._meter = _TokenMeter()
@@ -215,7 +238,7 @@ class OpenAICompatibleVisionAdapter:
         """
         try:
             client = self._get_client()
-            messages = _build_messages(image, hint)
+            messages = _build_messages(image, hint, self._disable_thinking)
 
             response = client.chat.completions.create(  # type: ignore[union-attr]
                 model=self._model,
@@ -281,9 +304,9 @@ class OpenAICompatibleVisionAdapter:
 
         ``timeout`` bounds the socket-level wait so a stalled ESTABLISHED
         connection fails after ``self._timeout`` seconds instead of waiting
-        for the SDK default (~600 s).  ``max_retries=2`` bounds retry
-        amplification: a transient failure retries twice, but a persistent
-        stall does not multiply the timeout unbounded.
+        for the SDK default (~600 s).  ``max_retries=0`` disables SDK-level
+        retries: a persistent stall must not multiply the timeout budget;
+        degrade-and-continue (fecha=None, confidence=0) is the recovery path.
         """
         if self._client is not None:
             return self._client
@@ -292,7 +315,7 @@ class OpenAICompatibleVisionAdapter:
 
         kwargs: dict[str, Any] = {
             "timeout": self._timeout,
-            "max_retries": 2,
+            "max_retries": 0,
         }
         if self._api_key is not None:
             kwargs["api_key"] = self._api_key

@@ -112,10 +112,16 @@ class VisionConfig(BaseSettings):
     max_tokens: int = Field(default=640, gt=0)
     # Request timeout for OpenAI-compatible adapters (openai + ollama providers).
     # A stalled cloud socket (ESTABLISHED but no bytes) would hang indefinitely with the
-    # SDK default (~600s + unbounded retries).  Normal 397b-cloud calls take 8-16s;
-    # 90s provides safe headroom while bounding the worst-case hang to one timeout window.
+    # SDK default (~600s + unbounded retries).  Normal no-think calls finish in 2-3s;
+    # 30s bounds the worst-case hang to one timeout window without retry amplification.
     # Env: RECONCILIATION__VISION__TIMEOUT_S
-    timeout_s: float = Field(default=90.0, gt=0)
+    timeout_s: float = Field(default=30.0, gt=0)
+    # When True, appends /no_think to the user message so Qwen3.5 (and compatible
+    # models served via Ollama's OpenAI-compat API) skips its <think> phase.
+    # The literal token /no_think in the user message is the Qwen convention for
+    # disabling extended thinking via the OpenAI-compatible/Ollama path.
+    # Env: RECONCILIATION__VISION__DISABLE_THINKING
+    disable_thinking: bool = Field(default=False)
 
     @model_validator(mode="after")
     def _inject_env_api_keys(self) -> VisionConfig:

@@ -116,9 +116,9 @@ class TestVisionConfig:
         with pytest.raises(Exception):
             VisionConfig(max_vision_calls=0)
 
-    def test_timeout_s_default_is_90(self) -> None:
+    def test_timeout_s_default_is_30(self) -> None:
         v = VisionConfig()
-        assert v.timeout_s == pytest.approx(90.0)
+        assert v.timeout_s == pytest.approx(30.0)
 
     def test_timeout_s_custom_value(self) -> None:
         v = VisionConfig(timeout_s=30.0)
@@ -132,6 +132,32 @@ class TestVisionConfig:
         monkeypatch.setenv("RECONCILIATION__VISION__TIMEOUT_S", "45.0")
         cfg = AppConfig()
         assert cfg.vision.timeout_s == pytest.approx(45.0)
+
+    def test_timeout_s_default_is_30(self) -> None:
+        """timeout_s must default to 30.0 — fast-fail for stalled cloud calls."""
+        v = VisionConfig()
+        assert v.timeout_s == pytest.approx(30.0)
+
+    def test_disable_thinking_default_is_false(self) -> None:
+        """disable_thinking must default to False (no change to baseline behaviour)."""
+        v = VisionConfig()
+        assert v.disable_thinking is False
+
+    def test_disable_thinking_env_override_true(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RECONCILIATION__VISION__DISABLE_THINKING=true activates /no_think path."""
+        monkeypatch.setenv("RECONCILIATION__VISION__DISABLE_THINKING", "true")
+        cfg = AppConfig()
+        assert cfg.vision.disable_thinking is True
+
+    def test_disable_thinking_env_override_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RECONCILIATION__VISION__DISABLE_THINKING=false keeps default off."""
+        monkeypatch.setenv("RECONCILIATION__VISION__DISABLE_THINKING", "false")
+        cfg = AppConfig()
+        assert cfg.vision.disable_thinking is False
 
 
 # ---------------------------------------------------------------------------

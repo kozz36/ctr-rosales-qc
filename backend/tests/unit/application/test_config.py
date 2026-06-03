@@ -138,10 +138,12 @@ class TestVisionConfig:
         v = VisionConfig()
         assert v.timeout_s == pytest.approx(30.0)
 
-    def test_disable_thinking_default_is_false(self) -> None:
-        """disable_thinking must default to False (no change to baseline behaviour)."""
+    def test_disable_thinking_default_is_true(self) -> None:
+        """disable_thinking defaults to True — disabling <think> improves OCR/vision
+        captures (cross-project evidence) and cuts ~12s/call qwen3.5 thinking latency.
+        """
         v = VisionConfig()
-        assert v.disable_thinking is False
+        assert v.disable_thinking is True
 
     def test_disable_thinking_env_override_true(
         self, monkeypatch: pytest.MonkeyPatch

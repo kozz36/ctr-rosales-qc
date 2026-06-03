@@ -43,6 +43,9 @@ services:
       RECONCILIATION__VISION__OLLAMA__BASE_URL: "${OLLAMA_BASE_URL:-http://localhost:11434/v1}"
       # max_tokens: 640 sits in the 512-768 range — survives the <think> phase
       RECONCILIATION__VISION__MAX_TOKENS: "640"
+      # disable_thinking: default ON — /no_think improves OCR/vision capture quality
+      # and removes the ~12s/call qwen3.5 thinking phase. Set "false" to re-enable <think>.
+      RECONCILIATION__VISION__DISABLE_THINKING: "true"
       # Protocolo crop: calibrated (0.60,0.14,1.00,0.22) — targets Registro N° + Fecha rows only.
       # Excludes printed template revision date (Rev:02 Fecha:08/09/2025). R10.9 calibrated.
       RECONCILIATION__VISION__PROTOCOLO_CROP__X0: "0.60"

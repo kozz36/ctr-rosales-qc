@@ -1284,12 +1284,16 @@ class ReconciliationPipeline:
         result: list[GuiaDeRemision] = []
 
         for guia in guias:
-            # Extract day/month from raw vision string — this is ALWAYS the trusted source.
-            # Even when vision returned a full date (guia.fecha is not None), we use only
-            # the day/month from guia.fecha_raw (or from guia.fecha itself as fallback).
-            raw_str = guia.fecha_raw or (
+            # Extract day/month for the bounded year reconstruction. W-1 / C2-B:
+            # prefer the already-parsed ``guia.fecha`` so the full vision JSON in
+            # ``guia.fecha_raw`` (e.g. ``{"date": "2026-11-05", ...}``) cannot be
+            # mis-parsed — the loose regex grabbed the ISO ``MM-DD`` slice and SWAPPED
+            # day/month for any true date with day <= 12, corrupting the guía reception
+            # date and faking R9 divergences on correctly-filed guías (mirrors the
+            # declared-side fix in ``_stage_extract_declared_date``).
+            raw_str = (
                 guia.fecha.strftime("%d/%m/%Y") if guia.fecha is not None else None
-            )
+            ) or guia.fecha_raw
             day, month = _parse_day_month(guia.fecha_confidence, raw_str)
 
             if day is None or month is None:

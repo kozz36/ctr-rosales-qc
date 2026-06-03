@@ -93,18 +93,32 @@ deadline** (48bb268, confirmed firing live), paddle-free container + `ocr.enable
 
 ### §follow-ups — post-merge SDD slices (deferred)
 
-These are NOT blockers for push; they are the next SDD changes after merge:
+These are NOT blockers for push; they are the next SDD changes **after PR + merge**
+(user decision 2026-06-03):
 
-- **disable_thinking (perf)**: `VisionConfig.disable_thinking` defaults `false` and is NOT
-  set in `docker-compose.yml` → `qwen3.5:397b-cloud` runs with `<think>` blocks (~12s/call),
-  compounding slowness under KI-2. Lever: `RECONCILIATION__VISION__DISABLE_THINKING=true`.
-  Tradeoff: may reduce handwritten-date read accuracy — A/B test before enabling in prod.
+- **Reception-date floor = guía delivery date (DOMAIN RULE, MUST)**: the vision-read reception
+  date can **never be before the guía's SUNAT delivery date** (`fecha_entrega`). If OCR/vision
+  reads a date **earlier** than the guía's `fecha_entrega`, **use `fecha_entrega` as the
+  fallback** and raise a non-blocking **"verify" WARNING** (flag `requires_review`). Physical
+  invariant: goods cannot be received before they are delivered. Today `fecha_entrega` is only
+  the **year**-inference lower bound (`pipeline.py:1308 lower = official.fecha_entrega`,
+  `infer_reception_year`); extend it to a **full day-month floor** on the resolved date for both
+  the guía stamp read and (where applicable) the Protocolo reception date.
+- **disable_thinking by default (DECISION — do it)**: set `VisionConfig.disable_thinking`
+  default to `true` (and `RECONCILIATION__VISION__DISABLE_THINKING=true` in compose). The user
+  confirms from other projects that **disabling `<think>` improves OCR/vision captures** (not
+  just speed) — a decision, not an A/B experiment. `qwen3.5:397b-cloud` otherwise spends
+  ~12s/call in `<think>`.
+- **`.env.example` (config delivery)**: write a complete `.env.example` at the repo root with
+  every overridable setting documented (compose interpolation `OLLAMA_BASE_URL` / `OLLAMA_MODEL`
+  + the `RECONCILIATION__*` app config incl. `DISABLE_THINKING`); the user copies it to `.env`.
+  Note: the agent's Write/Bash to `.env` is permission-blocked, so `.env.example` is the channel.
 - **Determinate progress bar (UX)**: current pipeline progressbar is indeterminate. Add
   stage+count reporting in `GET /runs/{id}` + a determinate frontend bar with ETA for
   operator monitoring.
 - **Date-read variance (verify)**: a visual run read Registro 232 declared fecha as 2026-05-26
-  vs the smoke run's 2026-05-28 — likely cloud-vision non-determinism on the handwritten day.
-  Confirm it's natural variance, not residual mass-false-divergence from a code path.
+  vs the smoke run's 2026-05-28 — likely cloud-vision non-determinism on the handwritten day;
+  the reception-date floor rule above should largely neutralize its downstream effect.
 
 ### §infra — how to run the faithful e2e in the r10 container
 

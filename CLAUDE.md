@@ -58,13 +58,24 @@ Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
 
 ## Status & next steps
 
-Backend complete + e2e-validated (455 tests). Frontend complete (85 tests). A design rev-2
-delta (QR identity tier + guía-granularity review) is specced and ready. **Resume at the
-spec-delta slice** — see `docs/HANDOFF.md` §3 for the exact ordered steps.
+**R8** (canonical material matching), **R9** (handwritten-Protocolo-date authority +
+fecha-divergence review), and **r10** (paddle-free containerized cloud-vision verification)
+are implemented + committed on `feat/rev2-identity-domain` (NOT pushed). 766 backend + 188
+frontend unit tests green. **Resume per `docs/HANDOFF.md` §3 REVISED**: sdd-verify →
+judgment-day (fixes `§known-open-rev3b` KI-1..KI-4) → archive → visual validation (now LAST)
+→ push. The full-pipeline faithful e2e (R8 MATCH #4252=4.124 TN + R9 divergence) is the
+trusted gate and is pending a run where the cloud-vision/SUNAT services are not throttled.
+
+`ocr.enabled=false` is a config escape hatch (NullOcrExtractor → ZERO paddle) for machines
+where the paddle runtime is broken; SUNAT then supplies quantities. Vision can run local
+(Ollama) or cloud (Ollama-cloud `qwen3.5:397b-cloud`, openai-compatible base_url) — config
+only, never a vendor binding.
 
 ## Map
 
-- `docs/HANDOFF.md` — resume-here guide (read first).
-- `docs/DECISIONS.md` — every decision + audit finding (engram mirror).
+- `docs/HANDOFF.md` — resume-here guide (read first; §3 REVISED + §known-open-rev3b + §infra).
+- `docs/DECISIONS.md` — every decision + audit finding (engram mirror; §dates, §rev-3 R8/R9).
+- `docs/MATERIAL-MATCHING.md` — R8 canonical-key domain reference.
 - `docs/ARCHITECTURE.md` — folder layout, pipeline, how to run.
-- `openspec/changes/material-reconciliation/` — proposal, specs, design (rev-2 §A–F), tasks, state.
+- `backend/Dockerfile` + `docker-compose.yml` + `Makefile` — r10 containerized verification.
+- `openspec/changes/{material-reconciliation,r8-material-matching,r9-fecha-divergence-review,r10-containerized-verification}/`.

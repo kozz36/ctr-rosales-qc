@@ -94,7 +94,12 @@ deadline** (48bb268, confirmed firing live), paddle-free container + `ocr.enable
 ### §follow-ups — post-merge SDD slices (deferred)
 
 These are NOT blockers for push; they are the next SDD changes **after PR + merge**
-(user decision 2026-06-03):
+(user decision 2026-06-03).
+
+> **Validation policy (CLAUDE.md SA-5):** after implementing each follow-up below, run a
+> **visual e2e check against the running app** (Playwright MCP) proving the feature works —
+> per feature, or concatenating features in one flow (upload → review → the feature). A green
+> unit suite is NOT sufficient to mark a follow-up done.
 
 - **Reception-date floor = guía delivery date (DOMAIN RULE, MUST)**: the vision-read reception
   date can **never be before the guía's SUNAT delivery date** (`fecha_entrega`). If OCR/vision

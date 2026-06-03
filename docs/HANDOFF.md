@@ -77,9 +77,9 @@ The code is correct where tested; these are the open items, NOT regressions. Ver
 already: vision read-timeout (6f188c3), max_retries=0 (4a135ad), **hard per-call wall-clock
 deadline** (48bb268, confirmed firing live), paddle-free container + `ocr.enabled` (1a7ef2b).
 
-- **KI-1 — VisionCapExceededError crashes the run.** When `vision.max_vision_calls` is hit,
-  `pipeline._stage_extract_vision` RAISES instead of degrading gracefully (stop calling vision,
-  leave remaining `fecha=None`/flagged). Fix: degrade, don't crash.
+- **KI-1 — VisionCapExceededError crashes the run. [FIXED — ba3b0c5]** When
+  `vision.max_vision_calls` was hit, `pipeline._stage_extract_vision` RAISED instead of degrading.
+  Now it degrades gracefully (stops calling vision, leaves remaining `fecha=None`/flagged); no raise.
 - **KI-2 — Cloud vision throttling.** `qwen3.5:397b-cloud` (Ollama cloud) throttles the
   pipeline's rapid sequential calls → every call >25s under load (isolated calls are 5-9s).
   Fix: add inter-call pacing (like SUNAT) and/or a local fallback. This is why the e2e didn't

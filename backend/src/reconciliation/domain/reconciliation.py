@@ -21,6 +21,7 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import NamedTuple
 
+from reconciliation.domain.date_ceiling import apply_reception_ceiling
 from reconciliation.domain.date_divergence import check_fecha_divergence
 from reconciliation.domain.material_key import MatchMethod
 from reconciliation.domain.models import (
@@ -238,6 +239,31 @@ class ReconciliationService:
                 row_requires_review = True
             # R9b: delivery-floor flag OR-sets requires_review (mirrors fecha_divergence).
             if any(c.delivery_floor_applied for c in contributions):
+                row_requires_review = True
+
+            # Reception-ceiling: apply AFTER divergence check (CRITICAL SEQUENCING).
+            # The divergence check above already ran on the ORIGINAL guía fecha so a
+            # "guía later than Protocolo" case is already tagged fecha_divergence=True.
+            # Now clamp any contribution whose fecha exceeds the Protocolo ceiling to
+            # the ceiling date and set reception_ceiling_applied=True.
+            # INVARIANT: clamping updates only fecha + reception_ceiling_applied —
+            # the group key (registro, material_canonical, unidad), status, delta,
+            # and summed_qty are NEVER touched (fecha is NOT a grouping axis).
+            contributions = [
+                c.model_copy(
+                    update={
+                        "fecha": clamped,
+                        "reception_ceiling_applied": was_clamped,
+                    }
+                )
+                if was_clamped
+                else c
+                for c in contributions
+                for clamped, was_clamped in (
+                    apply_reception_ceiling(c.fecha, row_declared_authoritative),  # type: ignore[arg-type]
+                )
+            ]
+            if any(c.reception_ceiling_applied for c in contributions):
                 row_requires_review = True
 
             if declared_qty is None:

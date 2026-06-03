@@ -68,6 +68,16 @@ class GuiaContributionResponse(BaseModel):
             "Advisory only; does not affect MATCH/MISMATCH logic."
         ),
     )
+    # Reception-ceiling side-channel — mirrors delivery_floor_applied.
+    reception_ceiling_applied: bool = Field(
+        default=False,
+        description=(
+            "True when this guía's reception date was clamped to the Protocolo "
+            "declared date upper ceiling (Registro.fecha_authoritative). "
+            "The ceiling is the symmetric upper bound to the delivery-floor lower bound. "
+            "Advisory only; does not affect MATCH/MISMATCH logic."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +230,15 @@ class ReconciliationRowResponse(BaseModel):
             "True when at least one contributing guía had its reception date floored "
             "to the SUNAT fecha_entrega lower bound "
             "(group-level roll-up of guias[*].delivery_floor_applied). Advisory only."
+        ),
+    )
+    # Reception-ceiling group-level indicator (mirrors has_delivery_floor).
+    has_reception_ceiling: bool = Field(
+        default=False,
+        description=(
+            "True when at least one contributing guía had its reception date clamped "
+            "to the Protocolo declared date upper ceiling "
+            "(group-level roll-up of guias[*].reception_ceiling_applied). Advisory only."
         ),
     )
 

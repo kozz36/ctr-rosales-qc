@@ -85,6 +85,11 @@ class GuiaContribution(BaseModel):
     # date was adjusted to the SUNAT fecha_entrega lower floor (apply_delivery_floor).
     # Mirrors the year_inferred pattern (rev-3 D5).  False by default (backward compat).
     delivery_floor_applied: bool = False
+    # Reception-ceiling side-channel — True when the guía's reception date was
+    # clamped to the Protocolo declared date upper ceiling (apply_reception_ceiling).
+    # The ceiling is the symmetric upper bound to the delivery-floor lower bound.
+    # Mirrors the delivery_floor_applied pattern.  False by default (backward compat).
+    reception_ceiling_applied: bool = False
 
 
 class GuiaDeRemision(BaseModel):
@@ -247,6 +252,17 @@ class ReconciliationRow(BaseModel):
         Advisory side-channel — does NOT affect MATCH/MISMATCH/delta logic.
         """
         return any(g.delivery_floor_applied for g in self.guias)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def has_reception_ceiling(self) -> bool:
+        """True when at least one contributing guía had its reception date clamped.
+
+        Reception-ceiling: group-level indicator mirroring ``has_delivery_floor``.
+        The ceiling is the Protocolo declared date upper bound (límite máximo).
+        Advisory side-channel — does NOT affect MATCH/MISMATCH/delta logic.
+        """
+        return any(g.reception_ceiling_applied for g in self.guias)
 
 
 class VisionResult(BaseModel):

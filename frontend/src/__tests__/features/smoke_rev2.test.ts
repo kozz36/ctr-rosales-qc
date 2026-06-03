@@ -102,6 +102,8 @@ const { MOCK_TABLE_DATA, MOCK_STATUS } = vi.hoisted(() => {
     vision_calls_made: 5,
     warnings: [],
     error: null,
+    started_at: null,
+    progress: null,
   }
 
   return { MOCK_TABLE_DATA, MOCK_STATUS }

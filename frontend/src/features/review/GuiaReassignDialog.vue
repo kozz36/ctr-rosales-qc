@@ -67,7 +67,7 @@
               :aria-required="true"
               :aria-invalid="!!errors.registro"
               :aria-describedby="errors.registro ? registroErrorId : undefined"
-              placeholder="ej: 4251"
+              placeholder="ej: 232"
               autocomplete="off"
               spellcheck="false"
             />

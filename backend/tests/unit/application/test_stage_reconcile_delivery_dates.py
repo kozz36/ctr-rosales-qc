@@ -1,12 +1,15 @@
 """Tests for the delivery_dates wiring in ``_stage_reconcile``.
 
-``_stage_reconcile`` must build ``delivery_dates`` (``guia_id`` → SUNAT
-``fecha_entrega``) from the ``sunat_fetch_map`` and forward it to
-``ReconciliationService.reconcile`` so the crossed-bounds anomaly
-(``fecha_entrega > Protocolo``) can be detected.
+Single-source-of-truth refactor (R9b review-path fix): ``_stage_reconcile`` now
+builds ``delivery_dates`` (``guia_id`` → SUNAT ``fecha_entrega``) from the GUÍAS
+THEMSELVES (``guia.fecha_entrega``, persisted by ``_stage_normalize_dates``) — NOT
+from a separate ``sunat_fetch_map`` param.  This lets the crossed-bounds bracket
+survive the cache round-trip and the ReviewService re-reconcile.  It is forwarded
+to ``ReconciliationService.reconcile`` so the crossed-bounds anomaly
+(``fecha_entrega > Protocolo``) is detected.
 
-Backward-compat: when ``sunat_fetch_map`` is None/empty, ``delivery_dates`` is
-an empty dict (graceful — reconcile behaves identically to the current branch).
+Backward-compat: a guía with ``fecha_entrega is None`` contributes nothing →
+``delivery_dates`` stays empty (graceful — air-gap default).
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ from reconciliation.application.pipeline import ReconciliationPipeline
 from reconciliation.domain.models import (
     GuiaDeRemision,
     MaterialLine,
-    OfficialGre,
     Registro,
     VisionResult,
 )
@@ -91,25 +93,14 @@ def _line() -> MaterialLine:
     )
 
 
-def _official_gre(guia_id: str, fecha_entrega: date | None) -> OfficialGre:
-    parts = guia_id.split("-", 1)
-    return OfficialGre(
-        guia_id=guia_id,
-        serie=parts[0],
-        numero=parts[1] if len(parts) > 1 else "",
-        ruc_emisor="12345678901",
-        ruc_receptor="98765432100",
-        fecha_entrega=fecha_entrega,
-    )
-
-
-def _guia(guia_id: str) -> GuiaDeRemision:
+def _guia(guia_id: str, fecha_entrega: date | None = None) -> GuiaDeRemision:
     return GuiaDeRemision(
         guia_id=guia_id,
         registro="232",
         fecha=date(2026, 6, 10),
         lines=[_line()],
         source_pages=[0],
+        fecha_entrega=fecha_entrega,
     )
 
 
@@ -122,30 +113,28 @@ def _registro() -> Registro:
 
 
 def test_stage_reconcile_builds_and_passes_delivery_dates() -> None:
-    """fecha_entrega from sunat_fetch_map is forwarded as delivery_dates."""
+    """fecha_entrega carried on the guía is forwarded as delivery_dates."""
     spy = _SpyReconciler()
     pipe = _pipeline(spy)
     entrega = date(2026, 6, 5)
-    sunat_map = {"T009-0001": _official_gre("T009-0001", entrega)}
 
-    pipe._stage_reconcile([_registro()], [_guia("T009-0001")], sunat_fetch_map=sunat_map)
+    pipe._stage_reconcile([_registro()], [_guia("T009-0001", fecha_entrega=entrega)])
 
     assert spy.last_delivery_dates == {"T009-0001": entrega}
 
 
 def test_stage_reconcile_skips_none_fecha_entrega() -> None:
-    """OfficialGre with fecha_entrega=None is excluded from delivery_dates."""
+    """A guía with fecha_entrega=None is excluded from delivery_dates."""
     spy = _SpyReconciler()
     pipe = _pipeline(spy)
-    sunat_map = {"T009-0001": _official_gre("T009-0001", None)}
 
-    pipe._stage_reconcile([_registro()], [_guia("T009-0001")], sunat_fetch_map=sunat_map)
+    pipe._stage_reconcile([_registro()], [_guia("T009-0001", fecha_entrega=None)])
 
     assert spy.last_delivery_dates == {}
 
 
-def test_stage_reconcile_no_sunat_map_empty_delivery_dates() -> None:
-    """No sunat_fetch_map → delivery_dates is an empty dict (graceful)."""
+def test_stage_reconcile_no_fecha_entrega_empty_delivery_dates() -> None:
+    """No guía carries fecha_entrega → delivery_dates is an empty dict (graceful)."""
     spy = _SpyReconciler()
     pipe = _pipeline(spy)
 

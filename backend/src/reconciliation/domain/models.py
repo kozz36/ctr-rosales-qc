@@ -139,6 +139,10 @@ class GuiaDeRemision(BaseModel):
     # adjusted to the SUNAT fecha_entrega lower floor (apply_delivery_floor).
     # Mirrors the year_inferred pattern (rev-3 D5).  False by default (backward compat).
     delivery_floor_applied: bool = False
+    # R9b: SUNAT delivery date (OfficialGre.fecha_entrega) persisted ON the guía so the
+    # delivery floor / crossed-bounds bracket survives the extraction-cache round-trip and
+    # the ReviewService re-reconcile.  None = SUNAT off / unavailable (backward compat).
+    fecha_entrega: date | None = None
 
 
 class Registro(BaseModel):

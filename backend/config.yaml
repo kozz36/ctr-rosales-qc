@@ -25,7 +25,8 @@ vision:
     base_url: http://localhost:11434/v1
 
   # Hard cap on vision LLM calls per run.
-  # VisionCapExceededError is raised when this limit is reached.
+  # KI-1: on reaching this limit the run degrades gracefully — remaining items get
+  # fecha=None and are flagged requires_review, and the run completes (no exception).
   max_vision_calls: 500
 
   # Rev-3 D4 (EXT-020): stamp-region crop box for the VisionLLM date-extraction call.

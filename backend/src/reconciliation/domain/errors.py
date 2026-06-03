@@ -23,13 +23,6 @@ class ExtractionError(ReconciliationError):
     """Raised when a page cannot be extracted (OCR failure, empty result after deskew)."""
 
 
-class VisionCapExceededError(ReconciliationError):
-    """Raised when the vision LLM call budget is exhausted mid-run.
-
-    ``detail`` keys: ``calls_made``, ``cap``, ``pages_remaining``.
-    """
-
-
 class IdentityDecodeError(ReconciliationError):
     """Logged-only error for QR/barcode decode failures (rev-2, EXT-012).
 

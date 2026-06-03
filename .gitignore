@@ -43,3 +43,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# stray local-command transcript dumps (never commit)
+2026-*-local-command-*.txt

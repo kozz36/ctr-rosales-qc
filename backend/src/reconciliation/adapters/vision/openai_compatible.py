@@ -24,6 +24,7 @@ never raises from public methods.
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import dataclasses
 import json
 import logging
@@ -184,6 +185,15 @@ class OpenAICompatibleVisionAdapter:
                  stalled read fails fast).  Default 30 s — normal no-think
                  calls complete in 2-3 s; 30 s bounds worst-case stalls without
                  retry amplification.
+        deadline_s: Hard per-call wall-clock ceiling in seconds.  The
+                    ``chat.completions.create()`` call is submitted to a thread
+                    and ``future.result(timeout=deadline_s)`` is used to enforce
+                    this ceiling.  When a thinking-blowup cloud call trickles
+                    data slowly (keeping ``timeout`` from firing), this deadline
+                    still returns control to the pipeline within ``deadline_s``.
+                    The abandoned thread may keep running in the background —
+                    acceptable for a batch tool whose process exits after the
+                    run.  Default 20 s.
         disable_thinking: When True, appends ``/no_think`` to the user message
                           so Qwen3.5 skips its extended-thinking phase.  Safe
                           no-op for non-Qwen models.
@@ -199,6 +209,7 @@ class OpenAICompatibleVisionAdapter:
         max_tokens: int = 4096,
         supports_batch: bool = True,
         timeout: float = 30.0,
+        deadline_s: float = 20.0,
         disable_thinking: bool = False,
         client: object | None = None,
     ) -> None:
@@ -208,6 +219,7 @@ class OpenAICompatibleVisionAdapter:
         self._max_tokens = max_tokens
         self.supports_batch = supports_batch
         self._timeout = timeout
+        self._deadline = deadline_s
         self._disable_thinking = disable_thinking
         self._client = client
         # R10.6: per-instance token-consumption meter (CONT-S08)
@@ -240,12 +252,37 @@ class OpenAICompatibleVisionAdapter:
             client = self._get_client()
             messages = _build_messages(image, hint, self._disable_thinking)
 
-            response = client.chat.completions.create(  # type: ignore[union-attr]
-                model=self._model,
-                max_tokens=self._max_tokens,
-                messages=messages,  # type: ignore[arg-type]
-                timeout=self._timeout,
-            )
+            # Hard wall-clock deadline guard: submit the create() call to a
+            # thread and wait at most self._deadline seconds for it to finish.
+            # This is the ONLY reliable defence against thinking-blowup cloud
+            # calls that trickle data slowly — the httpx read-timeout (timeout_s)
+            # fires only when no bytes arrive between individual reads, so a
+            # streaming response that slowly emits tokens can stall the pipeline
+            # for minutes even with timeout_s=30.  future.result(timeout=) gives
+            # us a hard ceiling regardless of streaming behaviour.
+            # The abandoned thread may keep running in the background; that is
+            # acceptable for a batch tool (process exits after the run).
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                future = executor.submit(
+                    client.chat.completions.create,  # type: ignore[union-attr]
+                    model=self._model,
+                    max_tokens=self._max_tokens,
+                    messages=messages,
+                    timeout=self._timeout,
+                )
+                response = future.result(timeout=self._deadline)
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    "OpenAICompatibleVisionAdapter: vision call exceeded %.1fs wall-clock; "
+                    "degrading this page to no-date (flagged for review)",
+                    self._deadline,
+                )
+                raise  # re-raise so the outer except degrades gracefully
+            finally:
+                # Don't block on the abandoned thread — let the process reap it.
+                executor.shutdown(wait=False)
+
             # R10.6: record token consumption from the response usage field (CONT-S08)
             self._meter.record(getattr(response, "usage", None))
             logger.debug(

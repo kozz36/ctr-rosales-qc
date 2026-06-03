@@ -527,6 +527,28 @@ class TestVisionFactory:
         assert isinstance(adapter, OpenAICompatibleVisionAdapter)
         assert adapter._disable_thinking is False
 
+    def test_openai_adapter_receives_deadline_s_from_cfg(self) -> None:
+        """factory must route cfg.vision.deadline_s into the openai adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("openai")
+        cfg.vision.deadline_s = 15.0
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._deadline == pytest.approx(15.0)
+
+    def test_ollama_adapter_receives_deadline_s_from_cfg(self) -> None:
+        """factory must route cfg.vision.deadline_s into the ollama adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("ollama")
+        cfg.vision.deadline_s = 25.0
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._deadline == pytest.approx(25.0)
+
 
 # ---------------------------------------------------------------------------
 # OpenAICompatibleVisionAdapter — disable_thinking + max_retries=0
@@ -623,3 +645,68 @@ class TestOpenAICompatibleDisableThinking:
         user_content = user_msg["content"]
         text_block = next(c for c in user_content if c.get("type") == "text")
         assert "/no_think" not in text_block["text"]
+
+
+# ---------------------------------------------------------------------------
+# Hard wall-clock deadline (thinking-blowup guard)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAICompatibleVisionAdapterDeadline:
+    """Tests for the per-call wall-clock deadline that guards against thinking-blowup.
+
+    The deadline is implemented via concurrent.futures: the create() call is
+    submitted to a thread, then future.result(timeout=deadline_s) is called.
+    A TimeoutError causes the adapter to log a warning and degrade gracefully
+    (VisionResult date=None, confidence=0.0), exactly like any other exception.
+    """
+
+    def test_default_deadline_is_20(self) -> None:
+        adapter = OpenAICompatibleVisionAdapter()
+        assert adapter._deadline == pytest.approx(20.0)
+
+    def test_custom_deadline_stored(self) -> None:
+        adapter = OpenAICompatibleVisionAdapter(deadline_s=5.0)
+        assert adapter._deadline == pytest.approx(5.0)
+
+    def test_slow_create_degrades_within_deadline(self) -> None:
+        """A create() that sleeps longer than deadline_s must return the degraded
+        VisionResult fast (within ~2*deadline_s) — NOT after the full sleep duration.
+
+        This is the canonical proof that the hard deadline fires.
+        """
+        import time
+
+        DEADLINE = 0.5  # seconds — fast for CI
+        SLEEP = 5.0     # much longer than deadline; would stall the pipeline
+
+        client = MagicMock()
+
+        def slow_create(*args, **kwargs):  # type: ignore[no-untyped-def]
+            time.sleep(SLEEP)
+            return _make_openai_response('{"date": "2026-01-01", "confidence": 1.0}')
+
+        client.chat.completions.create.side_effect = slow_create
+
+        adapter = OpenAICompatibleVisionAdapter(deadline_s=DEADLINE, client=client)
+
+        start = time.monotonic()
+        result = adapter.read_handwritten_date(_make_png())
+        elapsed = time.monotonic() - start
+
+        # Must degrade — the sleep outlasted the deadline
+        assert result.date is None
+        assert result.confidence == pytest.approx(0.0)
+        # Must return well before the full SLEEP, but allow 2x deadline headroom for CI
+        assert elapsed < SLEEP / 2, f"took {elapsed:.2f}s — deadline did not fire"
+
+    def test_fast_create_returns_normal_result(self) -> None:
+        """A create() that returns immediately must NOT trigger the deadline path."""
+        client = MagicMock()
+        client.chat.completions.create.return_value = _make_openai_response(
+            '{"date": "2026-05-28", "confidence": 0.95}'
+        )
+        adapter = OpenAICompatibleVisionAdapter(deadline_s=0.5, client=client)
+        result = adapter.read_handwritten_date(_make_png())
+        assert result.date is not None
+        assert result.confidence == pytest.approx(0.95)

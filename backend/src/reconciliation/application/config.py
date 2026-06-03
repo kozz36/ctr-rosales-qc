@@ -116,6 +116,16 @@ class VisionConfig(BaseSettings):
     # 30s bounds the worst-case hang to one timeout window without retry amplification.
     # Env: RECONCILIATION__VISION__TIMEOUT_S
     timeout_s: float = Field(default=30.0, gt=0)
+    # Hard per-call wall-clock deadline (thinking-blowup guard).
+    # Unlike timeout_s (httpx read-timeout, fires only when no bytes arrive between reads),
+    # deadline_s bounds the TOTAL wall-clock time of the completions.create() call via
+    # concurrent.futures.Future.result(timeout=deadline_s).  This is the ONLY reliable
+    # client-side control when a cloud proxy ignores server-side num_predict / think:false
+    # and the model enters a thinking-blowup (1000–2300 completion tokens streamed slowly).
+    # Must be > timeout_s in normal usage (deadline is the ceiling; httpx is the secondary
+    # guard for truly stalled connections with zero bytes).
+    # Env: RECONCILIATION__VISION__DEADLINE_S
+    deadline_s: float = Field(default=20.0, gt=0)
     # When True, appends /no_think to the user message so Qwen3.5 (and compatible
     # models served via Ollama's OpenAI-compat API) skips its <think> phase.
     # The literal token /no_think in the user message is the Qwen convention for

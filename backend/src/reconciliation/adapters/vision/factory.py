@@ -71,6 +71,8 @@ def build_vision_adapter(cfg: "AppConfig") -> "VisionLLMPort":
             supports_batch=True,
             # Route timeout so a stalled cloud call fails fast (EXT-0XX / hang fix)
             timeout=cfg.vision.timeout_s,
+            # Hard per-call wall-clock deadline — guards against thinking-blowup
+            deadline_s=cfg.vision.deadline_s,
             # Route disable_thinking so /no_think is injected when configured
             disable_thinking=cfg.vision.disable_thinking,
         )
@@ -92,6 +94,8 @@ def build_vision_adapter(cfg: "AppConfig") -> "VisionLLMPort":
             supports_batch=False,
             # Route timeout so a stalled local call fails fast (EXT-0XX / hang fix)
             timeout=cfg.vision.timeout_s,
+            # Hard per-call wall-clock deadline — guards against thinking-blowup
+            deadline_s=cfg.vision.deadline_s,
             # Route disable_thinking so /no_think is injected when configured
             disable_thinking=cfg.vision.disable_thinking,
         )

@@ -344,6 +344,32 @@ class TestVisionMaxTokens:
             VisionConfig(max_tokens=0)
 
 
+# ---------------------------------------------------------------------------
+# deadline_s — per-call wall-clock hard deadline (thinking-blowup guard)
+# ---------------------------------------------------------------------------
+
+
+class TestVisionDeadlineS:
+    def test_deadline_s_default_is_20(self) -> None:
+        """deadline_s must default to 20.0 s — hard per-call ceiling."""
+        v = VisionConfig()
+        assert v.deadline_s == pytest.approx(20.0)
+
+    def test_deadline_s_custom_value(self) -> None:
+        v = VisionConfig(deadline_s=5.0)
+        assert v.deadline_s == pytest.approx(5.0)
+
+    def test_deadline_s_must_be_positive(self) -> None:
+        with pytest.raises(Exception):
+            VisionConfig(deadline_s=0)
+
+    def test_deadline_s_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """RECONCILIATION__VISION__DEADLINE_S env overrides default."""
+        monkeypatch.setenv("RECONCILIATION__VISION__DEADLINE_S", "10.0")
+        cfg = AppConfig()
+        assert cfg.vision.deadline_s == pytest.approx(10.0)
+
+
 class TestSunatCacheDir:
     def test_cache_dir_default_is_none(self) -> None:
         """R10.5: SunatConfig.cache_dir defaults to None (backward-compat)."""

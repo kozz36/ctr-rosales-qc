@@ -56,6 +56,59 @@ Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
 - Tooling: use `bat`/`rg`/`fd`/`eza`, not `cat`/`grep`/`find`/`ls`.
 - Before publishing/pushing: **judgment-day** (adversarial review) is a required gate.
 
+## Sub-agent discipline (orchestrator → implementation sub-agents)
+
+Adapted from cnsic-agent SA-rules. Apply to every delegated implementation/fix.
+
+- **SA-1 — Repeat critical instructions ×3.** Sub-agents drift; state each non-negotiable
+  (strict-TDD, the invariant at risk, "do NOT push") more than once in the prompt.
+- **SA-2 — Deviation → `status: partial`, never invent.** If a sub-agent hits an unauthorized
+  design decision or an ambiguity not covered by spec/skills, it STOPS and reports — it does NOT
+  improvise architecture or build something to fill the gap. **No build-for-the-sake-of-building.**
+- **SA-3 — Ship is orchestrator-only.** Push, PR, merge belong to the orchestrator. Implementation
+  sub-agents commit work-units but never push/PR. State this in every apply prompt.
+- **SA-5 — Visible-UX features require runtime validation before "done".** Green unit tests with
+  happy-path mocks prove signatures, NOT behavior. Any change to `frontend/src/**` or a
+  user-visible flow MUST be validated against the RUNNING app via Playwright MCP (upload → review →
+  the specific feature) before it is marked complete.
+- **SA-6 — Envelope vs reality.** After apply, the orchestrator runs `git diff --stat` and compares
+  claimed files/LOC vs actual; >20% drift is a process signal — re-audit.
+- **SA-7 — Invariants are injected, not assumed.** Every implementation sub-agent prompt MUST embed
+  the §Architecture + §Domain rules as hard anti-patterns (below) AND the relevant project skill
+  paths (`material-canonical-matching`, `reception-date-authority`). Pass paths, not summaries.
+
+## Architecture invariants — inject to every implementation sub-agent (auto-reject)
+
+Hard anti-pattern checklist the implementation sub-agent AND the reviewer enforce (mirror of
+§Architecture + §Domain rules):
+
+- **Domain purity** — no SDK/framework/IO import under `domain/` (proven: suite runs with
+  `anthropic` uninstalled). A heavy import there = auto-reject.
+- **Ports at the boundary** — `application/pipeline.py` imports ZERO concrete adapters; depends only
+  on Protocols + config/run_context. A concrete-adapter import in `application/` = auto-reject.
+- **Lazy heavy deps** — adapters import `paddleocr`/`anthropic`/`openai`/`pyzbar`/`zxing-cpp`/
+  `fitz`/`openpyxl` INSIDE methods, never at module top.
+- **Vision provider-agnostic** — never bind domain or pipeline to a vendor; selection is config
+  (`provider:`) behind `VisionLLMPort`.
+- **`fecha` is NEVER a grouping axis** — key is `(registro, material_canonical, unidad)`.
+- **Units never converted** (KG/TN/RD/Rollo summed independently). **Three identifiers never
+  confused** (`#4252` ≠ Registro N° ≠ QR `serie-numero`; group by Registro N°).
+- **Reconciliation is the validation gate** — mismatches/divergences are flagged `requires_review`,
+  NEVER auto-corrected. **Input PDF read-only**; isolated output dir per run; local-first.
+
+## Fix / Feature Discipline (mandatory — every implementation closes with)
+
+1. **Strict-TDD**: a failing test FIRST that would fail without the change (when touching `*.py` /
+   `frontend/src/**`); then green. Not required for docs/infra-only.
+2. **Real-data over mock theatre** — unit-green ≠ correct: the suite once passed while the pipeline
+   was broken (`docs/DECISIONS.md §audit`), and JD later found a totally-dead feature (guía
+   line-edit always HTTP 422) hiding behind a green suite. Pair happy-path mocks with a real-data
+   or runtime check; UI features → Playwright per **SA-5**.
+3. **Conventional commit** as reviewable work-units; **no AI attribution**.
+4. **judgment-day** before push for non-trivial code (mandatory gate); a single-pass second opinion
+   via the `ctr-reviewer` agent for lighter PRs where full dual-blind JD is overkill.
+5. Never mark a task done without 1–4.
+
 ## Status & next steps
 
 **Close-out COMPLETE — branch `feat/rev2-identity-domain` ready to push.** All gates passed:

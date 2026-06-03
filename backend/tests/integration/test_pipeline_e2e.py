@@ -549,7 +549,14 @@ class TestUnclassifiedSurfaces:
     def test_unclassified_pages_in_classifications(
         self, pdf_source, digital_extractor, page_to_registro_map, tmp_path
     ) -> None:
-        """Real PDF has many scanned guía pages → they appear as UNCLASSIFIED in digital-only run."""
+        """Real PDF scanned guía pages are surfaced (never silently dropped).
+
+        Since dddd458 (hybrid OR-gate classifier + decode_identities pre-pass),
+        scanned guía pages are classified as GUIA via LOCAL QR decode, which is
+        independent of OCR — so a digital-only run surfaces them as GUIA rather
+        than leaving them UNCLASSIFIED. The invariant this test guards is that no
+        page is silently dropped and every page carries a known classification.
+        """
         _extractor = CompositeExtractionAdapter.__new__(CompositeExtractionAdapter)
         _extractor._declared_adapter = digital_extractor
         _extractor._ocr_adapter = FakePrintedTableAdapter()
@@ -571,9 +578,15 @@ class TestUnclassifiedSurfaces:
         )
 
         kinds = {c.kind for c in result.classifications}
-        # In a digital-only run without OCR, scanned pages should be UNCLASSIFIED
-        assert "UNCLASSIFIED" in kinds, (
-            "Expected at least some UNCLASSIFIED pages in digital-only run"
+        # Every classification must carry a recognized label — nothing escapes the
+        # known set (the real "no silent drop" invariant).
+        assert kinds <= {"DECLARED", "GUIA", "IGNORED", "UNCLASSIFIED"}, (
+            f"Unexpected classification kinds: {kinds}"
+        )
+        # Scanned guía pages are classified as GUIA via local QR decode (dddd458),
+        # not left UNCLASSIFIED, even in this OCR-free run.
+        assert "GUIA" in kinds, (
+            "Expected scanned guía pages to be classified as GUIA via QR decode"
         )
 
         # No page is silently dropped: total must equal page count

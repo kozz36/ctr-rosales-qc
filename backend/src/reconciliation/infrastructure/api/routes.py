@@ -103,6 +103,8 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
             delivery_floor_applied=g.delivery_floor_applied,
             # Reception-ceiling side-channel.
             reception_ceiling_applied=g.reception_ceiling_applied,
+            # Crossed-bounds anomaly side-channel.
+            delivery_after_protocolo=g.delivery_after_protocolo,
         )
         for g in row.guias
     ]
@@ -125,6 +127,7 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
         has_fecha_divergence=row.has_fecha_divergence,  # R9.6 (FDR-008)
         has_delivery_floor=row.has_delivery_floor,  # R9b
         has_reception_ceiling=row.has_reception_ceiling,  # reception-ceiling
+        has_delivery_after_protocolo=row.has_delivery_after_protocolo,  # crossed-bounds
     )
 
 

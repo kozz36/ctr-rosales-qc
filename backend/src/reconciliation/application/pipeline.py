@@ -58,7 +58,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from datetime import date
 
 
 def asyncio_available() -> bool:
@@ -397,7 +400,7 @@ class ReconciliationPipeline:
             )
 
         # Stage 8: reconcile
-        rows = self._stage_reconcile(declared, guias)
+        rows = self._stage_reconcile(declared, guias, sunat_fetch_map=sunat_fetch_map)
 
         # Stage 9: persist sidecar (also appends the vision audit record)
         self._stage_persist(ctx, classifications, declared, guias, rows)
@@ -1572,9 +1575,22 @@ class ReconciliationPipeline:
         self,
         declared: list[Registro],
         guias: list[GuiaDeRemision],
+        sunat_fetch_map: dict[str, Any] | None = None,
     ) -> list[ReconciliationRow]:
-        """Stage 8: group + compare via ReconciliationService."""
-        rows = self._reconciler.reconcile(declared, guias)
+        """Stage 8: group + compare via ReconciliationService.
+
+        Builds ``delivery_dates`` (``guia_id`` → SUNAT ``fecha_entrega``) from the
+        ``sunat_fetch_map`` and forwards it to the reconciler so the crossed-bounds
+        anomaly (``fecha_entrega > Protocolo ceiling``) can be detected and the
+        ceiling clamp suppressed (never push a date below the delivery floor).
+        Empty/None map → empty ``delivery_dates`` (graceful — air-gap default).
+        """
+        delivery_dates: dict[str, date] = {
+            gid: gre.fecha_entrega
+            for gid, gre in (sunat_fetch_map or {}).items()
+            if getattr(gre, "fecha_entrega", None) is not None
+        }
+        rows = self._reconciler.reconcile(declared, guias, delivery_dates=delivery_dates)
         logger.debug("reconcile: %d output rows", len(rows))
         return rows
 

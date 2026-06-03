@@ -18,6 +18,7 @@ Invariants (spec REC-001 through REC-010):
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date
 from decimal import Decimal
 from typing import NamedTuple
 
@@ -63,6 +64,7 @@ class ReconciliationService:
         self,
         declared: list[Registro],
         guias: list[GuiaDeRemision],
+        delivery_dates: dict[str, date] | None = None,
     ) -> list[ReconciliationRow]:
         """Produce one ``ReconciliationRow`` per (registro, material, unidad) group.
 
@@ -75,6 +77,13 @@ class ReconciliationService:
         Args:
             declared: List of declared-side Registro objects (trusted digital source).
             guias: List of guías extracted from scanned PDF pages.
+            delivery_dates: Optional map of ``guia_id`` → SUNAT ``fecha_entrega``
+                (the delivery-floor lower bound).  When provided, a guía whose
+                ``fecha_entrega`` is LATER than the Protocolo authoritative ceiling
+                hits the crossed-bounds anomaly: the ceiling clamp is NOT applied
+                (never push the date below the delivery floor) and the guía is
+                flagged ``delivery_after_protocolo``.  ``None`` (default) preserves
+                the existing ceiling behaviour byte-for-byte.
 
         Returns:
             One row per unique group key.  Every key present in either ``declared``
@@ -249,21 +258,42 @@ class ReconciliationService:
             # INVARIANT: clamping updates only fecha + reception_ceiling_applied —
             # the group key (registro, material_canonical, unidad), status, delta,
             # and summed_qty are NEVER touched (fecha is NOT a grouping axis).
-            contributions = [
-                c.model_copy(
-                    update={
-                        "fecha": clamped,
-                        "reception_ceiling_applied": was_clamped,
-                    }
-                )
-                if was_clamped
-                else c
-                for c in contributions
-                for clamped, was_clamped in (
-                    apply_reception_ceiling(c.fecha, row_declared_authoritative),  # type: ignore[arg-type]
-                )
-            ]
+            #
+            # CROSSED-BOUNDS ANOMALY: when the guía's SUNAT delivery date
+            # (fecha_entrega, the lower floor) is LATER than the Protocolo ceiling,
+            # applying the ceiling would push the resolved date BELOW the delivery
+            # floor — a violation of the floor invariant (reception can NEVER be
+            # earlier than fecha_entrega).  ``fecha_entrega > Protocolo`` is itself a
+            # physical impossibility (goods delivered after the declared reception;
+            # likely a human error building the Protocolo).  Policy: do NOT clamp;
+            # keep the floored read date unchanged (it is >= fecha_entrega); flag the
+            # distinct anomaly ``delivery_after_protocolo`` + requires_review.  The R9
+            # fecha_divergence computed above stays set (it is NOT masked).
+            _delivery = delivery_dates or {}
+            _ceiled: list[GuiaContribution] = []
+            for c in contributions:
+                lower = _delivery.get(c.guia_id)
+                ceiling = row_declared_authoritative
+                if lower is not None and ceiling is not None and lower > ceiling:
+                    # Crossed bounds — do NOT clamp; flag the anomaly.
+                    _ceiled.append(c.model_copy(update={"delivery_after_protocolo": True}))
+                    continue
+                clamped, was_clamped = apply_reception_ceiling(c.fecha, ceiling)  # type: ignore[arg-type]
+                if was_clamped:
+                    _ceiled.append(
+                        c.model_copy(
+                            update={
+                                "fecha": clamped,
+                                "reception_ceiling_applied": True,
+                            }
+                        )
+                    )
+                else:
+                    _ceiled.append(c)
+            contributions = _ceiled
             if any(c.reception_ceiling_applied for c in contributions):
+                row_requires_review = True
+            if any(c.delivery_after_protocolo for c in contributions):
                 row_requires_review = True
 
             if declared_qty is None:

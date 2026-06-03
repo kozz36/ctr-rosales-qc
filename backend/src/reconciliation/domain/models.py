@@ -90,6 +90,14 @@ class GuiaContribution(BaseModel):
     # The ceiling is the symmetric upper bound to the delivery-floor lower bound.
     # Mirrors the delivery_floor_applied pattern.  False by default (backward compat).
     reception_ceiling_applied: bool = False
+    # Crossed-bounds anomaly side-channel — True when the SUNAT delivery date
+    # (fecha_entrega) is LATER than the Protocolo authoritative ceiling, a physical
+    # impossibility (goods cannot be delivered after the declared reception; likely a
+    # human error building the Protocolo).  In this case the ceiling clamp is NOT
+    # applied — the resolved (floored) read date is kept >= fecha_entrega and the guía
+    # is flagged requires_review with this distinct anomaly signal.  Mirrors the
+    # reception_ceiling_applied pattern.  False by default (backward compat).
+    delivery_after_protocolo: bool = False
 
 
 class GuiaDeRemision(BaseModel):
@@ -263,6 +271,18 @@ class ReconciliationRow(BaseModel):
         Advisory side-channel — does NOT affect MATCH/MISMATCH/delta logic.
         """
         return any(g.reception_ceiling_applied for g in self.guias)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def has_delivery_after_protocolo(self) -> bool:
+        """True when at least one contributing guía hit the crossed-bounds anomaly.
+
+        Crossed bounds: SUNAT fecha_entrega > Protocolo ceiling (impossible —
+        delivery after declared reception).  Group-level indicator mirroring
+        ``has_reception_ceiling``.  Advisory side-channel — does NOT affect
+        MATCH/MISMATCH/delta logic.
+        """
+        return any(g.delivery_after_protocolo for g in self.guias)
 
 
 class VisionResult(BaseModel):

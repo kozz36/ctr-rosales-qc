@@ -34,8 +34,13 @@ services:
       RECONCILIATION__OCR__ENABLED: "false"
       # Vision: cloud via host Ollama (host networking → localhost reaches the daemon)
       RECONCILIATION__VISION__PROVIDER: "ollama"
-      RECONCILIATION__VISION__OLLAMA__MODEL: "qwen3.5:397b-cloud"
-      RECONCILIATION__VISION__OLLAMA__BASE_URL: "http://localhost:11434/v1"
+      # Model + base URL are env-configurable (12-factor) so each host can point at
+      # its own Ollama port / model without editing this file. Defaults assume the
+      # standard Ollama port (11434) and the cloud model. Override via .env or shell:
+      #   OLLAMA_BASE_URL=http://localhost:11435/v1   (this host binds 11435)
+      #   OLLAMA_MODEL=qwen3.5:9b                      (local-vision fallback)
+      RECONCILIATION__VISION__OLLAMA__MODEL: "${OLLAMA_MODEL:-qwen3.5:397b-cloud}"
+      RECONCILIATION__VISION__OLLAMA__BASE_URL: "${OLLAMA_BASE_URL:-http://localhost:11434/v1}"
       # max_tokens: 640 sits in the 512-768 range — survives the <think> phase
       RECONCILIATION__VISION__MAX_TOKENS: "640"
       # Protocolo crop: calibrated (0.60,0.14,1.00,0.22) — targets Registro N° + Fecha rows only.

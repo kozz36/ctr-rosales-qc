@@ -65,6 +65,7 @@ function makeGuia(overrides: Partial<GuiaContributionResponse> = {}): GuiaContri
 const DEFAULT_PROPS = {
   guias: [makeGuia()],
   runId: 'run-abc',
+  materialCanonical: 'BARRA A615 G60 1/2" 9M',
 }
 
 // ---------------------------------------------------------------------------
@@ -155,16 +156,22 @@ describe('GuiaDrillDown', () => {
     expect(wrapper.find('.guia-drill-down__input').exists()).toBe(true)
   })
 
-  it('committing cantidad edit calls useGuiaLineEdit mutation with guia_id and new value', async () => {
+  it('committing cantidad edit calls useGuiaLineEdit mutation with guia_id, material_canonical selector and new value (B1)', async () => {
     const wrapper = mount(GuiaDrillDown, { props: DEFAULT_PROPS })
     await wrapper.find('.guia-drill-down__editable-cell').trigger('click')
     const input = wrapper.find('.guia-drill-down__input')
     await input.setValue('999')
     await input.trigger('keydown', { key: 'Enter' })
     expect(mockMutate).toHaveBeenCalledOnce()
-    const callArg = mockMutate.mock.calls[0][0] as { guiaId: string; body: { cantidad: number } }
+    const callArg = mockMutate.mock.calls[0][0] as {
+      guiaId: string
+      body: { cantidad: number; material_canonical: string | null; line_index: number | null }
+    }
     expect(callArg.guiaId).toBe('T009-0741770')
     expect(callArg.body.cantidad).toBe(999)
+    // B1: the body MUST carry a non-null selector so the backend can locate the line
+    // (it previously sent {line_index: null, material_canonical: null} → always 422).
+    expect(callArg.body.material_canonical).toBe('BARRA A615 G60 1/2" 9M')
   })
 
   it('canceling edit with Escape does not call mutation', async () => {

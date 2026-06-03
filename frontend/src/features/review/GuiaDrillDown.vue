@@ -152,6 +152,12 @@ const props = defineProps<{
   guias: GuiaContributionResponse[]
   /** Run ID needed for the PATCH /guias/{id}/lines mutation */
   runId: string
+  /**
+   * Canonical material key of the parent reconciliation row (B1). Sent as the
+   * line selector in the line-edit mutation so the backend can locate the line;
+   * without it the backend rejected every inline cantidad edit with HTTP 422.
+   */
+  materialCanonical: string
 }>()
 
 const emit = defineEmits<{
@@ -204,7 +210,13 @@ function commitEdit(guia: GuiaContributionResponse): void {
   }
   editingGuiaId.value = null
   mutate(
-    { guiaId: guia.guia_id, body: { line_index: null, material_canonical: null, cantidad: parsed } },
+    {
+      guiaId: guia.guia_id,
+      // B1: send the parent row's canonical material as the line selector. The
+      // backend matches by description_canonical and requires a non-null selector,
+      // otherwise it raises ValueError → 422 (dead inline-edit feature).
+      body: { line_index: null, material_canonical: props.materialCanonical, cantidad: parsed },
+    },
     {
       onSuccess: () => emit('rowUpdated'),
     },

@@ -124,6 +124,7 @@
     v-if="isExpanded && row.guias && row.guias.length > 0"
     :guias="row.guias"
     :run-id="runId"
+    :material-canonical="row.material_canonical"
     @reassign="onDrillDownReassign"
     @row-updated="emit('rowUpdated')"
   />

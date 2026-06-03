@@ -135,10 +135,19 @@ class TestR9ReconcilerDivergenceGate:
 
 
 class TestR9PipelineConfigGate:
-    def test_protocolo_crop_present_and_disabled_by_default(self) -> None:
+    def test_protocolo_crop_present_and_calibrated_enabled_by_default(self) -> None:
+        # R10.9 calibration: the Protocolo "Fecha:" crop is calibrated to the
+        # upper-right header (0.60, 0.14, 1.00, 0.22) so it targets only the
+        # Registro N° + handwritten Fecha rows. This is a non-degenerate box, so
+        # ``enabled`` is True by default (the reception-date-authority skill
+        # mandates this crop).
         cfg = AppConfig()
         assert isinstance(cfg.vision.protocolo_crop, StampCropConfig)
-        assert cfg.vision.protocolo_crop.enabled is False
+        assert cfg.vision.protocolo_crop.enabled is True
+        assert cfg.vision.protocolo_crop.x0 == 0.60
+        assert cfg.vision.protocolo_crop.y0 == 0.14
+        assert cfg.vision.protocolo_crop.x1 == 1.00
+        assert cfg.vision.protocolo_crop.y1 == 0.22
 
     def test_stamp_crop_unaffected(self) -> None:
         """No regression to the R7 guía stamp crop."""

@@ -4,8 +4,11 @@
 > original machine** and does NOT travel with the repo. This document (plus the other
 > files in `docs/`) is the versioned source of truth for continuing the work anywhere.
 
-Last session: **2026-06-02**. Rev-3 fully implemented (R1–R7, all 98 tasks complete). Branch
-`feat/rev2-identity-domain` — **NOT yet pushed**. **Resume at visual e2e validation**.
+Last session: **2026-06-02** (long session). Rev-3 + **R8 (canonical matching)** + **R9
+(fecha-divergence)** + **r10 (containerized cloud-vision verification)** all implemented +
+committed. Branch `feat/rev2-identity-domain` — **NOT yet pushed**. **Resume at §3 REVISED
+plan: sdd-verify → judgment-day (fixes the §known-open-rev3b issues) → archive → visual
+validation (now last).** The full e2e was blocked by transient external cloud/SUNAT throttling.
 
 ---
 
@@ -40,31 +43,64 @@ verify ⏳   judgment-day ⏳   archive ⏳
   degradation active — runs complete with OCR quantities empty + `_ocr_failed=True` warning.
   See `docs/DECISIONS.md` §rev-3 R6–R7.
 
-## 3. RESUME HERE — exact next steps (in order)
+## 3. RESUME HERE — REVISED plan (user, 2026-06-02 session close)
 
-All apply work is complete on branch `feat/rev2-identity-domain`. Do NOT push until the
-gates below pass.
+R8 (canonical matching), R9 (fecha-divergence), `ocr.enabled`, and r10 (containerized
+cloud-vision verification) are all IMPLEMENTED + COMMITTED on `feat/rev2-identity-domain`
+(NOT pushed). 766 backend + 188 frontend unit tests green (verified). The strategy CHANGED:
+**defer the visual validation to the very end (after archive), defer the known issues below
+to be fixed in the verify/JD fix phases, and drive the close-out as verify → JD → archive.**
 
-1. **Visual e2e validation** (Opus vision + Playwright MCP driving the running app).
-   Start both servers (`make dev` from repo root or `make run` in `backend/` + `npm run dev`
-   in `frontend/`). Verify: upload subset PDF → pipeline runs to status=review → reconciliation
-   table renders → drill-down, reassign, export work. This is the pre-verify gate.
+Run in THIS order next session:
 
-2. **Full-PDF run** (493 pages, registros 230–N). Required to confirm:
-   - MATCH rows appear (subset PDF declared side returns `material=None` — see §known-open).
-   - Stamp-crop upper-right works across all guía layouts (currently ~13/35 guías still
-     null fecha on the subset run).
-   - Quantities: either SUNAT enabled (`sunat.enabled=true` in config.yaml) or a working
-     paddle runtime (see §rev-3 R6–R7 in `docs/DECISIONS.md`).
+1. **sdd-verify** (full rev-3 + R8 + R9 + r10 vs spec/design/tasks). Surface the KNOWN ISSUES
+   below as findings so JD fixes them.
 
-3. **sdd-verify** — formal spec/design/tasks validation. Run after visual e2e passes.
+2. **judgment-day** (canonical: blind dual review → FIX → re-judge). MANDATORY pre-push gate.
+   Its fix phase MUST resolve the deferred KNOWN ISSUES (§known-open-rev3b).
 
-4. **judgment-day** — MANDATORY blind dual adversarial review + fix + re-judge before any push.
+3. **(within/after JD) the full-pipeline faithful e2e** — R8 MATCH (#4252 = 4.124 TN) +
+   R9 divergence — run in the r10 container (`make`/`docker compose`, see §infra below).
+   This is the trusted gate (HANDOFF §4). It was BLOCKED this session by transient external
+   throttling — retry in a quiet window and/or after the pacing fix (KI-2).
 
-5. **sdd-archive**.
+4. **sdd-archive**.
 
-6. **Push + PRs** (user-gated). The stacked-to-main chain is PR-12 → PR-13 → PR-14 →
-   PR-15 → PR-16 + R6/R7 commits. Do not push until judgment-day passes.
+5. **Visual validation** (Playwright MCP) — MOVED HERE, after archive. Drive the running app:
+   upload → review table → drill-down/reassign/export + the R9 red-highlight/page-ref UI.
+
+6. **Push + PRs** (user-gated). Do not push until JD passes.
+
+### §known-open-rev3b — deferred KNOWN ISSUES (fix in verify/JD fix phases)
+
+The code is correct where tested; these are the open items, NOT regressions. Verified-FIXED
+already: vision read-timeout (6f188c3), max_retries=0 (4a135ad), **hard per-call wall-clock
+deadline** (48bb268, confirmed firing live), paddle-free container + `ocr.enabled` (1a7ef2b).
+
+- **KI-1 — VisionCapExceededError crashes the run.** When `vision.max_vision_calls` is hit,
+  `pipeline._stage_extract_vision` RAISES instead of degrading gracefully (stop calling vision,
+  leave remaining `fecha=None`/flagged). Fix: degrade, don't crash.
+- **KI-2 — Cloud vision throttling.** `qwen3.5:397b-cloud` (Ollama cloud) throttles the
+  pipeline's rapid sequential calls → every call >25s under load (isolated calls are 5-9s).
+  Fix: add inter-call pacing (like SUNAT) and/or a local fallback. This is why the e2e didn't
+  complete this session (deadline correctly degraded all calls; nothing was a code bug).
+- **KI-3 — SUNAT subset re-fetch.** Intermittent `read operation timed out / retry` on the
+  subset's guías under load; cross-run cache only works via the container named volume.
+- **KI-4 — Full e2e not yet captured.** The end-to-end R8 MATCH + R9 divergence run has NOT
+  completed once (blocked by KI-2/KI-3). MUST pass before final "done" per §4.
+
+### §infra — how to run the faithful e2e in the r10 container
+
+- Image: `docker compose build backend` (target `test` = paddle-free + pytest + tests).
+- Networking: compose uses `network_mode: host` (Linux) so the container reaches host Ollama
+  at `localhost:11434` — `host.docker.internal` does NOT work on Linux (Ollama binds 127.0.0.1).
+- Run gates: `docker compose run --rm -e CTR_PDF_PATH=/data/input.pdf backend python -m pytest
+  tests/integration/test_pipeline_r8_gate.py::TestRealPDFGate
+  tests/integration/test_pipeline_r9_gate.py::TestR9RealPDFGate -p no:cacheprovider -v -s`.
+- Fast iteration: a 20-page section-1 subset is at `/tmp/ctr_section1.pdf` (mount it +
+  `-e CTR_PDF_PATH=/data/section1.pdf`). Quality timer: section-1 should finish < ~3 min;
+  if it drags to the 6-min cap, the cloud is throttled (KI-2).
+- Vision deadline: `RECONCILIATION__VISION__DEADLINE_S` (default 20s) hard-bounds each call.
 
 ### Runtime requirements for a real run
 

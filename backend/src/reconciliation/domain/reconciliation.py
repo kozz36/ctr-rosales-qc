@@ -152,6 +152,8 @@ class ReconciliationService:
                     # R9.4 (ADR-4): carry the guía's handwritten reception date for
                     # display and the day-month divergence compare.
                     fecha=g.fecha,
+                    # R9b: propagate delivery-floor side-channel (mirrors year_inferred).
+                    delivery_floor_applied=g.delivery_floor_applied,
                 )
                 for g, total_qty in contrib_map.values()
             ]
@@ -233,6 +235,9 @@ class ReconciliationService:
                 )
             ]
             if any(c.fecha_divergence for c in contributions):
+                row_requires_review = True
+            # R9b: delivery-floor flag OR-sets requires_review (mirrors fecha_divergence).
+            if any(c.delivery_floor_applied for c in contributions):
                 row_requires_review = True
 
             if declared_qty is None:

@@ -36,11 +36,23 @@ Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
   mismatches are flagged for human review, never auto-corrected.
 - **Reception-date authority** (rev-3 R9): the declared reception date is the **HANDWRITTEN
   `Fecha:` on the Protocolo de Recepción** (vision-read), linked to the Registro N° — NOT the
-  electronic `fecha_declarada` nor the GRE date. Guías should carry that same handwritten date.
-  A guía whose handwritten date **diverges** (compared by **day-month**; year is vision-unreliable
-  and reconstructed by bounded inference) is a **misfiled signal** → non-blocking no-match
-  **WARNING** that flags the guía `requires_review` with its **page number** and a **red highlight**
-  (individual or per-registro group) for human review + manual reassign. Never auto-corrected.
+  electronic `fecha_declarada` nor the GRE date. The Protocolo date is the **upper authority
+  (límite máximo)**: every guía in that Registro **should carry that same handwritten date**.
+  A guía whose handwritten date **diverges** — **earlier OR later**, compared by **day-month**;
+  year is vision-unreliable and reconstructed by bounded inference — is an **assembly error**
+  (whoever built the Protocolo misfiled the guía) → non-blocking **WARNING** that flags the guía
+  `requires_review` with its **page number** and a **red highlight** (individual or per-registro
+  group) so the operator can **report it or reassign the guía to the correct Registro**. Never
+  auto-corrected.
+- **Reception-date floor = guía SUNAT delivery date** (rev-3 R9b, MUST): a resolved reception date
+  can **NEVER be earlier than that guía's `fecha_entrega`** (SUNAT GRE delivery) — goods cannot be
+  received before they are delivered. If the resolved date falls before `fecha_entrega` (or cannot
+  be placed at/after it within the inference window), **fall back to `fecha_entrega`** AND raise a
+  non-blocking **verify WARNING** flagging the guía `requires_review`. This is the **lower bound**
+  paired with the Protocolo **upper authority** above; `fecha_entrega` was previously only the
+  year-inference lower bound (`infer_reception_year`), now a **full-date floor** on the resolved
+  value. Only active when SUNAT is enabled (off by default → no `fecha_entrega` → no floor; graceful).
+  Never auto-corrected beyond the physical-invariant floor; always flagged for human review.
 - **Three identifiers, don't confuse them**: Contents-ID `#4252` (section) ≠ Registro N° `232`
   (business key, group by this) ≠ QR `serie-numero` (deterministic guía id from rev-2).
 - Input PDF is **read-only**; each run writes its own isolated output dir. **Local-first**:

@@ -59,6 +59,15 @@ class GuiaContributionResponse(BaseModel):
         default=None,
         description="Divergence classification code, or null when not divergent.",
     )
+    # R9b: delivery-floor side-channel — mirrors the fecha_divergence pattern.
+    delivery_floor_applied: bool = Field(
+        default=False,
+        description=(
+            "True when this guía's resolved reception date was floored to the "
+            "SUNAT fecha_entrega lower bound (goods-before-delivery invariant, R9b). "
+            "Advisory only; does not affect MATCH/MISMATCH logic."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +172,15 @@ class ReconciliationRowResponse(BaseModel):
         description=(
             "True when at least one contributing guía has a fecha divergence "
             "(group-level roll-up of guias[*].fecha_divergence). Advisory only."
+        ),
+    )
+    # R9b: group-level delivery-floor indicator (mirrors has_fecha_divergence).
+    has_delivery_floor: bool = Field(
+        default=False,
+        description=(
+            "True when at least one contributing guía had its reception date floored "
+            "to the SUNAT fecha_entrega lower bound "
+            "(group-level roll-up of guias[*].delivery_floor_applied). Advisory only."
         ),
     )
 

@@ -53,6 +53,16 @@ Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
   year-inference lower bound (`infer_reception_year`), now a **full-date floor** on the resolved
   value. Only active when SUNAT is enabled (off by default → no `fecha_entrega` → no floor; graceful).
   Never auto-corrected beyond the physical-invariant floor; always flagged for human review.
+- **Reception-date ceiling = Protocolo date** (rev-3 R9c): the guía reception date should not EXCEED
+  the Registro's Protocolo authoritative date (the upper bound). When it does, clamp DOWN to the
+  Protocolo date (`domain/date_ceiling.py::apply_reception_ceiling`, applied in `reconcile` AFTER the
+  R9 divergence check so the divergence WARNING is **never masked**). **Crossed-bounds anomaly**: if
+  `fecha_entrega` (delivery floor) **>** Protocolo (ceiling) — physically impossible (goods delivered
+  after declared reception; likely a Protocolo-assembly human error) — **do NOT clamp** (never push
+  below the SUNAT delivery floor); keep the read date and flag the distinct `delivery_after_protocolo`
+  WARNING + `requires_review`. SUNAT `fecha_entrega` is **persisted on `GuiaDeRemision`** so the
+  `[floor, ceiling]` bracket survives the ReviewService re-reconcile (reassign/edit), not just the
+  pipeline. Floor + ceiling are an additive side-channel: NEVER touch the group key/status/delta/qty.
 - **Three identifiers, don't confuse them**: Contents-ID `#4252` (section) ≠ Registro N° `232`
   (business key, group by this) ≠ QR `serie-numero` (deterministic guía id from rev-2).
 - Input PDF is **read-only**; each run writes its own isolated output dir. **Local-first**:

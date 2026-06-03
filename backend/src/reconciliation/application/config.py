@@ -130,8 +130,11 @@ class VisionConfig(BaseSettings):
     # models served via Ollama's OpenAI-compat API) skips its <think> phase.
     # The literal token /no_think in the user message is the Qwen convention for
     # disabling extended thinking via the OpenAI-compatible/Ollama path.
+    # Defaults to True: disabling <think> improves OCR/vision capture quality
+    # (cross-project evidence) and removes the ~12s/call qwen3.5:397b-cloud thinking
+    # phase. Override per-machine with RECONCILIATION__VISION__DISABLE_THINKING=false.
     # Env: RECONCILIATION__VISION__DISABLE_THINKING
-    disable_thinking: bool = Field(default=False)
+    disable_thinking: bool = Field(default=True)
 
     @model_validator(mode="after")
     def _inject_env_api_keys(self) -> VisionConfig:

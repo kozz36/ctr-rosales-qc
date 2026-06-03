@@ -82,18 +82,22 @@ def _official_gre(guia_id: str, fecha_entrega: date) -> OfficialGre:
 
 
 class TestDeliveryFloorApplied:
-    def test_floor_applied_when_reception_before_entrega(self) -> None:
-        """R9b: vision date before fecha_entrega → floored to fecha_entrega + flag.
+    def test_floor_applied_via_rule2_inference_returns_none(self) -> None:
+        """R9b: floor activates through the Rule-2 path (inference→None → floor).
 
-        Scenario:
-          - guía vision read: 2026-05-10 (wrong year corrected → 2026-05-10)
-          - SUNAT fecha_entrega: 2026-05-20
-          - 2026-05-10 < 2026-05-20 → floor to 2026-05-20, delivery_floor_applied=True
+        FIX F1 (honest test): this exercises Rule 2, NOT Rule 3. ``infer_reception_year``
+        is called with the SAME ``lower=fecha_entrega`` and pre-filters candidates to
+        ``>= lower``. So the inferred date is NEVER ``< fecha_entrega`` — Rule 3 of
+        ``apply_delivery_floor`` is UNREACHABLE through ``_stage_normalize_dates``.
+
+        Here the vision day-month (05-10) cannot be placed at/after the 2026-05-20
+        floor within the inference window, so ``infer_reception_year`` returns None,
+        and Rule 2 floors the resolved date to ``fecha_entrega`` and flags it.
         """
         guia = GuiaDeRemision(
             guia_id="T009-0001",
             registro="232",
-            fecha=date(2026, 5, 10),  # reception before delivery
+            fecha=date(2026, 5, 10),  # day-month cannot land >= entrega in window
             fecha_confidence=1.0,
             lines=[_line()],
             source_pages=[0],
@@ -155,3 +159,50 @@ class TestDeliveryFloorApplied:
         out = _pipeline()._stage_normalize_dates([guia], sunat_fetch_map={})
         assert len(out) == 1
         assert out[0].delivery_floor_applied is False
+
+
+class TestDeliveryFloorNoVisionDate:
+    """FIX F2: vision read NO date (day/month None) but fecha_entrega exists.
+
+    Rule 2 of apply_delivery_floor MUST still fire from the day/month-None guard
+    in ``_stage_normalize_dates``: floor to fecha_entrega and flag. This is the
+    most common None-reception case and was previously left unfloored because the
+    guard returned BEFORE apply_delivery_floor.
+    """
+
+    def test_no_vision_date_with_sunat_floors_to_entrega(self) -> None:
+        """day/month None (fecha_raw="") + fecha_entrega present → floored + flagged."""
+        guia = GuiaDeRemision(
+            guia_id="T009-0005",
+            registro="232",
+            fecha=None,  # vision produced no date
+            fecha_raw="",  # no raw string to parse day/month from
+            fecha_confidence=0.0,
+            lines=[_line()],
+            source_pages=[0],
+        )
+        entrega = date(2026, 5, 20)
+        sunat_map = {"T009-0005": _official_gre("T009-0005", entrega)}
+
+        out = _pipeline()._stage_normalize_dates([guia], sunat_fetch_map=sunat_map)
+        assert len(out) == 1
+        result = out[0]
+        assert result.fecha == entrega, "fecha must be floored to fecha_entrega"
+        assert result.delivery_floor_applied is True
+
+    def test_no_vision_date_no_sunat_graceful_degrade(self) -> None:
+        """day/month None + NO sunat (lower None) → unchanged, no floor."""
+        guia = GuiaDeRemision(
+            guia_id="T009-0006",
+            registro="232",
+            fecha=None,
+            fecha_raw="",
+            fecha_confidence=0.0,
+            lines=[_line()],
+            source_pages=[0],
+        )
+        out = _pipeline()._stage_normalize_dates([guia], sunat_fetch_map=None)
+        assert len(out) == 1
+        result = out[0]
+        assert result.fecha is None
+        assert result.delivery_floor_applied is False

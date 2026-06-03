@@ -35,8 +35,11 @@ No concrete adapter is imported here.  All I/O is injected as Port implementatio
 
 Cost cap policy (locked):
   Before each VisionLLMPort call the pipeline checks ``calls_made < cap``.
-  On cap exhaustion, VisionCapExceededError is raised immediately, preserving
-  any partial results already written to the extraction cache.
+  KI-1: on cap exhaustion the pipeline DEGRADES GRACEFULLY — it stops issuing
+  vision calls, leaves the remaining items' ``fecha=None`` (which the null-fecha
+  reconciliation rule flags ``requires_review``), and runs to completion.  W2-A:
+  the guía and declared-date stages share the SAME cap (the running call count is
+  threaded between them), so the combined total never exceeds ``max_vision_calls``.
 
 Block grouping invariants (S1.5 / EXT-015):
   - guia_id MUST come from IdentityExtractionPort or OCR-fallback; never f"guia_page_{n}".
@@ -75,7 +78,6 @@ from reconciliation.application.config import AppConfig
 from reconciliation.application.run_context import RunContext
 from reconciliation.domain.classifier import PageClassifier
 from reconciliation.domain.date_inference import infer_reception_year
-from reconciliation.domain.errors import VisionCapExceededError
 from reconciliation.domain.models import (
     GuiaDeRemision,
     GuiaIdentity,
@@ -300,10 +302,9 @@ class ReconciliationPipeline:
         Returns:
             A PipelineResult with the full reconciliation output.
 
-        Raises:
-            VisionCapExceededError: If the vision cost cap is reached before
-                all GUIA pages are processed.  Partial extraction results are
-                written to the extraction cache before raising.
+        KI-1: reaching the vision cost cap does NOT raise — the affected items
+        degrade to ``fecha=None`` (flagged ``requires_review``) and the run
+        completes.  W2-A: the guía and declared-date stages share the cap.
         """
         # Stage 1: split
         page_count = self._stage_split()
@@ -370,10 +371,15 @@ class ReconciliationPipeline:
         declared, guias = self._stage_normalize(declared, guias)
 
         # Stage 7b (R9.5 / ADR-1): read the handwritten Protocolo declared date via
-        # the SAME VisionLLMPort.  Reads are counted against vision.max_vision_calls.
+        # the SAME VisionLLMPort.  W2-A: reads share the SAME vision.max_vision_calls
+        # cap as the guía stage — the running ``vision_calls_made`` is threaded in and
+        # carried forward so the combined total never exceeds the cap.  KI-1: at the
+        # cap the stage degrades (leaves the date unread) instead of raising.
         # Failures/low-confidence fall back to the electronic fecha (ADR-2/7), so the
         # reconciliation gate never asserts a wrong baseline.
-        declared = self._stage_extract_declared_date(declared)
+        declared, vision_calls_made = self._stage_extract_declared_date(
+            declared, calls_already_made=vision_calls_made
+        )
 
         # R10.6: log aggregate token consumption after all vision calls complete (CONT-S08).
         # Duck-typed: only reads .meter if present — no coupling to the specific adapter.
@@ -1051,8 +1057,11 @@ class ReconciliationPipeline:
         the full-page-200dpi render.  When stamp_crop is disabled (all zeros), falls back
         to Option B: a fresh render at ``fallback_dpi`` (≥300 dpi).
 
-        Respects the vision cost cap.  Raises VisionCapExceededError if the
-        cap is exhausted before all blocks are processed.
+        Respects the vision cost cap.  KI-1: when the cap is reached the stage
+        DEGRADES GRACEFULLY instead of raising — it stops issuing further vision
+        calls, builds the remaining blocks with a null ``fecha`` (the null-fecha
+        reconciliation rule then flags them ``requires_review``), records a
+        warning, and the pipeline runs to completion.
 
         Returns:
             (guias, calls_made, warnings)
@@ -1072,48 +1081,33 @@ class ReconciliationPipeline:
         ]
 
         if self._vision.supports_batch:
-            # Batch path: one call per batch of (possibly cropped) images
-            remaining = cap - calls_made
-            if remaining <= 0:
-                raise VisionCapExceededError(
-                    "Vision cost cap reached before processing started.",
-                    detail={"calls_made": calls_made, "cap": cap, "pages_remaining": len(blocks)},
-                )
-            if len(vision_images) > remaining:
-                # Partial batch up to cap
-                to_process = blocks[:remaining]
-                skipped = blocks[remaining:]
+            # Batch path: one call per batch of (possibly cropped) images.
+            remaining = max(0, cap - calls_made)
+            to_process = blocks[:remaining]
+            skipped = blocks[remaining:]
+            if to_process:
                 results = self._vision.read_handwritten_date_batch(
                     vision_images[:remaining]
                 )
                 calls_made += len(to_process)
                 for blk, vr in zip(to_process, results):
                     guias.append(_build_guia_from_block(blk, vr))
-                raise VisionCapExceededError(
-                    f"Vision cost cap ({cap}) reached after {calls_made} calls.",
-                    detail={
-                        "calls_made": calls_made,
-                        "cap": cap,
-                        "pages_remaining": len(skipped),
-                    },
+            # KI-1: degrade the over-cap blocks to a null-fecha guía (no call).
+            for blk in skipped:
+                guias.append(_build_guia_from_block(blk, _NULL_VISION_RESULT))
+            if skipped:
+                warnings.append(
+                    f"Vision cost cap ({cap}) reached after {calls_made} calls; "
+                    f"{len(skipped)} guía block(s) left without a handwritten date "
+                    f"(flagged for review)."
                 )
-            else:
-                results = self._vision.read_handwritten_date_batch(vision_images)
-                calls_made += len(vision_images)
-                for blk, vr in zip(blocks, results):
-                    guias.append(_build_guia_from_block(blk, vr))
         else:
             # Sequential path (Ollama / non-batch)
             for blk, img in zip(blocks, vision_images):
                 if calls_made >= cap:
-                    raise VisionCapExceededError(
-                        f"Vision cost cap ({cap}) reached after {calls_made} calls.",
-                        detail={
-                            "calls_made": calls_made,
-                            "cap": cap,
-                            "pages_remaining": len(blocks) - calls_made,
-                        },
-                    )
+                    # KI-1: degrade — no further calls; null fecha, flagged.
+                    guias.append(_build_guia_from_block(blk, _NULL_VISION_RESULT))
+                    continue
                 vr = self._vision.read_handwritten_date(img)
                 calls_made += 1
                 guia = _build_guia_from_block(blk, vr)
@@ -1123,13 +1117,21 @@ class ReconciliationPipeline:
                         f"Low vision confidence ({vr.confidence:.2f}) "
                         f"on first page {blk.first_page} of block {blk.guia_id!r}."
                     )
+            degraded = len(blocks) - calls_made
+            if degraded > 0:
+                warnings.append(
+                    f"Vision cost cap ({cap}) reached after {calls_made} calls; "
+                    f"{degraded} guía block(s) left without a handwritten date "
+                    f"(flagged for review)."
+                )
 
         return guias, calls_made, warnings
 
     def _stage_extract_declared_date(
         self,
         registros: list[Registro],
-    ) -> list[Registro]:
+        calls_already_made: int = 0,
+    ) -> tuple[list[Registro], int]:
         """Stage 6b: read the handwritten Protocolo "Fecha:" via VisionLLMPort (R9.5).
 
         ADR-1: reuses ``VisionLLMPort.read_handwritten_date`` — no new port.
@@ -1143,10 +1145,16 @@ class ReconciliationPipeline:
         reconstructed from day/month via bounded inference with ``lower=None``
         (declared side has no SUNAT lower bound) and ``upper=today``.
 
-        Cost: declared reads are counted against the SAME ``vision.max_vision_calls``
-        cap as the guía reads (the cap is checked here before each call).
+        Cost (W2-A): declared reads are counted against the SAME shared
+        ``vision.max_vision_calls`` cap as the guía reads.  ``calls_already_made``
+        carries the running count consumed by the guía stage so the combined
+        guía+declared total never exceeds the cap.  KI-1: once the shared cap is
+        reached the stage STOPS issuing calls and leaves the remaining registros'
+        handwritten date unread (flagged via the null-baseline path) — it never
+        raises.
 
-        Returns a NEW list of Registro (no mutation of the input).
+        Returns a NEW list of Registro (no mutation of the input) and the updated
+        cumulative vision-call count (``calls_already_made`` + reads issued here).
         """
         from datetime import date as _date  # noqa: PLC0415
 
@@ -1154,7 +1162,7 @@ class ReconciliationPipeline:
         cap = self._config.vision.max_vision_calls
         dpi = self._config.vision.fallback_dpi
         today = _date.today()
-        calls_made = 0
+        calls_made = calls_already_made
 
         updated: list[Registro] = []
         for reg in registros:
@@ -1233,7 +1241,7 @@ class ReconciliationPipeline:
                 )
             )
 
-        return updated
+        return updated, calls_made
 
     def _stage_normalize_dates(
         self,
@@ -1488,6 +1496,12 @@ class _GuiaBlock:
     tipo: str | None = None
     gre_hashqr_url: str | None = None
     identity_confidence: float = 0.0
+
+
+# KI-1: sentinel VisionResult used when the vision cap is reached — produces a
+# guía with ``fecha=None`` (the null-fecha reconciliation rule flags it
+# ``requires_review``) WITHOUT issuing a vision call.
+_NULL_VISION_RESULT = VisionResult(date=None, confidence=0.0, raw="")
 
 
 def _build_guia_from_block(block: _GuiaBlock, vision_result: VisionResult) -> GuiaDeRemision:

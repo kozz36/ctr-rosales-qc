@@ -74,7 +74,7 @@ class TestStageExtractDeclaredDate:
         vis = _CountingVision(VisionResult(date=date(2026, 5, 28), confidence=0.95, raw="28/05/26"))
         pipe = _pipeline(vis)
         regs = [Registro(numero="232", fecha_declarada=date(2026, 5, 1), declared_lines=[])]
-        out = pipe._stage_extract_declared_date(regs)
+        out, _ = pipe._stage_extract_declared_date(regs)
         assert vis.calls == 0
         assert out[0].fecha_declarada_handwritten is None
 
@@ -83,7 +83,7 @@ class TestStageExtractDeclaredDate:
         vis = _CountingVision(VisionResult(date=date(2026, 5, 28), confidence=0.72, raw="28/05/26"))
         pipe = _pipeline(vis)
         regs = [Registro(numero="232", fecha_declarada=date(2026, 5, 1), declared_lines=[], protocolo_page=7)]
-        out = pipe._stage_extract_declared_date(regs)
+        out, _ = pipe._stage_extract_declared_date(regs)
         assert vis.calls == 1
         assert out[0].fecha_declarada_handwritten is None
         assert out[0].fecha_declarada_confidence == 0.72
@@ -95,7 +95,7 @@ class TestStageExtractDeclaredDate:
         vis = _CountingVision(VisionResult(date=date(2016, 5, 28), confidence=0.92, raw="28/05/26"))
         pipe = _pipeline(vis)
         regs = [Registro(numero="232", fecha_declarada=date(2026, 5, 1), declared_lines=[], protocolo_page=7)]
-        out = pipe._stage_extract_declared_date(regs)
+        out, _ = pipe._stage_extract_declared_date(regs)
         assert vis.calls == 1
         hw = out[0].fecha_declarada_handwritten
         assert hw is not None
@@ -111,7 +111,7 @@ class TestStageExtractDeclaredDate:
             Registro(numero="232", fecha_declarada=None, declared_lines=[], protocolo_page=7),
             Registro(numero="233", fecha_declarada=None, declared_lines=[]),  # detail-only
         ]
-        out = pipe._stage_extract_declared_date(regs)
+        out, _ = pipe._stage_extract_declared_date(regs)
         assert vis.calls == 1
         assert len(out) == 2
 
@@ -146,7 +146,7 @@ class TestStageExtractDeclaredDate:
                 protocolo_page=7,
             )
         ]
-        out = pipe._stage_extract_declared_date(regs)
+        out, _ = pipe._stage_extract_declared_date(regs)
         hw = out[0].fecha_declarada_handwritten
         assert hw is not None
         assert (hw.day, hw.month) == (28, 5)

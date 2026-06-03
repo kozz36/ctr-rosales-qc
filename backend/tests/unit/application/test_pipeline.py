@@ -12,13 +12,15 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from reconciliation.application.config import AppConfig
 from reconciliation.application.pipeline import PipelineResult, ReconciliationPipeline
 from reconciliation.application.run_context import RunContext
-from reconciliation.domain.errors import VisionCapExceededError
-from reconciliation.domain.models import GuiaIdentity, MaterialLine, VisionResult
+from reconciliation.domain.models import (
+    GuiaIdentity,
+    MaterialLine,
+    Registro,
+    VisionResult,
+)
 from reconciliation.domain.ports import DocumentSourcePort, ExtractionPort, VisionLLMPort
 
 
@@ -112,6 +114,26 @@ class FakeVisionBatch:
         return [self._result] * len(images)
 
 
+class _CountingVision:
+    """Sequential fake VisionLLMPort that counts every call (KI-1 / W2-A)."""
+
+    supports_batch: bool = False
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def read_handwritten_date(
+        self, image: bytes, hint: str | None = None
+    ) -> VisionResult:
+        self.calls += 1
+        return VisionResult(date=date(2026, 5, 28), confidence=0.95, raw="28/05/2026")
+
+    def read_handwritten_date_batch(
+        self, images: list[bytes]
+    ) -> list[VisionResult]:  # pragma: no cover
+        raise NotImplementedError("This fake is sequential only.")
+
+
 class FakeIdentityPerPage:
     """Fake IdentityExtractionPort that returns a unique GuiaIdentity per call.
 
@@ -160,6 +182,15 @@ _GUIA_TEXT = "\n".join([
     "Informe de detalle del formulario",
     "GUIA DE REMISION",
 ])
+
+
+def _make_registro_with_protocolo(numero: str, protocolo_page: int) -> Registro:
+    return Registro(
+        numero=numero,
+        fecha_declarada=date(2026, 5, 28),
+        declared_lines=[],
+        protocolo_page=protocolo_page,
+    )
 
 
 def _make_line(desc: str = "acero corrugado", qty: str = "30", unit: str = "KG") -> MaterialLine:
@@ -379,18 +410,30 @@ class TestPipelineStageSequencing:
 
 
 class TestVisionCostCap:
-    def test_cap_zero_raises_immediately_sequential(self, tmp_path: Path) -> None:
-        """Cap=0 means NO vision calls allowed; raises before first block."""
-        pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
-        pipeline, ctx = _build_pipeline(
-            pages=pages, max_vision_calls=0, tmp_path=tmp_path
-        )
-        with pytest.raises(VisionCapExceededError) as exc_info:
-            pipeline.run(ctx)
-        assert exc_info.value.detail["cap"] == 0
+    """KI-1: hitting the vision cap degrades gracefully (no raise).
 
-    def test_cap_exceeded_mid_run_sequential(self, tmp_path: Path) -> None:
-        """Cap=1 with 3 distinct-QR blocks → raises after first call.
+    When ``vision.max_vision_calls`` is reached the pipeline STOPS issuing
+    further vision calls, leaves the remaining items' ``fecha=None`` (which the
+    null-fecha reconciliation rule flags ``requires_review``), and runs to
+    completion.  W2-A: the declared-date stage shares the SAME cap as the guía
+    stage instead of getting a fresh budget.
+    """
+
+    def test_cap_zero_degrades_no_calls_sequential(self, tmp_path: Path) -> None:
+        """Cap=0 means NO vision calls; pipeline completes, guía fecha=None."""
+        pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
+        line = _make_line()
+        pipeline, ctx = _build_pipeline(
+            pages=pages, table_lines=[line], max_vision_calls=0, tmp_path=tmp_path
+        )
+        result = pipeline.run(ctx)  # must NOT raise
+        assert result.vision_calls_made == 0
+        assert len(result.guias) == 1
+        assert result.guias[0].fecha is None
+
+    def test_cap_exceeded_mid_run_degrades_sequential(self, tmp_path: Path) -> None:
+        """Cap=1 with 3 distinct-QR blocks → first block gets a date, the rest
+        degrade to fecha=None; no exception is raised.
 
         FakeIdentityPerPage ensures each page is a separate block (unique guia_id).
         """
@@ -399,59 +442,102 @@ class TestVisionCostCap:
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
+        line = _make_line()
         pipeline, ctx = _build_pipeline(
-            pages=pages, max_vision_calls=1, tmp_path=tmp_path,
+            pages=pages, table_lines=[line], max_vision_calls=1, tmp_path=tmp_path,
             identity=FakeIdentityPerPage(),
         )
-        with pytest.raises(VisionCapExceededError) as exc_info:
-            pipeline.run(ctx)
-        detail = exc_info.value.detail
-        assert detail["calls_made"] == 1
-        assert detail["cap"] == 1
+        result = pipeline.run(ctx)  # must NOT raise
+        assert result.vision_calls_made == 1
+        assert len(result.guias) == 3
+        with_date = [g for g in result.guias if g.fecha is not None]
+        without_date = [g for g in result.guias if g.fecha is None]
+        assert len(with_date) == 1
+        assert len(without_date) == 2
 
-    def test_cap_exact_match_does_not_raise(self, tmp_path: Path) -> None:
-        """Cap=2 with 2 distinct-QR blocks → completes without error."""
+    def test_cap_exact_match_does_not_degrade(self, tmp_path: Path) -> None:
+        """Cap=2 with 2 distinct-QR blocks → completes, all get a date."""
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
+        line = _make_line()
         pipeline, ctx = _build_pipeline(
-            pages=pages, max_vision_calls=2, tmp_path=tmp_path,
+            pages=pages, table_lines=[line], max_vision_calls=2, tmp_path=tmp_path,
             identity=FakeIdentityPerPage(),
         )
         result = pipeline.run(ctx)  # must not raise
         assert result.vision_calls_made == 2
+        assert all(g.fecha is not None for g in result.guias)
 
-    def test_cap_exceeded_batch_path(self, tmp_path: Path) -> None:
-        """Batch path: cap=1 with 3 distinct-QR blocks → raises after partial batch."""
+    def test_cap_exceeded_batch_path_degrades(self, tmp_path: Path) -> None:
+        """Batch path: cap=1 with 3 distinct-QR blocks → partial batch is
+        processed, the remainder degrade to fecha=None, no exception raised."""
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
+        line = _make_line()
         vision = FakeVisionBatch()
         pipeline, ctx = _build_pipeline(
-            pages=pages, vision=vision, max_vision_calls=1, tmp_path=tmp_path,
-            identity=FakeIdentityPerPage(),
+            pages=pages, table_lines=[line], vision=vision, max_vision_calls=1,
+            tmp_path=tmp_path, identity=FakeIdentityPerPage(),
         )
-        with pytest.raises(VisionCapExceededError) as exc_info:
-            pipeline.run(ctx)
-        detail = exc_info.value.detail
-        assert detail["cap"] == 1
-        assert detail["calls_made"] == 1
-        assert detail["pages_remaining"] == 2
+        result = pipeline.run(ctx)  # must NOT raise
+        assert result.vision_calls_made == 1
+        assert len(result.guias) == 3
+        assert len([g for g in result.guias if g.fecha is not None]) == 1
+        assert len([g for g in result.guias if g.fecha is None]) == 2
 
-    def test_error_detail_contains_required_keys(self, tmp_path: Path) -> None:
-        pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
-        pipeline, ctx = _build_pipeline(
-            pages=pages, max_vision_calls=0, tmp_path=tmp_path
+    def test_declared_stage_shares_guia_cap(self, tmp_path: Path) -> None:
+        """W2-A: ``_stage_extract_declared_date`` continues counting against the
+        SHARED ``max_vision_calls`` cap consumed by the guía stage — it does NOT
+        reset to a fresh budget.
+
+        With cap=2 and the guía stage having ALREADY consumed 2 calls, the
+        declared stage (two Protocolo registros) must issue ZERO vision calls.
+        Conversely with calls_already_made=0 it may issue up to the cap.
+        """
+        vision = _CountingVision()
+        cfg = AppConfig()
+        object.__setattr__(cfg.vision, "max_vision_calls", 2)
+        pipeline = ReconciliationPipeline(
+            doc_source=FakeDocumentSource(
+                [{"image": b"\x89PNG"}, {"image": b"\x89PNG"}]
+            ),
+            extractor=FakeExtractor(),
+            vision=vision,
+            config=cfg,
         )
-        with pytest.raises(VisionCapExceededError) as exc_info:
-            pipeline.run(ctx)
-        detail = exc_info.value.detail
-        assert "calls_made" in detail
-        assert "cap" in detail
-        assert "pages_remaining" in detail
+        registros = [
+            _make_registro_with_protocolo("100", protocolo_page=0),
+            _make_registro_with_protocolo("101", protocolo_page=1),
+        ]
+
+        # Cap already exhausted by the guía stage → declared stage issues 0 calls.
+        updated, calls = pipeline._stage_extract_declared_date(
+            registros, calls_already_made=2
+        )
+        assert vision.calls == 0
+        assert calls == 2
+        assert all(r.fecha_declarada_handwritten is None for r in updated)
+
+        # Fresh budget (0 consumed) → declared stage may issue up to the cap (2).
+        vision2 = _CountingVision()
+        pipeline2 = ReconciliationPipeline(
+            doc_source=FakeDocumentSource(
+                [{"image": b"\x89PNG"}, {"image": b"\x89PNG"}]
+            ),
+            extractor=FakeExtractor(),
+            vision=vision2,
+            config=cfg,
+        )
+        _updated2, calls2 = pipeline2._stage_extract_declared_date(
+            registros, calls_already_made=0
+        )
+        assert vision2.calls == 2
+        assert calls2 == 2
 
     def test_no_guia_pages_no_vision_calls(self, tmp_path: Path) -> None:
         """Pipeline with only DECLARED pages must not call vision at all."""

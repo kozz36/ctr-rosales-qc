@@ -69,6 +69,12 @@ def apply_delivery_floor(
         return fecha_entrega, True
 
     # Rule 3: physical impossibility — floor.
+    # Defense-in-depth for the standalone pure-domain contract. This branch is
+    # UNREACHABLE through ``_stage_normalize_dates``: that stage calls
+    # ``infer_reception_year`` with the same ``lower=fecha_entrega``, which
+    # pre-filters candidates to ``>= lower``, so the resolved ``reception`` is
+    # never ``< fecha_entrega`` there (the floor activates only via Rule 2 when
+    # inference returns None). Kept and unit-tested in isolation regardless.
     if reception < fecha_entrega:
         return fecha_entrega, True
 

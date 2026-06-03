@@ -24,6 +24,17 @@ The `ReconciliationService` MUST group all extracted guía rows by the four-fiel
 No field in the grouping key MAY be omitted or substituted.
 `material_canonical` is the output of `MaterialNormalizer`; `unidad` is the raw unit string as extracted (never normalized or converted).
 
+> **[SUPERSEDED — rev-3 delta (2026-06-02), R8/MAT-001]** The `fecha` field was REMOVED
+> from the grouping key. The effective key is the three-field tuple
+> `(registro, material_canonical, unidad)`. Rationale: `fecha` is vision-read and noisy
+> (the year is unreliable); folding it into the key split declared↔guía groups whenever the
+> vision-read date differed, killing MATCH. A Registro N° is one reception event = one date,
+> so `registro` already disambiguates — material reconciliation is date-independent.
+> Reception-date handling (handwritten Protocolo authority + day-month divergence as a
+> reviewable misfiled-guía signal) is a SEPARATE, additive concern, NOT a grouping axis.
+> This delta note also governs the four-field key references in REC-003, REC-C01, and the
+> Scenario prose below (kept verbatim for history; the live key is three-field).
+
 ### REC-002 — Per-unit independent summation (domain invariant)
 
 The system MUST sum quantities independently per unit.

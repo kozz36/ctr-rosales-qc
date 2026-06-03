@@ -20,12 +20,30 @@ vision:
     model: gpt-4o
 
   ollama:
-    model: llava:latest
+    # qwen3.5:9b is the bake-off winner for local handwritten date reading (engram #2747)
+    model: qwen3.5:9b
     base_url: http://localhost:11434/v1
 
   # Hard cap on vision LLM calls per run.
-  # VisionCapExceededError is raised when this limit is reached.
+  # KI-1: on reaching this limit the run degrades gracefully — remaining items get
+  # fecha=None and are flagged requires_review, and the run completes (no exception).
   max_vision_calls: 500
+
+  # Rev-3 D4 (EXT-020): stamp-region crop box for the VisionLLM date-extraction call.
+  # Fractional coordinates (0.0–1.0) relative to the rendered page dimensions.
+  # R7 fix: bake-off + empirical tuning confirmed the CTR "Recibí conforme" stamp is in
+  # the UPPER-RIGHT region (not lower-right as originally set).  Crop fitz.Rect(w*0.55,
+  # h*0.05, w, h*0.45) reliably yields day-month "28-05" on pages 4,5,6,8,20 of the
+  # real PDF subset.  Year is reconstructed by year-inference; day-month is the gate.
+  # Set all values to 0.0 to disable Option A and fall back to Option B (>=300dpi full page).
+  stamp_crop:
+    x0: 0.55
+    y0: 0.05
+    x1: 1.0
+    y1: 0.45
+
+  # Rev-3 D4 Option B: DPI for full-page render when stamp_crop is disabled.
+  fallback_dpi: 300
 
 deskew:
   # Locked: guia_only — deskew is applied only to GUIA pages post-classification.
@@ -39,3 +57,15 @@ confidence:
 
 # Base directory for per-run output directories (relative to working directory).
 output_dir: runs
+
+# Rev-3 D3 (EXT-023): SUNAT descargaqr opt-in fetch — OFF BY DEFAULT.
+# This is the ONLY network egress in the system.  Enabling it breaks the air-gap.
+# Document in docs/DECISIONS.md when you enable this in a committed config.
+#
+# To enable (e.g. for a connected-network run):
+#   RECONCILIATION__SUNAT__ENABLED=true
+# or set enabled: true in a local override (NOT committed).
+sunat:
+  enabled: false
+  timeout_s: 10.0
+  cache: true

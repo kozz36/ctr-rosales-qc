@@ -121,6 +121,20 @@ class RunContext:
         with self.review_sidecar.open("r", encoding="utf-8") as fh:
             return json.load(fh)  # type: ignore[no-any-return]
 
+    def append_vision_audit(self, record: dict[str, Any]) -> None:
+        """Append a vision-stage audit record to the review sidecar.
+
+        Creates the sidecar if it does not yet exist.  Atomically overwrites
+        on each call (temp-file + rename strategy).
+
+        The sidecar ``vision_audit`` key holds a list of audit records:
+          {stage: "vision", calls_made: int, cap_reached: bool}
+        """
+        sidecar = self.read_review_sidecar()
+        sidecar.setdefault("vision_audit", [])
+        sidecar["vision_audit"].append(record)
+        _atomic_json_write(self.review_sidecar, sidecar)
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers

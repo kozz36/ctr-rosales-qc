@@ -1,0 +1,140 @@
+schema: spec-driven
+change: material-reconciliation
+artifact_store: hybrid
+
+dag:
+  proposal:
+    status: done
+    completed: 2026-05-31
+    artifact: proposal.md
+    engram_topic: sdd/material-reconciliation/proposal
+  spec:
+    status: done
+    completed: 2026-05-31
+    delta_applied: 2026-06-01
+    delta_rev3_applied: 2026-06-02
+    depends_on: [proposal]
+    artifact: specs/
+    engram_topic: sdd/material-reconciliation/spec
+    domains: [ingestion, extraction, reconciliation, review, export]
+    delta_domains: [extraction, reconciliation, review]
+    delta_summary: >
+      Rev-2 delta (A-F) encoded as testable requirements + scenarios.
+      EXT-011 to EXT-018 added to extraction/spec.md (QR identity port, local decode
+      adapter spec, tiered precedence invariant, OCR fallback, multi-page block
+      grouping, SunatGreFetchPort seam, authoritative fecha, UNRESOLVED fallback).
+      REC-C01 to REC-C06 added to reconciliation/spec.md (handwritten fecha authority,
+      GuiaContribution inline DTO, reassign by guia_id, line-cantidad edit,
+      summed_qty read-only, UNRESOLVED surfacing, API surface PATCH /guias/{id}/lines).
+      REV-C01 to REV-C04 added to review/spec.md (drill-down, reassign by guia_id,
+      line edit, unresolved guias bucket).
+    delta_rev3_summary: >
+      Rev-3 delta (4 real-pipeline findings from qwen3.5:9b + real PaddleOCR + real QR
+      libs, masked by prior injected-fake e2e tests).
+      EXT-019 (hybrid classifier — CRITICAL: scanned guías now classified via QR Condition A
+      or Forma-header-only Condition B, not digital-title only).
+      EXT-020 (vision input adequacy — full-page-200dpi insufficient; stamp crop or
+      higher DPI required).
+      EXT-021 (bounded year inference — day-month trusted from vision; year reconstructed
+      from delivery_GRE_date <= reception <= reference_date; year_inferred provenance).
+      EXT-022 (first_page None sentinel — replaces default-0; fixes ambiguous page-0
+      fallback in UnresolvedGuiaResponse).
+      REC-C07 to REC-C07 added to reconciliation/spec.md (year_inferred propagation;
+      any_year_inferred on ReconciliationRow).
+      REV-C05 to REV-C06 added to review/spec.md (year_inferred advisory indicator;
+      first_page=None panel safety).
+      Deferred: SunatGreFetchPort integration — spike in progress; NOT a rev-3 requirement.
+    note: >
+      tasks.md predates the rev-2 delta and must be refreshed next.
+      After rev-3 spec is encoded, a design-delta for the hybrid classifier and year
+      inference adapter changes is recommended before a rev-3 tasks refresh.
+  design:
+    status: done
+    completed: 2026-05-31
+    revision: 2
+    delta_applied: 2026-05-31
+    depends_on: [proposal]
+    artifact: design.md
+    engram_topic: sdd/material-reconciliation/design
+    note: >
+      Rev-2 delta (A-F) is canonical in engram #2662. design.md is a faithful
+      thinner mirror after a concurrent-write recovery; the rich version with
+      code snippets + sequence diagrams lives in engram #2662.
+  tasks:
+    status: done
+    completed: 2026-05-31
+    refreshed: 2026-06-02
+    depends_on: [spec, design]
+    artifact: tasks.md
+    engram_topic: sdd/material-reconciliation/tasks
+    rev3_added: 2026-06-02
+    rev3_task_count: 42
+    rev3_slices: [R1, R2, R3, R4, R5, R6, R7]
+    rev3_prs: [PR-12, PR-13, PR-14, PR-15, PR-16]
+    total_tasks: 98
+    completed_tasks: 61
+    pending_tasks: 37
+    note: Rev-3 slices R1–R7 appended. All prior 50/50 tasks remain [x]. R5 added 2026-06-02 (blocking bugfix). R6 added 2026-06-02 (SUNAT PDF parser fix). R7 added 2026-06-02 (vision stamp-crop upper-right fix + qwen3.5 thinking-model compatibility). Delivery strategy stacked-to-main.
+  apply:
+    status: done
+    progress: 87/87 tasks — ALL COMPLETE (R6 done 2026-06-02)
+    depends_on: [tasks]
+    engram_topic: sdd/material-reconciliation/apply-progress
+    branch: feat/rev2-identity-domain  # stacked-to-main chain, not yet pushed
+    completed_slices:
+      - PR-1 (Phase 0 scaffold + Phase 1 pure domain)
+      - PR-2a (Phase 2 application layer)
+      - PR-2b-1 (PDF/digital-text/Excel adapters)
+      - PR-2b-2 (PaddleOCR deskew+table + vision adapters Anthropic/OpenAI/Ollama + factory)
+      - PR-4 (composition root + FastAPI 7 endpoints)
+      - Hotfix-E2E (5 pipeline wiring bugs found by real-data audit)
+      - PR-5a (frontend shell + run lifecycle)
+      - PR-5b (frontend review grid + reassign + export)
+      - "slice-0 spec-delta (rev-2 A-F encoded into specs) [2026-06-01]"
+      - "PR-6 slice-1 (IdentityExtractionPort, QrBarcodeExtractionAdapter, SectionIdPredicate, UNRESOLVED fix) [S1.1-S1.4]"
+      - "PR-7 slice-1 (block-grouping pipeline, ReconciliationService guias[], ReviewService+API, thumbnail) [S1.5-S1.8]"
+      - "PR-8 slice-1 (real-data e2e rev-2; 20/20 guias QR-decoded on real PDF) [S1.9]"
+      - "PR-9 slice-2 (FE types, GuiaDrillDown, summed_qty read-only, reassign by guia_id) [S2.1-S2.4]"
+      - "PR-10 slice-2 (a11y/visual, UnresolvedGuiasPanel + unresolved_guias table delta, smoke) [S2.5-S2.7]"
+      - "PR-11 Phase 6/7 (6.1-6.3 e2e+smoke, 7.1-7.4 config/.env/audit/flags/Makefile) [2026-06-02]"
+      - "PR-12 Rev-3 R1 (hybrid classifier + decode_identities + dual-QR COLOR + first_page sentinel) [R1.1-R1.9, 2026-06-02]"
+      - "PR-13 Rev-3 R2 (stamp-crop D4 + bounded year inference D5 + any_year_inferred REC-C07) [R2.1-R2.8, 2026-06-02]"
+      - "PR-14 Rev-3 R3 (OfficialGre domain model, SunatDescargaqrAdapter, SunatConfig, _stage_sunat_fetch, folded year-fix #2753) [R3.1-R3.8, 2026-06-02]"
+      - "PR-15 Rev-3 R4 (FE: year_inferred types, YearInferredBadge, GuiaDrillDown+ReconciliationRow wiring, UnresolvedGuiasPanel null safety, 18 new tests) [R4.1-R4.4, 2026-06-02]"
+      - "PR-16 Rev-3 R5 (paddleocr 3.6 API compat + graceful OCR degradation — blocking bugfix) [R5.1-R5.2, 2026-06-02]"
+      - "R6 (SUNAT PDF parser rewrite — token-per-line format + timeout/retry resilience) [R6.1-R6.3, 2026-06-02, commit f03020b]"
+      - "R7 (vision stamp-crop upper-right fix + qwen3.5:9b thinking-model max_tokens/think-block fix) [R7.1-R7.3, 2026-06-02, commit f43bf2b]"
+    pending_slices: []
+    tests:
+      backend_unit: 590 passing (was 587 before R7; +3 new think-block tests; 1 crop-dimension test updated)
+      backend_integration:
+        r3_airgap_gate: 3/3 passed (zero network calls with sunat.enabled=false confirmed)
+        r3_live_gate: skipped by default (RUN_SUNAT_LIVE=1 to enable)
+        r2_gate_a: 5/5 (year inference + any_year_inferred)
+        r2_gate_b: 1/1 (stamp crop dimensions)
+        r2_gate_c: 1/1 (real Ollama month=5 confirmed)
+        r1_gate: 10/10 (no regression)
+      frontend_vitest: 175 passed (unchanged; R5 is backend only)
+      frontend_type_check: 0 errors
+      ruff: all checks passed on changed source files
+      mypy: 0 new errors on changed files
+      real_run_degradation: CONFIRMED — PaddleOCR.predict() throws NotImplementedError (paddle 3.3.1 oneDNN/PIR CPU bug) → adapter returns [] + _ocr_failed=True → no fatal error
+      real_run_r7: CONFIRMED — 35 vision calls made; 22/35 guías non-null fecha; sample T009-0741771 fecha=2026-05-28 (day=28 month=05 matches ground truth); rows grouped by fecha (46/60 non-null). No MATCH/MISMATCH because subset PDF declared extraction returns null (pre-existing subset limitation).
+  verify:
+    status: pending
+    depends_on: [apply]
+    engram_topic: sdd/material-reconciliation/verify-report
+    note: >
+      Runs AFTER apply complete (post Phase 6/7) AND after the visual e2e
+      validation stage (Opus vision + Playwright MCP → review-then-fix subagent),
+      which catches real user-flow/visual/contract defects before verify.
+  archive:
+    status: pending
+    depends_on: [verify]
+    engram_topic: sdd/material-reconciliation/archive-report
+
+post_sdd_gates:
+  - visual e2e validation (Opus vision + Playwright MCP driving the running app) + review-then-fix subagent — BEFORE verify
+  - judgment-day (blind dual adversarial review + fix + re-judge) BEFORE any further push
+  - project CLAUDE.md (done at repo bootstrap)
+  - public GitHub repo + MIT license (done at repo bootstrap)

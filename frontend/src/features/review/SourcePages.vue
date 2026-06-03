@@ -12,23 +12,23 @@
       @keydown.enter="onChipClick(page)"
       @keydown.space.prevent="onChipClick(page)"
     >
-      <!-- Thumbnail (enhancement) — degrades gracefully on 404 -->
+      <!-- Thumbnail (S1.8 endpoint — degrades gracefully on error).
+           The <img> is always rendered; onerror moves the page to thumbnailsErrored
+           and removes the has-thumb class so the fallback chip shows instead. -->
       <img
-        v-if="thumbnailsLoaded.has(page)"
         :src="thumbnailSrc(page)"
         :alt="`Miniatura página ${page}`"
         class="source-pages__thumb"
+        :class="{ 'source-pages__thumb--hidden': !thumbnailsLoaded.has(page) }"
         loading="lazy"
+        @load="onThumbLoad(page)"
+        @error="onThumbError(page)"
       />
-      <!-- Fallback: page number chip -->
+      <!-- Fallback: page number chip (shown when thumbnail not loaded or errored) -->
       <span class="source-pages__number" :aria-hidden="thumbnailsLoaded.has(page)">
         {{ page }}
       </span>
     </button>
-
-    <!-- Thumbnail missing endpoint notice (dev only, NOT a user-facing error) -->
-    <!-- BACKEND FLAG: GET /runs/{run_id}/pages/{page}/thumbnail not yet implemented.
-         See PR-5b return: missing-thumbnail-endpoint flag. -->
   </div>
 </template>
 
@@ -36,17 +36,16 @@
 /**
  * SourcePages — renders source page numbers as interactive chips.
  *
- * Thumbnail enhancement (OPTIONAL, degrades gracefully):
- *   Attempts GET /runs/{run_id}/pages/{page}/thumbnail via an <img> src load.
- *   On 404 / network error → falls back to the page-number chip.
+ * Thumbnail enhancement (S2.5 / S1.8 — REV-005):
+ *   Uses a declarative <img :src="thumbnailUrl"> pointing to the API thumbnail
+ *   endpoint (GET /api/runs/{id}/pages/{page}/thumbnail). The @load handler
+ *   marks the page as loaded; @error marks it as errored and degrades gracefully
+ *   to the page-number chip.
  *
- * BACKEND FLAG: The thumbnail endpoint (GET /runs/{run_id}/pages/{page}/thumbnail)
- * does NOT exist yet. The component's graceful degradation ensures this is a
- * non-breaking gap: users see page-number chips until the backend implements it.
- * When the endpoint is implemented, no frontend change is needed.
+ *   This replaces the old imperative `new Image()` probe approach (S2.5 cleanup).
  */
 
-import { ref, onMounted, watch } from 'vue'
+import { ref } from 'vue'
 
 const props = defineProps<{
   /** Source page numbers (1-based, as returned by the backend). */
@@ -71,28 +70,25 @@ function thumbnailSrc(page: number): string {
   return `${base}/runs/${props.runId}/pages/${page}/thumbnail`
 }
 
-/**
- * Probe each page's thumbnail endpoint by attempting an image load.
- * This fires once per page and degrades silently on failure.
- */
-function probeThumbnails(): void {
-  for (const page of props.pages) {
-    // Skip if already resolved
-    if (thumbnailsLoaded.value.has(page) || thumbnailsErrored.value.has(page)) continue
-
-    const img = new Image()
-    img.src = thumbnailSrc(page)
-    img.onload = () => {
-      thumbnailsLoaded.value = new Set([...thumbnailsLoaded.value, page])
-    }
-    img.onerror = () => {
-      thumbnailsErrored.value = new Set([...thumbnailsErrored.value, page])
-    }
+function onThumbLoad(page: number): void {
+  thumbnailsLoaded.value = new Set([...thumbnailsLoaded.value, page])
+  // Remove from errored set if it was there (e.g. after retry)
+  if (thumbnailsErrored.value.has(page)) {
+    const next = new Set(thumbnailsErrored.value)
+    next.delete(page)
+    thumbnailsErrored.value = next
   }
 }
 
-onMounted(probeThumbnails)
-watch(() => props.pages, probeThumbnails, { deep: true })
+function onThumbError(page: number): void {
+  thumbnailsErrored.value = new Set([...thumbnailsErrored.value, page])
+  // Remove from loaded set
+  if (thumbnailsLoaded.value.has(page)) {
+    const next = new Set(thumbnailsLoaded.value)
+    next.delete(page)
+    thumbnailsLoaded.value = next
+  }
+}
 
 function onChipClick(page: number): void {
   emit('pageClick', page)
@@ -154,6 +150,11 @@ function onChipClick(page: number): void {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+/* Hidden until @load fires — avoids broken-image icon flash */
+.source-pages__thumb--hidden {
+  display: none;
 }
 
 .source-pages__number {

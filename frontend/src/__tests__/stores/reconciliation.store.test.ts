@@ -26,6 +26,10 @@ function makeRow(partial: Partial<ReconciliationRowResponse> = {}): Reconciliati
     status: 'MATCH',
     source_pages: [1, 2],
     min_confidence: 0.92,
+    requires_review: false,
+    guias: [],
+    any_year_inferred: false,
+    has_fecha_divergence: false,
     ...partial,
   }
 }

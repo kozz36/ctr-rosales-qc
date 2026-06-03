@@ -1,6 +1,8 @@
 """Unit tests for domain value objects (task 1.1).
 
-Covers: model instantiation, Decimal precision, None confidence allowed.
+Covers: model instantiation, Decimal precision, None confidence allowed,
+rev-2 new models (GuiaIdentity, GuiaContribution), GuiaDeRemision rev-2 fields,
+ReconciliationRow.guias default.
 """
 
 from __future__ import annotations
@@ -11,7 +13,9 @@ from decimal import Decimal
 import pytest
 
 from reconciliation.domain.models import (
+    GuiaContribution,
     GuiaDeRemision,
+    GuiaIdentity,
     MaterialLine,
     PageClassification,
     ReconciliationRow,
@@ -142,6 +146,63 @@ class TestRegistro:
         )
         assert reg.fecha_declarada is None
 
+    def test_protocolo_page_defaults_none(self) -> None:
+        """R9.1: protocolo_page defaults to None (detail-page registros)."""
+        reg = Registro(numero="232", fecha_declarada=None, declared_lines=[])
+        assert reg.protocolo_page is None
+
+    def test_protocolo_page_zero_is_valid(self) -> None:
+        """R9.1: page 0 is a valid concrete index, not a falsy sentinel."""
+        reg = Registro(
+            numero="232", fecha_declarada=None, declared_lines=[], protocolo_page=0
+        )
+        assert reg.protocolo_page == 0
+
+    def test_backward_compat_model_validate_no_protocolo_page(self) -> None:
+        """R9.1: old serialised dict without protocolo_page parses with default None."""
+        reg = Registro.model_validate(
+            {"numero": "232", "fecha_declarada": None, "declared_lines": []}
+        )
+        assert reg.protocolo_page is None
+
+
+class TestRegistroHandwrittenDate:
+    """R9.2 (ADR-2): handwritten declared date + fecha_authoritative computed field."""
+
+    def test_fields_default_to_none_and_false(self) -> None:
+        reg = Registro(numero="232", fecha_declarada=None, declared_lines=[])
+        assert reg.fecha_declarada_handwritten is None
+        assert reg.fecha_declarada_confidence is None
+        assert reg.fecha_declarada_year_inferred is False
+
+    def test_fecha_authoritative_prefers_handwritten(self) -> None:
+        reg = Registro(
+            numero="232",
+            fecha_declarada=date(2026, 5, 20),
+            declared_lines=[],
+            fecha_declarada_handwritten=date(2026, 5, 28),
+        )
+        assert reg.fecha_authoritative == date(2026, 5, 28)
+
+    def test_fecha_authoritative_falls_back_to_electronic(self) -> None:
+        reg = Registro(
+            numero="232",
+            fecha_declarada=date(2026, 5, 20),
+            declared_lines=[],
+            fecha_declarada_handwritten=None,
+        )
+        assert reg.fecha_authoritative == date(2026, 5, 20)
+
+    def test_fecha_authoritative_none_when_both_none(self) -> None:
+        reg = Registro(numero="232", fecha_declarada=None, declared_lines=[])
+        assert reg.fecha_authoritative is None
+
+    def test_backward_compat_model_validate_old_dict(self) -> None:
+        reg = Registro.model_validate(
+            {"numero": "232", "fecha_declarada": "2026-05-20", "declared_lines": []}
+        )
+        assert reg.fecha_authoritative == date(2026, 5, 20)
+
 
 class TestPageClassification:
     def test_instantiation_guia(self) -> None:
@@ -235,3 +296,359 @@ class TestVisionResult:
         vr = VisionResult(date=None, confidence=0.0, raw="")
         assert vr.date is None
         assert vr.confidence == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Rev-2 new models (S1.1)
+# ---------------------------------------------------------------------------
+
+
+class TestGuiaIdentity:
+    """Tests for GuiaIdentity (EXT-011)."""
+
+    def test_instantiation_all_fields(self) -> None:
+        gi = GuiaIdentity(
+            serie="T009",
+            numero="0741770",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            hashqr_url=None,
+            confidence=1.0,
+        )
+        assert gi.serie == "T009"
+        assert gi.numero == "0741770"
+        assert gi.ruc_emisor == "20370146994"
+        assert gi.confidence == pytest.approx(1.0)
+
+    def test_guia_id_computed_from_serie_numero(self) -> None:
+        gi = GuiaIdentity(
+            serie="T009",
+            numero="0741770",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            confidence=1.0,
+        )
+        assert gi.guia_id == "T009-0741770"
+
+    def test_hashqr_url_optional_defaults_none(self) -> None:
+        gi = GuiaIdentity(
+            serie="T009",
+            numero="0741770",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            confidence=1.0,
+        )
+        assert gi.hashqr_url is None
+
+    def test_hashqr_url_populated(self) -> None:
+        url = "https://e-consulta.sunat.gob.pe/descargaqr?hashqr=ABC123"
+        gi = GuiaIdentity(
+            serie="T009",
+            numero="0741770",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            hashqr_url=url,
+            confidence=1.0,
+        )
+        assert gi.hashqr_url == url
+
+    def test_tipo_31_valid(self) -> None:
+        gi = GuiaIdentity(
+            serie="V001",
+            numero="0000001",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="31",
+            confidence=1.0,
+        )
+        assert gi.tipo == "31"
+
+
+class TestGuiaContribution:
+    """Tests for GuiaContribution (REC-C02 / design §D)."""
+
+    def test_instantiation_all_fields(self) -> None:
+        gc = GuiaContribution(
+            guia_id="T009-0741770",
+            source_pages=[47, 48],
+            cantidad=Decimal("1250.00"),
+            unidad="KG",
+            confidence=1.0,
+            identity_source="qr",
+        )
+        assert gc.guia_id == "T009-0741770"
+        assert gc.source_pages == [47, 48]
+        assert gc.cantidad == Decimal("1250.00")
+        assert gc.unidad == "KG"
+        assert gc.identity_source == "qr"
+
+    def test_ocr_fallback_source(self) -> None:
+        gc = GuiaContribution(
+            guia_id="guia_fallback",
+            source_pages=[10],
+            cantidad=Decimal("500"),
+            unidad="TN",
+            confidence=0.80,
+            identity_source="ocr_fallback",
+        )
+        assert gc.identity_source == "ocr_fallback"
+
+    def test_unidad_preserved_exactly(self) -> None:
+        """Units MUST be preserved as-is — never converted (domain invariant)."""
+        for unit in ("KG", "TN", "RD", "Rollo"):
+            gc = GuiaContribution(
+                guia_id="X-1",
+                source_pages=[1],
+                cantidad=Decimal("1"),
+                unidad=unit,
+                confidence=1.0,
+                identity_source="qr",
+            )
+            assert gc.unidad == unit
+
+    def test_divergence_fields_default(self) -> None:
+        """R9.2 (ADR-4): divergence side-channel fields default safely."""
+        gc = GuiaContribution(
+            guia_id="X-1",
+            source_pages=[1],
+            cantidad=Decimal("1"),
+            unidad="KG",
+            confidence=1.0,
+            identity_source="qr",
+        )
+        assert gc.fecha is None
+        assert gc.fecha_divergence is False
+        assert gc.divergence_reason is None
+
+    def test_divergence_fields_populated(self) -> None:
+        """R9.2 (ADR-4): divergence fields store correctly when set."""
+        gc = GuiaContribution(
+            guia_id="X-1",
+            source_pages=[1],
+            cantidad=Decimal("1"),
+            unidad="KG",
+            confidence=1.0,
+            identity_source="qr",
+            fecha=date(2026, 4, 15),
+            fecha_divergence=True,
+            divergence_reason="fecha_divergence",
+        )
+        assert gc.fecha == date(2026, 4, 15)
+        assert gc.fecha_divergence is True
+        assert gc.divergence_reason == "fecha_divergence"
+
+
+class TestGuiaDeRemisionRev2Fields:
+    """GuiaDeRemision rev-2 identity fields default safely (EXT-015 / design §7)."""
+
+    def test_existing_construction_still_works(self) -> None:
+        """Rev-2 fields default so existing call sites are not broken."""
+        guia = GuiaDeRemision(
+            guia_id="G-001",
+            registro="232",
+            fecha=date(2025, 3, 15),
+            lines=[],
+            source_pages=[10, 11],
+        )
+        assert guia.ruc_emisor is None
+        assert guia.ruc_receptor is None
+        assert guia.tipo is None
+        assert guia.gre_hashqr_url is None
+        assert guia.identity_confidence == pytest.approx(0.0)
+        assert guia.identity_source == "ocr_fallback"
+        # Rev-3 D6: first_page default changed from 0 to None (sentinel = "unknown")
+        assert guia.first_page is None
+
+    def test_rev2_fields_populated(self) -> None:
+        guia = GuiaDeRemision(
+            guia_id="T009-0741770",
+            registro="232",
+            fecha=date(2025, 3, 15),
+            lines=[],
+            source_pages=[47, 48],
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            gre_hashqr_url=None,
+            identity_confidence=1.0,
+            identity_source="qr",
+            first_page=47,
+        )
+        assert guia.ruc_emisor == "20370146994"
+        assert guia.identity_source == "qr"
+        assert guia.first_page == 47
+
+
+class TestReconciliationRowGuias:
+    """ReconciliationRow.guias defaults to empty list (rev-2 / design §D)."""
+
+    def test_guias_defaults_empty(self) -> None:
+        row = ReconciliationRow(
+            registro="232",
+            fecha=date(2025, 3, 15),
+            material_canonical="barra corrugada 1/2",
+            unidad="KG",
+            declared_qty=Decimal("1250.00"),
+            summed_qty=Decimal("1250.00"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[10, 11],
+        )
+        assert row.guias == []
+
+    def test_guias_populated(self) -> None:
+        gc = GuiaContribution(
+            guia_id="T009-0741770",
+            source_pages=[10],
+            cantidad=Decimal("1250.00"),
+            unidad="KG",
+            confidence=1.0,
+            identity_source="qr",
+        )
+        row = ReconciliationRow(
+            registro="232",
+            fecha=date(2025, 3, 15),
+            material_canonical="barra corrugada 1/2",
+            unidad="KG",
+            declared_qty=Decimal("1250.00"),
+            summed_qty=Decimal("1250.00"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[10],
+            guias=[gc],
+        )
+        assert len(row.guias) == 1
+        assert row.guias[0].guia_id == "T009-0741770"
+
+
+class TestReconciliationRowHasFechaDivergence:
+    """R9.2 (ADR-4): has_fecha_divergence group indicator (mirrors any_year_inferred)."""
+
+    def _row(self, guias: list[GuiaContribution]) -> ReconciliationRow:
+        return ReconciliationRow(
+            registro="232",
+            fecha=date(2026, 5, 28),
+            material_canonical="barra a615 g60 1/2\"",
+            unidad="KG",
+            declared_qty=Decimal("1250.00"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[10],
+            guias=guias,
+        )
+
+    def _gc(self, *, diverges: bool, guia_id: str = "G") -> GuiaContribution:
+        return GuiaContribution(
+            guia_id=guia_id,
+            source_pages=[1],
+            cantidad=Decimal("1"),
+            unidad="KG",
+            confidence=1.0,
+            identity_source="qr",
+            fecha_divergence=diverges,
+            divergence_reason="fecha_divergence" if diverges else None,
+        )
+
+    def test_no_guias_is_false(self) -> None:
+        assert self._row([]).has_fecha_divergence is False
+
+    def test_all_non_diverging_is_false(self) -> None:
+        row = self._row(
+            [self._gc(diverges=False, guia_id="A"), self._gc(diverges=False, guia_id="B")]
+        )
+        assert row.has_fecha_divergence is False
+
+    def test_one_diverging_is_true(self) -> None:
+        row = self._row([self._gc(diverges=True)])
+        assert row.has_fecha_divergence is True
+
+    def test_mixed_is_true(self) -> None:
+        row = self._row(
+            [self._gc(diverges=False, guia_id="A"), self._gc(diverges=True, guia_id="B")]
+        )
+        assert row.has_fecha_divergence is True
+
+
+# ---------------------------------------------------------------------------
+# R8.4: match_method field on MaterialLine and ReconciliationRow (MAT-008)
+# ---------------------------------------------------------------------------
+
+
+class TestMaterialLineMatchMethod:
+    def test_default_match_method_is_deterministic(self) -> None:
+        line = MaterialLine(
+            description_raw="BARRA A615 G60 1/2\"",
+            description_canonical="barra a615 g60 1/2\"",
+            unidad="TN",
+            cantidad=Decimal("1.0"),
+        )
+        assert line.match_method == "deterministic"
+
+    def test_match_method_llm_inferred_stored(self) -> None:
+        line = MaterialLine(
+            description_raw="X",
+            description_canonical="x",
+            unidad="KG",
+            cantidad=Decimal("1.0"),
+            match_method="llm_inferred",
+        )
+        assert line.match_method == "llm_inferred"
+
+    def test_backward_compat_model_validate_no_match_method(self) -> None:
+        """Old serialised dict without match_method key → defaults to deterministic."""
+        data = {
+            "description_raw": "BARRA",
+            "description_canonical": "barra",
+            "unidad": "KG",
+            "cantidad": "1.0",
+        }
+        line = MaterialLine.model_validate(data)
+        assert line.match_method == "deterministic"
+
+
+class TestReconciliationRowMatchMethod:
+    def test_default_match_method_is_deterministic(self) -> None:
+        row = ReconciliationRow(
+            registro="232",
+            fecha=None,
+            material_canonical="BARRA A615 G60 1/2\" 9M",
+            unidad="TN",
+            declared_qty=Decimal("4.124"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[5],
+        )
+        assert row.match_method == "deterministic"
+
+    def test_match_method_llm_inferred_stored(self) -> None:
+        row = ReconciliationRow(
+            registro="232",
+            fecha=None,
+            material_canonical="some material",
+            unidad="TN",
+            declared_qty=Decimal("1.0"),
+            delta=Decimal("0"),
+            status="MATCH",
+            source_pages=[],
+            match_method="llm_inferred",
+        )
+        assert row.match_method == "llm_inferred"
+
+    def test_backward_compat_model_validate_no_match_method(self) -> None:
+        """Old serialised dict without match_method key → defaults to deterministic."""
+        data = {
+            "registro": "100",
+            "fecha": None,
+            "material_canonical": "barra",
+            "unidad": "KG",
+            "declared_qty": "1.0",
+            "delta": "0",
+            "status": "MATCH",
+            "source_pages": [],
+        }
+        row = ReconciliationRow.model_validate(data)
+        assert row.match_method == "deterministic"

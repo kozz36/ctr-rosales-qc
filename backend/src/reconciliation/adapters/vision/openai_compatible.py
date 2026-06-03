@@ -24,6 +24,8 @@ never raises from public methods.
 from __future__ import annotations
 
 import base64
+import concurrent.futures
+import dataclasses
 import json
 import logging
 import re
@@ -44,19 +46,56 @@ _SYSTEM_PROMPT = (
 )
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Matches <think>…</think> blocks emitted by extended-thinking models (e.g. qwen3.5).
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+@dataclasses.dataclass
+class _TokenMeter:
+    """Accumulates token consumption across all vision calls on this adapter instance.
+
+    Invariant: all fields are additive — never reset between calls.
+    Call ``record(usage)`` after each API response; read aggregate via ``total_tokens``.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    calls: int = 0
+
+    def record(self, usage: object | None) -> None:
+        """Accumulate token counts from an API usage object.
+
+        Args:
+            usage: OpenAI-compatible usage object with ``prompt_tokens`` and
+                   ``completion_tokens`` attributes, or ``None`` (no-op).
+        """
+        if usage is None:
+            return
+        self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+        self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+        self.calls += 1
+
+    @property
+    def total_tokens(self) -> int:
+        """Sum of prompt and completion tokens across all recorded calls."""
+        return self.prompt_tokens + self.completion_tokens
 
 
 def _parse_vision_json(raw: str) -> VisionResult:
     """Defensively parse the model's JSON response.
 
     Handles:
+    - ``<think>…</think>`` blocks from extended-thinking models (e.g. qwen3.5:9b).
+      These blocks must be stripped BEFORE JSON parsing because they consume most of
+      the token budget and are never part of the structured output.
     - markdown code fences (```json ... ```)
     - missing fields
     - invalid date strings
     - non-JSON text
     """
     try:
-        clean = raw.strip()
+        # Strip think blocks first — qwen3.5 and similar thinking models prepend them.
+        clean = _THINK_RE.sub("", raw).strip()
         if clean.startswith("```"):
             clean = re.sub(r"^```[a-z]*\n?", "", clean)
             clean = re.sub(r"\n?```$", "", clean)
@@ -79,12 +118,29 @@ def _parse_vision_json(raw: str) -> VisionResult:
     return VisionResult(date=parsed_date, confidence=confidence, raw=raw)
 
 
-def _build_messages(image: bytes, hint: str | None = None) -> list[dict[str, Any]]:
-    """Construct the chat messages payload for a single image."""
+def _build_messages(
+    image: bytes,
+    hint: str | None = None,
+    disable_thinking: bool = False,
+) -> list[dict[str, Any]]:
+    """Construct the chat messages payload for a single image.
+
+    Args:
+        image: PNG bytes.
+        hint: Optional context text appended to the user message.
+        disable_thinking: When True, appends the literal token ``/no_think`` to
+            the user message.  This is the Qwen convention for disabling the
+            model's extended-thinking (<think>…</think>) phase via the
+            OpenAI-compatible/Ollama path.  The token must appear in the user
+            message text (not extra_body) because the Ollama chat-template
+            processes it from the message content, not from extra parameters.
+    """
     b64 = base64.b64encode(image).decode("ascii")
     user_text = "Extract the handwritten date from this image."
     if hint:
         user_text += f" Context hint: {hint}"
+    if disable_thinking:
+        user_text += " /no_think"
     return [
         {
             "role": "system",
@@ -115,9 +171,32 @@ class OpenAICompatibleVisionAdapter:
                   (``https://api.openai.com/v1``).  Set to
                   ``"http://localhost:11434/v1"`` for Ollama.
         api_key: API key string.  For Ollama, any non-empty string works.
-        max_tokens: Maximum output tokens.
+        max_tokens: Maximum output tokens.  Default is 4096 because extended-thinking
+                    models (e.g. qwen3.5:9b) consume the token budget with
+                    ``<think>…</think>`` blocks before emitting structured output —
+                    128 tokens is exhausted during the thinking phase, leaving an
+                    empty ``content``.  Think-blocks are stripped by ``_parse_vision_json``
+                    before JSON parsing.
         supports_batch: Whether to enable the batch path via OpenAI Batch
                         API.  Must be ``False`` for Ollama.
+        timeout: Per-request timeout in seconds applied to both the OpenAI
+                 client constructor (socket-level) and each
+                 ``chat.completions.create()`` call (belt-and-suspenders so a
+                 stalled read fails fast).  Default 30 s — normal no-think
+                 calls complete in 2-3 s; 30 s bounds worst-case stalls without
+                 retry amplification.
+        deadline_s: Hard per-call wall-clock ceiling in seconds.  The
+                    ``chat.completions.create()`` call is submitted to a thread
+                    and ``future.result(timeout=deadline_s)`` is used to enforce
+                    this ceiling.  When a thinking-blowup cloud call trickles
+                    data slowly (keeping ``timeout`` from firing), this deadline
+                    still returns control to the pipeline within ``deadline_s``.
+                    The abandoned thread may keep running in the background —
+                    acceptable for a batch tool whose process exits after the
+                    run.  Default 20 s.
+        disable_thinking: When True, appends ``/no_think`` to the user message
+                          so Qwen3.5 skips its extended-thinking phase.  Safe
+                          no-op for non-Qwen models.
         client: Injected ``openai.OpenAI`` instance for testing.  When
                 provided, the lazy-import path is skipped entirely.
     """
@@ -127,8 +206,11 @@ class OpenAICompatibleVisionAdapter:
         model: str = "gpt-4o",
         base_url: str | None = None,
         api_key: str | None = None,
-        max_tokens: int = 128,
+        max_tokens: int = 4096,
         supports_batch: bool = True,
+        timeout: float = 30.0,
+        deadline_s: float = 20.0,
+        disable_thinking: bool = False,
         client: object | None = None,
     ) -> None:
         self._model = model
@@ -136,7 +218,17 @@ class OpenAICompatibleVisionAdapter:
         self._api_key = api_key
         self._max_tokens = max_tokens
         self.supports_batch = supports_batch
+        self._timeout = timeout
+        self._deadline = deadline_s
+        self._disable_thinking = disable_thinking
         self._client = client
+        # R10.6: per-instance token-consumption meter (CONT-S08)
+        self._meter = _TokenMeter()
+
+    @property
+    def meter(self) -> _TokenMeter:
+        """Read-only reference to the token-consumption meter for this adapter instance."""
+        return self._meter
 
     # ------------------------------------------------------------------
     # VisionLLMPort interface
@@ -158,12 +250,48 @@ class OpenAICompatibleVisionAdapter:
         """
         try:
             client = self._get_client()
-            messages = _build_messages(image, hint)
+            messages = _build_messages(image, hint, self._disable_thinking)
 
-            response = client.chat.completions.create(  # type: ignore[union-attr]
-                model=self._model,
-                max_tokens=self._max_tokens,
-                messages=messages,  # type: ignore[arg-type]
+            # Hard wall-clock deadline guard: submit the create() call to a
+            # thread and wait at most self._deadline seconds for it to finish.
+            # This is the ONLY reliable defence against thinking-blowup cloud
+            # calls that trickle data slowly — the httpx read-timeout (timeout_s)
+            # fires only when no bytes arrive between individual reads, so a
+            # streaming response that slowly emits tokens can stall the pipeline
+            # for minutes even with timeout_s=30.  future.result(timeout=) gives
+            # us a hard ceiling regardless of streaming behaviour.
+            # The abandoned thread may keep running in the background; that is
+            # acceptable for a batch tool (process exits after the run).
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                future = executor.submit(
+                    client.chat.completions.create,  # type: ignore[union-attr]
+                    model=self._model,
+                    max_tokens=self._max_tokens,
+                    messages=messages,
+                    timeout=self._timeout,
+                )
+                response = future.result(timeout=self._deadline)
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    "OpenAICompatibleVisionAdapter: vision call exceeded %.1fs wall-clock; "
+                    "degrading this page to no-date (flagged for review)",
+                    self._deadline,
+                )
+                raise  # re-raise so the outer except degrades gracefully
+            finally:
+                # Don't block on the abandoned thread — let the process reap it.
+                executor.shutdown(wait=False)
+
+            # R10.6: record token consumption from the response usage field (CONT-S08)
+            self._meter.record(getattr(response, "usage", None))
+            logger.debug(
+                "vision meter: call=%d prompt=%d completion=%d total=%d (model=%s)",
+                self._meter.calls,
+                self._meter.prompt_tokens,
+                self._meter.completion_tokens,
+                self._meter.total_tokens,
+                self._model,
             )
             raw: str = response.choices[0].message.content or ""  # type: ignore[index]
             return _parse_vision_json(raw)
@@ -209,13 +337,23 @@ class OpenAICompatibleVisionAdapter:
     # ------------------------------------------------------------------
 
     def _get_client(self) -> object:
-        """Return the OpenAI client, building it lazily on first call."""
+        """Return the OpenAI client, building it lazily on first call.
+
+        ``timeout`` bounds the socket-level wait so a stalled ESTABLISHED
+        connection fails after ``self._timeout`` seconds instead of waiting
+        for the SDK default (~600 s).  ``max_retries=0`` disables SDK-level
+        retries: a persistent stall must not multiply the timeout budget;
+        degrade-and-continue (fecha=None, confidence=0) is the recovery path.
+        """
         if self._client is not None:
             return self._client
 
         from openai import OpenAI  # type: ignore[import]  # noqa: PLC0415
 
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {
+            "timeout": self._timeout,
+            "max_retries": 0,
+        }
         if self._api_key is not None:
             kwargs["api_key"] = self._api_key
         if self._base_url is not None:

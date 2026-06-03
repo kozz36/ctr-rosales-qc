@@ -1,16 +1,16 @@
 """ExcelReportAdapter — ReportPort implementation writing xlsx and csv.
 
-Locked 10-column set (EXT-003, per design/tasks):
+Locked 13-column set (MAT-008 +Revisión; R8.11 +Método; was 11 in rev-3, 10 in EXT-003):
     Registro | Fecha | Material | Unidad | Declarado | Sumado(guías) | Delta |
-    Estado | Confianza mín | Páginas origen
+    Estado | Confianza mín | Páginas origen | Año inferido | Método | Revisión
 
 xlsx output contains three sheets:
-    1. Reconciliacion — the main 10-column reconciliation table
+    1. Reconciliacion — the main 13-column reconciliation table
     2. Resumen         — per-registro summary (count, totals, status breakdown)
     3. Audit Trail     — the raw audit trail events (optional; omitted if empty)
 
 csv output writes two UTF-8 files:
-    <dst>.csv           — reconciliation table (same 10 columns)
+    <dst>.csv           — reconciliation table (same 13 columns)
     <dst>_resumen.csv   — summary sheet
 
 Both xlsx and csv honour the same column order and data types.
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import csv
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 from typing import Final, Literal
 
@@ -48,6 +47,12 @@ _COLUMNS: Final[list[str]] = [
     "Estado",
     "Confianza mín",
     "Páginas origen",
+    # Rev-3 D5 (REC-C07): advisory year-inference flag (EXT-021).
+    "Año inferido",
+    # R8.11 (MAT-008/S10 ADR-5): canonical key derivation method.
+    "Método",
+    # MAT-008 / verify W2: requires_review flag surfaced for the engineer.
+    "Revisión",
 ]
 
 # Status → fill colour (ARGB)
@@ -69,12 +74,14 @@ _HEADER_FONT_COLOUR: Final[str] = "FFFFFFFF"
 
 
 def _row_to_values(row: ReconciliationRow) -> list[object]:
-    """Serialise a ReconciliationRow to 10 ordered cell values."""
+    """Serialise a ReconciliationRow to 13 ordered cell values (MAT-008: +Revisión)."""
     fecha_str = row.fecha.isoformat() if isinstance(row.fecha, date) else (row.fecha or "")
     pages_str = ", ".join(str(p) for p in sorted(row.source_pages)) if row.source_pages else ""
     conf_str = (
         f"{row.min_confidence:.2f}" if row.min_confidence is not None else ""
     )
+    # Rev-3 D5: advisory year-inference flag (REC-C07).
+    any_year_inferred_str = "Sí" if row.any_year_inferred else ""
     return [
         row.registro,
         fecha_str,
@@ -86,6 +93,11 @@ def _row_to_values(row: ReconciliationRow) -> list[object]:
         row.status,
         conf_str,
         pages_str,
+        any_year_inferred_str,
+        # R8.11 (MAT-008/S10): canonical key derivation method (raw literal).
+        row.match_method,
+        # MAT-008 / verify W2: requires_review surfaced as "Sí"/"No" (matches Año inferido style).
+        "Sí" if row.requires_review else "No",
     ]
 
 
@@ -257,7 +269,7 @@ class ExcelReportAdapter:
     For xlsx: writes Reconciliacion + Resumen + Audit Trail (if non-empty) sheets.
     For csv:  writes <dst>.csv + <dst>_resumen.csv (UTF-8 BOM).
 
-    Both formats use the locked 10-column set defined in _COLUMNS.
+    Both formats use the locked 13-column set defined in _COLUMNS.
     """
 
     def export(

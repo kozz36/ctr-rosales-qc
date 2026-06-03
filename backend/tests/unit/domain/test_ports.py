@@ -2,20 +2,22 @@
 
 Each test creates a minimal stub implementing the Protocol and verifies
 that isinstance() check passes (runtime_checkable=True).
+
+Rev-2 additions: IdentityExtractionPort, SunatGreFetchPort (seam only).
 """
 
 from __future__ import annotations
 
-from datetime import date
-from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from reconciliation.domain.models import MaterialLine, ReconciliationRow, VisionResult
+from reconciliation.domain.models import GuiaIdentity, MaterialLine, ReconciliationRow, VisionResult
 from reconciliation.domain.ports import (
     DocumentSourcePort,
     ExtractionPort,
+    IdentityExtractionPort,
     ReportPort,
+    SunatGreFetchPort,
     VisionLLMPort,
 )
 
@@ -129,3 +131,134 @@ class TestReportPort:
         dst = Path("/tmp/out")
         result = stub.export([], [], dst, "xlsx")
         assert result == dst
+
+
+# ---------------------------------------------------------------------------
+# Rev-2 ports (S1.1)
+# ---------------------------------------------------------------------------
+
+
+class _StubIdentityExtraction:
+    def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
+        return GuiaIdentity(
+            serie="T009",
+            numero="0741770",
+            ruc_emisor="20370146994",
+            ruc_receptor="20613231871",
+            tipo="09",
+            confidence=1.0,
+        )
+
+
+class _StubSunatGreFetch:
+    def fetch(self, hashqr_url: str) -> None:
+        return None
+
+    def fetch_many(self, urls: list[str], concurrency: int = 5) -> dict:
+        return {url: self.fetch(url) for url in urls}
+
+
+class TestIdentityExtractionPort:
+    def test_isinstance_check_passes(self) -> None:
+        stub = _StubIdentityExtraction()
+        assert isinstance(stub, IdentityExtractionPort)
+
+    def test_decode_identity_returns_guia_identity(self) -> None:
+        stub = _StubIdentityExtraction()
+        result = stub.decode_identity(b"image")
+        assert isinstance(result, GuiaIdentity)
+        assert result.guia_id == "T009-0741770"
+
+    def test_decode_identity_can_return_none(self) -> None:
+        class _NoneStub:
+            def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
+                return None
+
+        stub = _NoneStub()
+        assert isinstance(stub, IdentityExtractionPort)
+        assert stub.decode_identity(b"img") is None
+
+
+class TestSunatGreFetchPort:
+    def test_isinstance_check_passes(self) -> None:
+        stub = _StubSunatGreFetch()
+        assert isinstance(stub, SunatGreFetchPort)
+
+    def test_fetch_returns_none_when_disabled(self) -> None:
+        stub = _StubSunatGreFetch()
+        assert stub.fetch("https://example.com/hashqr=XYZ") is None
+
+    def test_fetch_many_default_delegates_to_fetch(self) -> None:
+        """R10.7: SunatGreFetchPort.fetch_many default loops fetch() for each URL."""
+        stub = _StubSunatGreFetch()
+        urls = ["url-1", "url-2"]
+        result = stub.fetch_many(urls)
+        assert set(result.keys()) == {"url-1", "url-2"}
+        assert all(v is None for v in result.values())
+
+    def test_fetch_many_empty_urls(self) -> None:
+        stub = _StubSunatGreFetch()
+        assert stub.fetch_many([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# R8.6: MaterialInferencePort and MaterialKeyInference (MAT-006)
+# ---------------------------------------------------------------------------
+
+from reconciliation.domain.models import MaterialKeyInference
+from reconciliation.domain.ports import MaterialInferencePort
+
+
+class _StubMaterialInference:
+    def infer(self, description: str) -> MaterialKeyInference | None:
+        return MaterialKeyInference(
+            familia="BARRA",
+            grado="A615 G60",
+            diametro='1/2"',
+            presentacion="9M",
+            confidence=0.95,
+        )
+
+
+class TestMaterialInferencePort:
+    def test_isinstance_check_passes(self) -> None:
+        stub = _StubMaterialInference()
+        assert isinstance(stub, MaterialInferencePort)
+
+    def test_infer_returns_material_key_inference(self) -> None:
+        stub = _StubMaterialInference()
+        result = stub.infer("some description")
+        assert isinstance(result, MaterialKeyInference)
+        assert result.familia == "BARRA"
+
+    def test_infer_can_return_none(self) -> None:
+        class _NoneStub:
+            def infer(self, description: str) -> MaterialKeyInference | None:
+                return None
+
+        stub = _NoneStub()
+        assert isinstance(stub, MaterialInferencePort)
+        assert stub.infer("unknown") is None
+
+
+class TestMaterialKeyInference:
+    def test_all_fields(self) -> None:
+        inf = MaterialKeyInference(
+            familia="BARRA",
+            grado="A615 G60",
+            diametro='1/2"',
+            presentacion="9M",
+            confidence=0.9,
+        )
+        assert inf.familia == "BARRA"
+        assert inf.grado == "A615 G60"
+        assert inf.diametro == '1/2"'
+        assert inf.presentacion == "9M"
+        assert inf.confidence == 0.9
+
+    def test_optional_fields_default_none(self) -> None:
+        inf = MaterialKeyInference(familia="BARRA")
+        assert inf.grado is None
+        assert inf.diametro is None
+        assert inf.presentacion is None
+        assert inf.confidence == 0.0

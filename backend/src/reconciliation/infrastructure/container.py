@@ -54,6 +54,7 @@ from reconciliation.application.review_service import ReviewService
 from reconciliation.application.run_context import RunContext
 from reconciliation.domain.models import MaterialLine
 from reconciliation.domain.ports import ExtractionPort
+from reconciliation.domain.section_id_guard import is_section_id
 
 if TYPE_CHECKING:
     pass
@@ -83,12 +84,12 @@ class CompositeExtractionAdapter:
 
     def __init__(self) -> None:
         # DigitalTextExtractionAdapter has no heavy deps — safe to import now.
-        from reconciliation.adapters.pdf.digital_text_extractor import (  # noqa: PLC0415
-            DigitalTextExtractionAdapter,
-        )
         # PrintedTableAdapter defers PaddleOCR load until first OCR call.
         from reconciliation.adapters.ocr.paddle_table import (  # noqa: PLC0415
             PrintedTableAdapter,
+        )
+        from reconciliation.adapters.pdf.digital_text_extractor import (  # noqa: PLC0415
+            DigitalTextExtractionAdapter,
         )
 
         self._declared_adapter = DigitalTextExtractionAdapter()
@@ -136,7 +137,7 @@ def build_page_to_registro_map(
     total_pages: int,
     doc_source=None,  # type: ignore[assignment]  # DocumentSourcePort | None
     declared_extractor=None,  # type: ignore[assignment]  # DigitalTextExtractionAdapter | None
-) -> dict[int, str]:
+) -> dict[int, str | None]:
     """Build a 0-based page → registro_numero lookup from Contents offsets.
 
     The PDF Contents page provides a mapping like:
@@ -144,23 +145,27 @@ def build_page_to_registro_map(
 
     This function computes the page *range* for each section and resolves the
     true *Description numero* (e.g. "232") by parsing the first DECLARED page
-    within each section's range.  The returned dict is keyed on the Description
-    numero so it aligns with the declared side of the reconciliation.
+    within each section's range.
+
+    EXT-018 (rev-2) invariant: a Contents/section ID (e.g. "4252") MUST NEVER
+    be emitted as a registro numero.  When derivation fails or the candidate
+    matches the section-ID predicate, ``None`` is stored for those pages;
+    the caller is responsible for routing them to the unresolved_guias bucket.
 
     Args:
         contents_offsets:   Dict[contents_id_str → 1-based start page].
         total_pages:        Total PDF page count (for the last section's end).
         doc_source:         Optional DocumentSourcePort.  Required for numero
-                            derivation.  When None, the Contents ID is used as
-                            the key (legacy behaviour, wrong for correlation).
+                            derivation.  When None, derivation is skipped and
+                            section IDs are guarded by the section-ID predicate
+                            before being stored.
         declared_extractor: Optional DigitalTextExtractionAdapter (or duck-type
-                            compatible).  Required for numero derivation.  When
-                            None, the Contents ID is used as the key.
+                            compatible).  Required for numero derivation.
 
     Returns:
-        Dict[0-based page index → registro_numero string].
-        Keys are Description numeros (e.g. "232") when derivation succeeds,
-        or Contents IDs (e.g. "4252") as a fallback.
+        Dict[0-based page index → registro_numero string or None].
+        None means the Registro N° could not be reliably derived; the page
+        appears in the unresolved_guias bucket for human review.
 
     Notes:
         - The mapping is best-effort: a GUIA page outside all known ranges
@@ -184,16 +189,29 @@ def build_page_to_registro_map(
         ranges.append((contents_id, start_0, end_0))
 
     # Resolve Description numero for each section by scanning pages in range.
-    # The PROTO page is the canonical source; fall back to DETAIL; fall back to
-    # Contents ID if neither is parseable.
+    # The PROTO page is the canonical source; fall back to DETAIL.
+    # EXT-018: if derivation fails or yields a section ID → None (never the section ID).
     can_derive = doc_source is not None and declared_extractor is not None
 
-    page_to_registro: dict[int, str] = {}
+    page_to_registro: dict[int, str | None] = {}
 
     for contents_id, start_0, end_0 in ranges:
-        numero = _derive_numero(
-            contents_id, start_0, end_0, doc_source, declared_extractor
-        ) if can_derive else contents_id
+        if can_derive:
+            numero: str | None = _derive_numero(
+                contents_id, start_0, end_0, doc_source, declared_extractor
+            )
+        else:
+            # No derivation possible — guard the raw contents_id.
+            # EXT-018: if it looks like a section ID, return None.
+            if is_section_id(contents_id):
+                logger.warning(
+                    "build_page_to_registro_map: contents_id=%r is a section ID and "
+                    "derivation is unavailable; pages mapped to None (UNRESOLVED)",
+                    contents_id,
+                )
+                numero = None
+            else:
+                numero = contents_id
 
         for page_idx in range(start_0, end_0):
             page_to_registro[page_idx] = numero
@@ -207,15 +225,23 @@ def _derive_numero(
     end_0: int,
     doc_source,  # type: ignore[assignment]  # DocumentSourcePort
     declared_extractor,  # type: ignore[assignment]  # DigitalTextExtractionAdapter duck
-) -> str:
+) -> str | None:
     """Scan pages in [start_0, end_0) to find and parse the Description numero.
 
     Priority:
         1. First PROTOCOLO page found in the range (canonical).
         2. First FORM DETAIL page found in the range.
-        3. Fall back to contents_id if neither is found.
+        3. Fall back to None (UNRESOLVED) — NEVER return the Contents/section ID.
+
+    EXT-018 (rev-2): the function MUST NOT return a value for which
+    ``is_section_id(value)`` is ``True``.  If derivation fails, returns ``None``
+    so the caller can route the pages to the unresolved_guias bucket.
 
     This is a best-effort scan: failure on any page is logged and skipped.
+
+    Returns:
+        Description numero string (e.g. ``"232"``) on success, or ``None`` on
+        failure.  Never returns the Contents ID (e.g. ``"4252"``).
     """
     proto_numero: str | None = None
     detail_numero: str | None = None
@@ -258,21 +284,44 @@ def _derive_numero(
                 )
 
     if proto_numero is not None:
+        # Guard: derived numero must not itself be a section ID.
+        if is_section_id(proto_numero):
+            logger.warning(
+                "_derive_numero: contents_id=%r → proto_numero=%r looks like a section ID; "
+                "returning None (UNRESOLVED:%s)",
+                contents_id,
+                proto_numero,
+                contents_id,
+            )
+            return None
         logger.debug(
             "_derive_numero: contents_id=%r → numero=%r (from PROTO)", contents_id, proto_numero
         )
         return proto_numero
+
     if detail_numero is not None:
+        if is_section_id(detail_numero):
+            logger.warning(
+                "_derive_numero: contents_id=%r → detail_numero=%r looks like a section ID; "
+                "returning None (UNRESOLVED:%s)",
+                contents_id,
+                detail_numero,
+                contents_id,
+            )
+            return None
         logger.debug(
             "_derive_numero: contents_id=%r → numero=%r (from DETAIL)", contents_id, detail_numero
         )
         return detail_numero
 
+    # EXT-018: do NOT fall back to contents_id — it is a section ID, not a Registro N°.
     logger.warning(
-        "_derive_numero: contents_id=%r → no parseable DECLARED page; using Contents ID",
+        "_derive_numero: contents_id=%r → no parseable DECLARED page; "
+        "returning None (UNRESOLVED:%s) — guía will appear in unresolved_guias bucket",
+        contents_id,
         contents_id,
     )
-    return contents_id
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +333,7 @@ def build_pipeline(
     pdf_path: Path,
     config: AppConfig,
     run_id: str | None = None,
-) -> tuple[ReconciliationPipeline, RunContext, dict[int, str]]:
+) -> tuple[ReconciliationPipeline, RunContext, dict[int, str | None]]:
     """Instantiate all adapters, build the pipeline, and return a RunContext.
 
     This is the single factory that knows about every concrete adapter.
@@ -299,7 +348,8 @@ def build_pipeline(
         - pipeline:          Ready-to-run ReconciliationPipeline.
         - ctx:               Per-run RunContext owning output paths.
         - page_to_registro:  Pre-computed 0-based page→registro_numero map
-                             (keys are Description numeros, e.g. "232").
+                             (values are Description numeros, e.g. "232", or None
+                             for unresolved pages — EXT-018).
                              May be empty if Contents page is absent.
 
     Notes on lazy construction:
@@ -318,7 +368,27 @@ def build_pipeline(
 
     # --- Extraction adapter (composite: digital + OCR) ---
     # Instantiated early so we can pass the declared_extractor to build_page_to_registro_map.
-    extractor = CompositeExtractionAdapter()
+    #
+    # When ocr.enabled=False: bypass CompositeExtractionAdapter.__init__ entirely so
+    # paddle_table.py is never imported and PaddleOCR is never reachable.  We build the
+    # composite manually: DigitalTextExtractionAdapter for the declared slot (no heavy deps)
+    # + NullOcrExtractor for the OCR slot.  All other CompositeExtractionAdapter methods
+    # (DeclaredExtractorPort delegation) still work because they route through _declared_adapter.
+    if not config.ocr.enabled:
+        from reconciliation.adapters.ocr.null_extractor import NullOcrExtractor  # noqa: PLC0415
+        from reconciliation.adapters.pdf.digital_text_extractor import (  # noqa: PLC0415
+            DigitalTextExtractionAdapter,
+        )
+
+        extractor = CompositeExtractionAdapter.__new__(CompositeExtractionAdapter)
+        extractor._declared_adapter = DigitalTextExtractionAdapter()  # type: ignore[attr-defined]
+        extractor._ocr_adapter = NullOcrExtractor()  # type: ignore[attr-defined]
+        logger.info(
+            "build_pipeline: OCR DISABLED (config.ocr.enabled=False) — "
+            "NullOcrExtractor injected; paddle_table.py NOT imported"
+        )
+    else:
+        extractor = CompositeExtractionAdapter()
 
     # --- Section ↔ Registro correlation (C-3 fix) ---
     # Pass doc_source + extractor so the map is keyed on Description numeros ("232"),
@@ -332,11 +402,15 @@ def build_pipeline(
             doc_source=doc_source,
             declared_extractor=extractor._declared_adapter,
         )
+        resolved_values = [v for v in page_to_registro.values() if v is not None]
+        unresolved_count = sum(1 for v in page_to_registro.values() if v is None)
         logger.debug(
-            "build_pipeline: %d sections mapped across %d pages (keys: %s)",
+            "build_pipeline: %d sections mapped across %d pages (resolved keys: %s; "
+            "unresolved pages: %d)",
             len(contents_offsets),
             total_pages,
-            sorted(set(page_to_registro.values()))[:5],
+            sorted(set(resolved_values))[:5],
+            unresolved_count,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("build_pipeline: contents_offsets failed (%s); registro map empty", exc)
@@ -348,15 +422,25 @@ def build_pipeline(
     vision = build_vision_adapter(config)
 
     # --- Deskew adapter (lazy PaddleOCR; None when ML deps absent at import time) ---
-    # The DeskewAdapter itself loads PaddleOCR lazily on first call; it won't
-    # crash here.  We pass it to the pipeline so H-5 wiring exists; if PaddleOCR
-    # is absent at call time, DeskewAdapter._unavailable is set and it fast-returns.
-    try:
-        from reconciliation.adapters.ocr.paddle_deskew import DeskewAdapter  # noqa: PLC0415
-        deskew: object | None = DeskewAdapter()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("build_pipeline: DeskewAdapter import failed (%s); deskew disabled", exc)
-        deskew = None
+    # When ocr.enabled=False, skip DeskewAdapter entirely — no paddle import whatsoever.
+    # Classification falls back to QR Condition-A / heuristic Condition-B (primary path);
+    # title-OCR Condition-C is the only capability lost.
+    if not config.ocr.enabled:
+        deskew: object | None = None
+        logger.info(
+            "build_pipeline: deskew DISABLED (config.ocr.enabled=False) — "
+            "DeskewAdapter skipped; classify uses QR/heuristic conditions only"
+        )
+    else:
+        # The DeskewAdapter itself loads PaddleOCR lazily on first call; it won't
+        # crash here.  We pass it to the pipeline so H-5 wiring exists; if PaddleOCR
+        # is absent at call time, DeskewAdapter._unavailable is set and it fast-returns.
+        try:
+            from reconciliation.adapters.ocr.paddle_deskew import DeskewAdapter  # noqa: PLC0415
+            deskew = DeskewAdapter()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("build_pipeline: DeskewAdapter import failed (%s); deskew disabled", exc)
+            deskew = None
 
     # --- Run context ---
     ctx = RunContext(
@@ -365,7 +449,89 @@ def build_pipeline(
         run_id=run_id,
     )
 
-    # --- Pipeline (C-4 + H-5 fix: pass page_to_registro and deskew) ---
+    # --- SUNAT descargaqr adapter (opt-in; OFF by default for air-gap — D3/EXT-023) ---
+    sunat_adapter: object | None = None
+    if config.sunat.enabled:
+        try:
+            from reconciliation.adapters.sunat.descargaqr import (  # noqa: PLC0415
+                SunatDescargaqrAdapter,
+            )
+
+            # R10.8: cache_dir resolution — D4 stable cross-run cache (CONT-S10).
+            # Priority: stable configured path > per-run dir > None (cache disabled).
+            if config.sunat.cache:
+                if config.sunat.cache_dir is not None:
+                    # Stable cross-run cache (e.g. /data/sunat-cache mounted volume).
+                    sunat_cache_dir = config.sunat.cache_dir
+                    sunat_cache_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    # Default: per-run cache (existing behavior — no cross-run reuse).
+                    sunat_cache_dir = ctx.run_dir / "sunat"
+            else:
+                sunat_cache_dir = None
+
+            sunat_adapter = SunatDescargaqrAdapter(
+                timeout_s=config.sunat.timeout_s,
+                cache_dir=sunat_cache_dir,
+            )
+            logger.info(
+                "build_pipeline: SUNAT fetch ENABLED (timeout=%.1fs, cache_dir=%s, cross_run=%s) — "
+                "AIR-GAP IS BROKEN; network calls to e-factura.sunat.gob.pe will be made",
+                config.sunat.timeout_s,
+                sunat_cache_dir,
+                config.sunat.cache_dir is not None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "build_pipeline: SunatDescargaqrAdapter import failed (%s); "
+                "SUNAT fetch disabled",
+                exc,
+            )
+    else:
+        logger.debug("build_pipeline: SUNAT fetch disabled (air-gap default)")
+
+    # --- Identity adapter (rev-3 D1/D2: local QR decode for the decode_identities
+    # pre-pass that drives hybrid classification + block identity). Without this the
+    # pre-pass has no decoder and scanned guías fall back to OCR-only classification
+    # with no QR identity / no SUNAT hashqr_url. Lazy-imports pyzbar/zxing inside the
+    # adapter; if those are absent at call time it degrades to None per page.
+    try:
+        from reconciliation.adapters.identity.qr_barcode import (  # noqa: PLC0415
+            QrBarcodeExtractionAdapter,
+        )
+
+        identity: object | None = QrBarcodeExtractionAdapter()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "build_pipeline: QrBarcodeExtractionAdapter import failed (%s); "
+            "QR identity disabled (guías classify via heuristic only)",
+            exc,
+        )
+        identity = None
+
+    # --- Material inference adapter + key resolver (R8.10 / ADR-6) ---
+    # Lazy imports mirror the SUNAT and QR adapter pattern already in this file.
+    from reconciliation.adapters.inference.factory import (  # noqa: PLC0415
+        build_inference_adapter,
+    )
+    from reconciliation.domain.material_key_normalizer import (  # noqa: PLC0415
+        MaterialKeyNormalizer,
+    )
+    from reconciliation.domain.material_key_resolver import (  # noqa: PLC0415
+        MaterialKeyResolver,
+    )
+
+    inference_adapter = build_inference_adapter(config)
+    key_resolver = MaterialKeyResolver(MaterialKeyNormalizer(), inference_adapter)
+    logger.debug(
+        "build_pipeline: inference %s (model=%s)",
+        "ENABLED" if inference_adapter is not None else "DISABLED (deterministic-only)",
+        config.inference.model,
+    )
+
+    # --- Pipeline (C-4 + H-5 fix: pass page_to_registro and deskew; D3: pass sunat;
+    #     D1/D2: pass identity for the decode_identities pre-pass;
+    #     R8.10: pass key_resolver) ---
     pipeline = ReconciliationPipeline(
         doc_source=doc_source,
         extractor=extractor,
@@ -373,6 +539,9 @@ def build_pipeline(
         config=config,
         page_to_registro=page_to_registro,
         deskew=deskew,  # type: ignore[arg-type]
+        sunat=sunat_adapter,  # type: ignore[arg-type]
+        identity=identity,  # type: ignore[arg-type]
+        key_resolver=key_resolver,
     )
 
     return pipeline, ctx, page_to_registro
@@ -380,7 +549,7 @@ def build_pipeline(
 
 def build_review_service(
     ctx: RunContext,
-    pipeline_result: "ReconciliationPipeline | None" = None,
+    pipeline_result: ReconciliationPipeline | None = None,
 ) -> ReviewService:
     """Build a ReviewService from a completed pipeline result or sidecar.
 

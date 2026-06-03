@@ -9,6 +9,12 @@ Covered:
 - Fallback on classification failure (returns original bytes, no raise)
 - Fallback when import fails (_unavailable flag path)
 - Lazy-load: classifier injected via _classifier param bypasses import
+
+paddleocr 3.x result format used by mocks:
+  predict() → list of OCRResult-like dicts, one per image.
+  For orientation: result[0]["doc_preprocessor_res"]["angle"] = int (degrees)
+  For full OCR text: result[0]["rec_texts"] = list[str], result[0]["rec_scores"] = list[float]
+  (Contrast with 2.x: ocr(cls=True) → [[[None, (str(angle), conf)]]])
 """
 
 from __future__ import annotations
@@ -36,10 +42,16 @@ def _make_png(width: int = 8, height: int = 8) -> bytes:
 
 
 def _make_classifier_returning(angle: int) -> MagicMock:
-    """Return a mock classifier whose ocr() returns the given orientation angle."""
+    """Return a mock classifier whose predict() returns the given orientation angle.
+
+    3.x format: predict() → [{"doc_preprocessor_res": {"angle": int}, ...}]
+    """
     mock = MagicMock()
-    # result[0][0] = [None, (str(angle), confidence)]
-    mock.ocr.return_value = [[[None, (str(angle), 0.99)]]]
+    result_item = MagicMock()
+    result_item.__getitem__ = lambda self, key: (
+        {"angle": angle} if key == "doc_preprocessor_res" else [][0]
+    )
+    mock.predict.return_value = [result_item]
     return mock
 
 
@@ -95,28 +107,49 @@ class TestDeskewAdapterOrientationCorrection:
 
 class TestDeskewAdapterFallbacks:
     def test_classifier_returning_invalid_label_falls_back_to_zero(self) -> None:
+        """3.x: doc_preprocessor_res["angle"] not in {0,90,180,270} → return original."""
         image = _make_png()
         clf = MagicMock()
-        clf.ocr.return_value = [[[None, ("INVALID", 0.5)]]]
+        result_item = MagicMock()
+        result_item.__getitem__ = lambda self, key: (
+            {"angle": 999} if key == "doc_preprocessor_res" else [][0]
+        )
+        clf.predict.return_value = [result_item]
         adapter = DeskewAdapter(_classifier=clf)
         result = adapter.correct_orientation(image)
         assert result == image
 
     def test_classifier_returning_empty_result_falls_back(self) -> None:
+        """3.x: predict() returns [] → fall back to 0 degrees (original bytes)."""
         image = _make_png()
         clf = MagicMock()
-        clf.ocr.return_value = None
+        clf.predict.return_value = []
         adapter = DeskewAdapter(_classifier=clf)
         result = adapter.correct_orientation(image)
         assert result == image
 
     def test_classifier_ocr_raises_returns_original(self) -> None:
+        """predict() raises → _classify_angle returns 0, correct_orientation returns original."""
         image = _make_png()
         clf = MagicMock()
-        clf.ocr.side_effect = RuntimeError("ocr exploded")
+        clf.predict.side_effect = RuntimeError("ocr exploded")
         adapter = DeskewAdapter(_classifier=clf)
         result = adapter.correct_orientation(image)
         assert result == image
+
+    def test_persistent_capability_failure_short_circuits(self) -> None:
+        """NotImplementedError (oneDNN/PIR) on predict → adapter unavailable, no retry."""
+        clf = MagicMock()
+        clf.predict.side_effect = NotImplementedError("ConvertPirAttribute oneDNN")
+        adapter = DeskewAdapter(_classifier=clf)
+
+        first = adapter.correct_orientation(_make_png())
+        assert first is not None  # original bytes returned
+        assert adapter._unavailable is True
+
+        adapter.correct_orientation(_make_png())
+        # 2nd call short-circuits on _unavailable: predict only called once.
+        assert clf.predict.call_count == 1
 
     def test_unavailable_flag_skips_classifier(self) -> None:
         image = _make_png()
@@ -161,12 +194,12 @@ class TestDeskewAdapterLazyLoad:
         assert adapter._unavailable is False
 
     def test_injected_classifier_used_directly(self) -> None:
-        """Injected classifier bypasses lazy-load path entirely."""
+        """Injected classifier bypasses lazy-load path entirely; predict() called."""
         clf = _make_classifier_returning(0)
         adapter = DeskewAdapter(_classifier=clf)
         image = _make_png()
         adapter.correct_orientation(image)
-        clf.ocr.assert_called_once()
+        clf.predict.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -175,12 +208,18 @@ class TestDeskewAdapterLazyLoad:
 
 
 def _make_classifier_returning_text(lines: list[str]) -> MagicMock:
-    """Return a mock classifier whose full-OCR (rec=True) returns the given text lines."""
+    """Return a mock classifier whose predict() returns the given text lines.
+
+    3.x format: predict() → [{"rec_texts": [str, ...], "rec_scores": [float, ...]}]
+    """
     mock = MagicMock()
-    # Simulate result[0] = [[bbox, (text, conf)], ...]
-    mock.ocr.return_value = [
-        [[None, (line, 0.95)] for line in lines]
-    ]
+    result_item = MagicMock()
+    result_item.__getitem__ = lambda self, key: (
+        lines if key == "rec_texts" else
+        [0.95] * len(lines) if key == "rec_scores" else
+        [][0]
+    )
+    mock.predict.return_value = [result_item]
     return mock
 
 
@@ -220,8 +259,9 @@ class TestDeskewAdapterExtractTitle:
         clf.ocr.assert_not_called()
 
     def test_returns_none_on_empty_ocr_result(self) -> None:
+        """predict() returns [] (no items) → None."""
         clf = MagicMock()
-        clf.ocr.return_value = None
+        clf.predict.return_value = []
         adapter = DeskewAdapter(_classifier=clf)
         result = adapter.extract_title(_make_png())
         assert result is None

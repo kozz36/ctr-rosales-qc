@@ -25,8 +25,14 @@ llm = [
     "anthropic>=0.26",
     "openai>=1.30",
 ]
+identity = [
+    "pyzbar>=0.1.9",
+    "zxing-cpp>=2.2.0",
+    "Pillow>=10.0",
+    "numpy>=1.26",
+]
 all = [
-    "reconciliation[ml,llm]",
+    "reconciliation[ml,llm,identity]",
 ]
 dev = [
     "pytest",
@@ -58,3 +64,8 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_mode = "strict"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "e2e: marks end-to-end tests requiring external assets or services",
+]

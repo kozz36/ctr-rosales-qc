@@ -1,28 +1,19 @@
 /**
- * Tests for SourcePages.vue
+ * Tests for SourcePages.vue (S2.5 revision — <img> approach replaces new Image() probe)
  *
  * Covers:
  * - Renders chips for each page number
  * - Chip click emits pageClick event
  * - Keyboard (Enter/Space) triggers pageClick
- * - Graceful degradation when thumbnail probe fails (img onerror)
- * - Thumbnail shown when probe succeeds (img onload)
+ * - Graceful degradation when thumbnail @error fires (no has-thumb class)
+ * - Thumbnail shown when @load fires (has-thumb class applied)
+ * - Thumbnail <img> src uses the API base URL pattern (S2.5)
+ * - No <img> probe via new Image() — declarative <img :src> approach (S2.5)
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import SourcePages from '@/features/review/SourcePages.vue'
-
-// Mock Image constructor to control onload/onerror
-class MockImage {
-  src = ''
-  onload: (() => void) | null = null
-  onerror: (() => void) | null = null
-}
-
-beforeEach(() => {
-  vi.stubGlobal('Image', MockImage)
-})
 
 describe('SourcePages', () => {
   it('renders a chip for each page number', () => {
@@ -53,54 +44,57 @@ describe('SourcePages', () => {
     expect(wrapper.emitted('pageClick')).toBeTruthy()
   })
 
-  it('degrades gracefully when thumbnail probe errors (no img shown)', async () => {
-    // Use a mutable container to avoid TypeScript control-flow narrowing to never
-    const captured: { img: MockImage | null } = { img: null }
-
-    class CapturingImage extends MockImage {
-      constructor() {
-        super()
-        captured.img = this as MockImage
-      }
-    }
-    vi.stubGlobal('Image', CapturingImage)
-
+  it('thumbnail <img> src uses the API base URL pattern (S2.5)', () => {
+    // The <img> is always present (hidden until load). src must point to the API endpoint.
     const wrapper = mount(SourcePages, {
-      props: { pages: [1], runId: 'run-abc' },
+      props: { pages: [3], runId: 'run-abc' },
     })
-
-    // Simulate onerror (thumbnail endpoint not found)
-    captured.img?.onerror?.()
-    await wrapper.vm.$nextTick()
-
-    // No thumbnail img shown
-    expect(wrapper.find('.source-pages__thumb').exists()).toBe(false)
-    // Chip still renders page number
-    expect(wrapper.find('.source-pages__number').text()).toBe('1')
+    const img = wrapper.find('.source-pages__thumb')
+    expect(img.exists()).toBe(true)
+    expect(img.attributes('src')).toContain('/api/v1/runs/run-abc/pages/3/thumbnail')
   })
 
-  it('shows thumbnail when probe succeeds (img onload)', async () => {
-    const captured: { img: MockImage | null } = { img: null }
+  it('thumbnail <img> src respects custom apiBase prop', () => {
+    const wrapper = mount(SourcePages, {
+      props: { pages: [1], runId: 'run-xyz', apiBase: '/custom-api' },
+    })
+    const img = wrapper.find('.source-pages__thumb')
+    expect(img.attributes('src')).toContain('/custom-api/runs/run-xyz/pages/1/thumbnail')
+  })
 
-    class CapturingImage2 extends MockImage {
-      constructor() {
-        super()
-        captured.img = this as MockImage
-      }
-    }
-    vi.stubGlobal('Image', CapturingImage2)
-
+  it('has-thumb class absent and img hidden before @load fires', () => {
     const wrapper = mount(SourcePages, {
       props: { pages: [1], runId: 'run-abc' },
     })
+    // Before load: chip does not have has-thumb class
+    expect(wrapper.find('.source-pages__chip').classes()).not.toContain('source-pages__chip--has-thumb')
+    // img has hidden class
+    expect(wrapper.find('.source-pages__thumb').classes()).toContain('source-pages__thumb--hidden')
+  })
 
-    // Simulate successful load
-    captured.img?.onload?.()
+  it('has-thumb class applied and img visible after @load fires (graceful enhancement)', async () => {
+    const wrapper = mount(SourcePages, {
+      props: { pages: [1], runId: 'run-abc' },
+    })
+    // Simulate the img @load event
+    await wrapper.find('.source-pages__thumb').trigger('load')
     await wrapper.vm.$nextTick()
 
-    // Thumbnail img should now be visible
-    expect(wrapper.find('.source-pages__thumb').exists()).toBe(true)
     expect(wrapper.find('.source-pages__chip').classes()).toContain('source-pages__chip--has-thumb')
+    expect(wrapper.find('.source-pages__thumb').classes()).not.toContain('source-pages__thumb--hidden')
+  })
+
+  it('degrades gracefully when @error fires (no has-thumb class, img stays hidden)', async () => {
+    const wrapper = mount(SourcePages, {
+      props: { pages: [1], runId: 'run-abc' },
+    })
+    // Simulate the img @error event (404, network failure, etc.)
+    await wrapper.find('.source-pages__thumb').trigger('error')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.source-pages__chip').classes()).not.toContain('source-pages__chip--has-thumb')
+    // Chip still renders page number as fallback
+    expect(wrapper.find('.source-pages__number').text()).toBe('1')
   })
 
   it('renders empty with no chips when pages array is empty', () => {

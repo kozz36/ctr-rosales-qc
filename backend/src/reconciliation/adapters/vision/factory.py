@@ -66,7 +66,15 @@ def build_vision_adapter(cfg: "AppConfig") -> "VisionLLMPort":
             model=pcfg.model,
             base_url=pcfg.base_url,
             api_key=pcfg.api_key,
+            # R10.5: route config.vision.max_tokens into the adapter (env-tunable)
+            max_tokens=cfg.vision.max_tokens,
             supports_batch=True,
+            # Route timeout so a stalled cloud call fails fast (EXT-0XX / hang fix)
+            timeout=cfg.vision.timeout_s,
+            # Hard per-call wall-clock deadline — guards against thinking-blowup
+            deadline_s=cfg.vision.deadline_s,
+            # Route disable_thinking so /no_think is injected when configured
+            disable_thinking=cfg.vision.disable_thinking,
         )
 
     if provider == "ollama":
@@ -81,7 +89,15 @@ def build_vision_adapter(cfg: "AppConfig") -> "VisionLLMPort":
             base_url=pcfg.base_url or "http://localhost:11434/v1",
             # Ollama accepts any api_key; use "ollama" as a placeholder
             api_key=pcfg.api_key or "ollama",
+            # R10.5: route config.vision.max_tokens into the adapter (env-tunable)
+            max_tokens=cfg.vision.max_tokens,
             supports_batch=False,
+            # Route timeout so a stalled local call fails fast (EXT-0XX / hang fix)
+            timeout=cfg.vision.timeout_s,
+            # Hard per-call wall-clock deadline — guards against thinking-blowup
+            deadline_s=cfg.vision.deadline_s,
+            # Route disable_thinking so /no_think is injected when configured
+            disable_thinking=cfg.vision.disable_thinking,
         )
 
     raise ValueError(

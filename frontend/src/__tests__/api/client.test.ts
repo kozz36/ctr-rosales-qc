@@ -37,6 +37,7 @@ import {
   getRunStatus,
   getTable,
   editRow,
+  editGuiaLine,
   reassignGuia,
   getAuditTrail,
 } from '@/api/client'
@@ -109,6 +110,57 @@ describe('API client', () => {
 
     const callArgs = mockPatch.mock.calls[0] as [string, { value: unknown }]
     expect(callArgs[1].value).toBeNull()
+  })
+
+  // -------------------------------------------------------------------------
+  // PATCH /runs/{run_id}/guias/{guia_id}/lines — rev-2 (S2.1)
+  // -------------------------------------------------------------------------
+
+  it('editGuiaLine sends correct PATCH URL and body', async () => {
+    mockPatch.mockResolvedValueOnce({ data: { run_id: 'r1', rows: [] } })
+
+    await editGuiaLine('r1', 'T009-0741770', {
+      line_index: null,
+      material_canonical: null,
+      cantidad: 1250,
+    })
+
+    expect(mockPatch).toHaveBeenCalledWith(
+      '/runs/r1/guias/T009-0741770/lines',
+      { line_index: null, material_canonical: null, cantidad: 1250 },
+    )
+  })
+
+  it('editGuiaLine URL-encodes special characters in guia_id', async () => {
+    mockPatch.mockResolvedValueOnce({ data: { run_id: 'r1', rows: [] } })
+
+    // serie-numero format "T009-0741770" — hyphen is safe but we verify encoding path works
+    await editGuiaLine('r1', 'T073-0680256', {
+      line_index: 0,
+      material_canonical: null,
+      cantidad: 500,
+    })
+
+    // encodeURIComponent('T073-0680256') = 'T073-0680256' (safe chars)
+    expect(mockPatch).toHaveBeenCalledWith(
+      '/runs/r1/guias/T073-0680256/lines',
+      expect.objectContaining({ cantidad: 500 }),
+    )
+  })
+
+  it('useReassignGuia composable sends guia_id (not row_id) in body', async () => {
+    // Direct client test: reassignGuia sends guia_id as-is (no proxy)
+    mockPost.mockResolvedValueOnce({ data: { run_id: 'r1', rows: [] } })
+
+    await reassignGuia('r1', {
+      guia_id: 'T009-0741770', // actual serie-numero
+      new_registro: '231',
+      new_fecha: '2025-02-10',
+    })
+
+    const callBody = mockPost.mock.calls[0][1] as { guia_id: string }
+    expect(callBody.guia_id).toBe('T009-0741770')
+    expect(callBody.guia_id).not.toContain('|') // never a compound row_id
   })
 
   // -------------------------------------------------------------------------

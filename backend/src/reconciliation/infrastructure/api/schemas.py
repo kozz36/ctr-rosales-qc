@@ -19,6 +19,47 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# ---------------------------------------------------------------------------
+# Guía contribution (inline per reconciliation row — rev-2, REC-C02)
+# ---------------------------------------------------------------------------
+
+
+class GuiaContributionResponse(BaseModel):
+    """Per-guía contribution inline in a ReconciliationRowResponse (rev-2)."""
+
+    guia_id: str = Field(description="Deterministic identifier: {serie}-{numero}.")
+    source_pages: list[int] = Field(description="Physical page indices contributing to this guía.")
+    cantidad: Decimal = Field(description="Total quantity contributed by this guía to the group.")
+    unidad: str = Field(description="Unit of measure (must match the parent group's unidad).")
+    confidence: float = Field(description="Identity confidence from QR decode or fallback.")
+    identity_source: Literal["qr", "ocr_fallback"] = Field(
+        description="How the guía identity was determined."
+    )
+    # Rev-3 D5 (REC-C07): year_inferred provenance flag.
+    year_inferred: bool = Field(
+        default=False,
+        description=(
+            "True when the year component of this guía's reception date was reconstructed "
+            "via bounded inference (EXT-021), not read directly from vision output."
+        ),
+    )
+    # R9.6 (FDR-008, ADR-5): fecha-divergence fields — additive, backward-compatible.
+    fecha: date | None = Field(
+        default=None,
+        description="Guía handwritten reception date (ISO-8601 or null).",
+    )
+    fecha_divergence: bool = Field(
+        default=False,
+        description=(
+            "True when this guía's handwritten date diverges (day-month mismatch) "
+            "from the registro's authoritative declared date."
+        ),
+    )
+    divergence_reason: Literal["fecha_divergence"] | None = Field(
+        default=None,
+        description="Divergence classification code, or null when not divergent.",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Run lifecycle
@@ -43,12 +84,37 @@ class RunStatusResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Unresolved guía (REV-C04 — surfaces guías that could not be assigned to a registro)
+# ---------------------------------------------------------------------------
+
+
+class UnresolvedGuiaResponse(BaseModel):
+    """An unresolved GuiaDeRemision — one whose registro could not be determined.
+
+    These appear in the ``unresolved_guias`` bucket of ``ReconciliationTableResponse``
+    and MUST NOT appear as rows in the main reconciliation grid (REC-C05 / REV-C04).
+    """
+
+    guia_id: str = Field(description="Deterministic identifier: {serie}-{numero}.")
+    identity_source: str = Field(
+        description="How the guía identity was determined: 'qr' or 'ocr_fallback'."
+    )
+    source_pages: list[int] = Field(
+        description="Physical page indices contributing to this guía."
+    )
+    first_page: int | None = Field(
+        default=None,
+        description="First page index of this guía block (0-based).",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Reconciliation table
 # ---------------------------------------------------------------------------
 
 
 class ReconciliationRowResponse(BaseModel):
-    """A single row in the reconciliation table."""
+    """A single row in the reconciliation table (rev-2: guias[] inline)."""
 
     row_id: str  # "{registro}|{fecha}|{material_canonical}|{unidad}"
     registro: str
@@ -61,13 +127,59 @@ class ReconciliationRowResponse(BaseModel):
     status: Literal["MATCH", "MISMATCH", "DECLARED_MISSING", "GUIA_MISSING", "UNCLASSIFIED"]
     source_pages: list[int]
     min_confidence: float | None = None
+    # Flagging surface (task 7.3 / REV-004, EXT-S08, EXT-S08b)
+    requires_review: bool = Field(
+        default=False,
+        description=(
+            "True when any contributing line has low OCR confidence, "
+            "or when the guía reception date could not be read by vision."
+        ),
+    )
+    # Rev-2: inline guía contributions (REC-C02 / design §D)
+    guias: list[GuiaContributionResponse] = Field(
+        default_factory=list,
+        description="Per-guía contributions to this reconciliation group.",
+    )
+    # Rev-3 D5 (REC-C07): advisory flag — true when any contributing guía used
+    # year inference.  Does NOT affect MATCH/MISMATCH; transparency signal only.
+    any_year_inferred: bool = Field(
+        default=False,
+        description=(
+            "True when at least one contributing guía's reception-date year was "
+            "reconstructed via bounded inference (EXT-021). Advisory only."
+        ),
+    )
+    # R8.12 (MAT-008, ADR-5): read-only provenance field (no POST/PATCH accepts it).
+    match_method: Literal["deterministic", "llm_inferred", "unresolved"] = Field(
+        default="deterministic",
+        description=(
+            "How the canonical material key was derived: "
+            "'deterministic' (regex), 'llm_inferred' (Ollama), or 'unresolved' (fallback)."
+        ),
+    )
+    # R9.6 (FDR-008, ADR-5): group-level divergence indicator (derived from guías).
+    has_fecha_divergence: bool = Field(
+        default=False,
+        description=(
+            "True when at least one contributing guía has a fecha divergence "
+            "(group-level roll-up of guias[*].fecha_divergence). Advisory only."
+        ),
+    )
 
 
 class ReconciliationTableResponse(BaseModel):
-    """Response for GET /runs/{run_id}/table."""
+    """Response for GET /runs/{run_id}/table.
+
+    Rev-2: ``unresolved_guias`` carries guías that could not be assigned to a
+    registro (REC-C05 / REV-C04).  They are NEVER included in ``rows``.
+    """
 
     run_id: str
     rows: list[ReconciliationRowResponse]
+    unresolved_guias: list[UnresolvedGuiaResponse] = Field(
+        default_factory=list,
+        description="Guías whose registro could not be determined (REV-C04).",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +209,32 @@ class RowEditResponse(BaseModel):
 
     run_id: str
     rows: list[ReconciliationRowResponse]
+
+
+# ---------------------------------------------------------------------------
+# Guía line edit (PATCH /runs/{run_id}/guias/{guia_id}/lines — rev-2, S1.7)
+# ---------------------------------------------------------------------------
+
+
+class GuiaLineEditRequest(BaseModel):
+    """Update a specific material line's quantity on a GuiaDeRemision.
+
+    Identifies the target line by ``line_index`` (0-based, preferred) or
+    by ``material_canonical`` when ``line_index`` is omitted.
+    """
+
+    line_index: int | None = Field(
+        default=None,
+        description="0-based index of the line to update within guia.lines.",
+    )
+    material_canonical: str | None = Field(
+        default=None,
+        description="Canonical material description for line lookup when line_index is None.",
+    )
+    cantidad: float = Field(
+        description="New quantity value. Must be >= 0.",
+        ge=0,
+    )
 
 
 # ---------------------------------------------------------------------------

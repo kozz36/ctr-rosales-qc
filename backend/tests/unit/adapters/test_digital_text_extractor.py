@@ -135,6 +135,32 @@ class TestExtractRegistroFromProtoPage:
         reg = self._adapter().extract_registro_from_proto_page(text, 0)
         assert reg is None
 
+    def test_propagates_protocolo_page(self) -> None:
+        """R9.1: source_page is propagated onto Registro.protocolo_page."""
+        text = (
+            "PROTOCOLO DE RECEPCION\n"
+            "Registro N°:\nCONTRATANTE\n:\nCONSTRUCTORA XYZ\n232\n28-05-26\n"
+            "\x14\n\x14\n"
+            "BARRA A615/A706 G60 3/8\" DOB - 6.0 TN\n"
+            "\x14\n"
+        )
+        reg = self._adapter().extract_registro_from_proto_page(text, 7)
+        assert reg is not None
+        assert reg.protocolo_page == 7
+
+    def test_propagates_protocolo_page_zero_is_valid(self) -> None:
+        """R9.1: source_page=0 is a VALID page index, not a falsy sentinel."""
+        text = (
+            "PROTOCOLO DE RECEPCION\n"
+            "Registro N°:\nCONTRATANTE\n:\nCONSTRUCTORA XYZ\n232\n28-05-26\n"
+            "\x14\n\x14\n"
+            "BARRA A615/A706 G60 3/8\" DOB - 6.0 TN\n"
+            "\x14\n"
+        )
+        reg = self._adapter().extract_registro_from_proto_page(text, 0)
+        assert reg is not None
+        assert reg.protocolo_page == 0
+
 
 # ---------------------------------------------------------------------------
 # DigitalTextExtractionAdapter — extract_registro_from_detail_page
@@ -165,3 +191,18 @@ class TestExtractRegistroFromDetailPage:
         text = "FORM DETAIL\n#4252: something\nForm date\nMay 28, 2026\n"
         reg = self._adapter().extract_registro_from_detail_page(text, 0)
         assert reg is None
+
+    def test_detail_page_leaves_protocolo_page_none(self) -> None:
+        """R9.1: detail pages have no Protocolo 'Fecha:' field → protocolo_page stays None."""
+        text = (
+            "PTR001-TORRE ROSALES\n"
+            "Informe de detalle del formulario\n"
+            "FORM DETAIL\n"
+            "#4252: CTR-PLC01-FR001\n"
+            "\nDescription\n232\n"
+            "Form date\nMay 28, 2026\n"
+            "\nNotes\nBARRA A615/A706 G60 3/8\" DOB - 6.0 TN\nCreated by\n"
+        )
+        reg = self._adapter().extract_registro_from_detail_page(text, 3)
+        assert reg is not None
+        assert reg.protocolo_page is None

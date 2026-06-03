@@ -12,13 +12,15 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from reconciliation.application.config import AppConfig
 from reconciliation.application.pipeline import PipelineResult, ReconciliationPipeline
 from reconciliation.application.run_context import RunContext
-from reconciliation.domain.errors import VisionCapExceededError
-from reconciliation.domain.models import MaterialLine, VisionResult
+from reconciliation.domain.models import (
+    GuiaIdentity,
+    MaterialLine,
+    Registro,
+    VisionResult,
+)
 from reconciliation.domain.ports import DocumentSourcePort, ExtractionPort, VisionLLMPort
 
 
@@ -112,6 +114,52 @@ class FakeVisionBatch:
         return [self._result] * len(images)
 
 
+class _CountingVision:
+    """Sequential fake VisionLLMPort that counts every call (KI-1 / W2-A)."""
+
+    supports_batch: bool = False
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def read_handwritten_date(
+        self, image: bytes, hint: str | None = None
+    ) -> VisionResult:
+        self.calls += 1
+        return VisionResult(date=date(2026, 5, 28), confidence=0.95, raw="28/05/2026")
+
+    def read_handwritten_date_batch(
+        self, images: list[bytes]
+    ) -> list[VisionResult]:  # pragma: no cover
+        raise NotImplementedError("This fake is sequential only.")
+
+
+class FakeIdentityPerPage:
+    """Fake IdentityExtractionPort that returns a unique GuiaIdentity per call.
+
+    Each call returns a different guia_id (``T001-{seq}``), simulating distinct
+    QR codes on every page.  This forces the block assembler to create one block
+    per page — useful for testing cost-cap semantics where N pages → N blocks →
+    N vision calls.
+    """
+
+    def __init__(self) -> None:
+        self._seq = 0
+
+    def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity:
+        seq = self._seq
+        self._seq += 1
+        return GuiaIdentity(
+            serie="T001",
+            numero=str(seq),
+            ruc_emisor="12345678901",
+            ruc_receptor="10987654321",
+            tipo="09",
+            hashqr_url=None,
+            confidence=1.0,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -136,6 +184,15 @@ _GUIA_TEXT = "\n".join([
 ])
 
 
+def _make_registro_with_protocolo(numero: str, protocolo_page: int) -> Registro:
+    return Registro(
+        numero=numero,
+        fecha_declarada=date(2026, 5, 28),
+        declared_lines=[],
+        protocolo_page=protocolo_page,
+    )
+
+
 def _make_line(desc: str = "acero corrugado", qty: str = "30", unit: str = "KG") -> MaterialLine:
     return MaterialLine(
         description_raw=desc,
@@ -154,6 +211,7 @@ def _build_pipeline(
     vision: VisionLLMPort | None = None,
     max_vision_calls: int = 500,
     tmp_path: Path | None = None,
+    identity: Any | None = None,
 ) -> tuple[ReconciliationPipeline, RunContext]:
     cfg = AppConfig()
     # Override max_vision_calls without touching frozen fields
@@ -171,6 +229,7 @@ def _build_pipeline(
         extractor=extractor,
         vision=vis,
         config=cfg,
+        identity=identity,
     )
     base = tmp_path or Path(".")
     ctx = RunContext(pdf_path=base / "input.pdf", output_base=base / "runs")
@@ -219,6 +278,16 @@ class TestPipelineStageSequencing:
         assert len(result.guias) == 1
 
     def test_guia_page_vision_date_attached(self, tmp_path: Path) -> None:
+        """Vision date is attached to guía; year is reconstructed via bounded inference.
+
+        Folded fix (#2753 / R3): _stage_normalize_dates always reconstructs the year
+        from day/month even when vision returned a full date.  When vision returns
+        2024-03-10 (raw="10/03/2024"), the inference picks the most-recent March 10
+        within the ±5-year window (2026-03-10 as of the 2026 run date), correcting
+        the wrong year and setting year_inferred=True.
+
+        The confidence from vision is preserved on the GuiaDeRemision.
+        """
         pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
         line = _make_line()
         vision = FakeVisionSerial(
@@ -228,28 +297,44 @@ class TestPipelineStageSequencing:
             pages=pages, table_lines=[line], vision=vision, tmp_path=tmp_path
         )
         result = pipeline.run(ctx)
-        assert result.guias[0].fecha == date(2024, 3, 10)
+        # Year-fix: vision returned 2024-03-10 but inference reconstructs to the most
+        # recent valid March 10 (2026-03-10 given today's run date is 2026-06-02).
+        assert result.guias[0].fecha == date(2026, 3, 10)
+        assert result.guias[0].year_inferred is True
         assert result.guias[0].fecha_confidence == 0.99
 
     def test_vision_calls_counted_sequential(self, tmp_path: Path) -> None:
-        """Sequential path: one vision call per GUIA page."""
+        """Sequential path: one vision call per BLOCK.
+
+        With FakeIdentityPerPage each GUIA page gets a unique guia_id → each
+        page becomes its own block → 2 pages = 2 blocks = 2 vision calls.
+        Without an identity adapter, all same-section pages merge into one block
+        (OCR fallback) → only 1 call.  The test uses per-page identity to verify
+        the vision-call counter is incremented per block.
+        """
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
-        pipeline, ctx = _build_pipeline(pages=pages, tmp_path=tmp_path)
+        pipeline, ctx = _build_pipeline(
+            pages=pages, tmp_path=tmp_path, identity=FakeIdentityPerPage()
+        )
         result = pipeline.run(ctx)
         assert result.vision_calls_made == 2
 
     def test_batch_vision_uses_batch_path(self, tmp_path: Path) -> None:
-        """Batch path: single batch call for all GUIA pages."""
+        """Batch path: single batch call for all BLOCKS.
+
+        With FakeIdentityPerPage, 2 pages = 2 blocks → one batch call covering
+        both blocks.  vision_calls_made counts blocks (images sent), not API calls.
+        """
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
         vision = FakeVisionBatch()
         pipeline, ctx = _build_pipeline(
-            pages=pages, vision=vision, tmp_path=tmp_path
+            pages=pages, vision=vision, tmp_path=tmp_path, identity=FakeIdentityPerPage()
         )
         result = pipeline.run(ctx)
         assert vision.batch_calls == 1
@@ -325,73 +410,134 @@ class TestPipelineStageSequencing:
 
 
 class TestVisionCostCap:
-    def test_cap_zero_raises_immediately_sequential(self, tmp_path: Path) -> None:
-        """Cap=0 means NO vision calls allowed; raises before first call."""
+    """KI-1: hitting the vision cap degrades gracefully (no raise).
+
+    When ``vision.max_vision_calls`` is reached the pipeline STOPS issuing
+    further vision calls, leaves the remaining items' ``fecha=None`` (which the
+    null-fecha reconciliation rule flags ``requires_review``), and runs to
+    completion.  W2-A: the declared-date stage shares the SAME cap as the guía
+    stage instead of getting a fresh budget.
+    """
+
+    def test_cap_zero_degrades_no_calls_sequential(self, tmp_path: Path) -> None:
+        """Cap=0 means NO vision calls; pipeline completes, guía fecha=None."""
         pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
+        line = _make_line()
         pipeline, ctx = _build_pipeline(
-            pages=pages, max_vision_calls=0, tmp_path=tmp_path
+            pages=pages, table_lines=[line], max_vision_calls=0, tmp_path=tmp_path
         )
-        with pytest.raises(VisionCapExceededError) as exc_info:
-            pipeline.run(ctx)
-        assert exc_info.value.detail["cap"] == 0
+        result = pipeline.run(ctx)  # must NOT raise
+        assert result.vision_calls_made == 0
+        assert len(result.guias) == 1
+        assert result.guias[0].fecha is None
 
-    def test_cap_exceeded_mid_run_sequential(self, tmp_path: Path) -> None:
-        """Cap=1 with 3 GUIA pages → raises after first call, preserves sidecar."""
+    def test_cap_exceeded_mid_run_degrades_sequential(self, tmp_path: Path) -> None:
+        """Cap=1 with 3 distinct-QR blocks → first block gets a date, the rest
+        degrade to fecha=None; no exception is raised.
+
+        FakeIdentityPerPage ensures each page is a separate block (unique guia_id).
+        """
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
+        line = _make_line()
         pipeline, ctx = _build_pipeline(
-            pages=pages, max_vision_calls=1, tmp_path=tmp_path
+            pages=pages, table_lines=[line], max_vision_calls=1, tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
-        with pytest.raises(VisionCapExceededError) as exc_info:
-            pipeline.run(ctx)
-        detail = exc_info.value.detail
-        assert detail["calls_made"] == 1
-        assert detail["cap"] == 1
+        result = pipeline.run(ctx)  # must NOT raise
+        assert result.vision_calls_made == 1
+        assert len(result.guias) == 3
+        with_date = [g for g in result.guias if g.fecha is not None]
+        without_date = [g for g in result.guias if g.fecha is None]
+        assert len(with_date) == 1
+        assert len(without_date) == 2
 
-    def test_cap_exact_match_does_not_raise(self, tmp_path: Path) -> None:
-        """Cap=2 with 2 GUIA pages → completes without error."""
+    def test_cap_exact_match_does_not_degrade(self, tmp_path: Path) -> None:
+        """Cap=2 with 2 distinct-QR blocks → completes, all get a date."""
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
+        line = _make_line()
         pipeline, ctx = _build_pipeline(
-            pages=pages, max_vision_calls=2, tmp_path=tmp_path
+            pages=pages, table_lines=[line], max_vision_calls=2, tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         result = pipeline.run(ctx)  # must not raise
         assert result.vision_calls_made == 2
+        assert all(g.fecha is not None for g in result.guias)
 
-    def test_cap_exceeded_batch_path(self, tmp_path: Path) -> None:
-        """Batch path: cap=1 with 3 pages → raises after partial batch."""
+    def test_cap_exceeded_batch_path_degrades(self, tmp_path: Path) -> None:
+        """Batch path: cap=1 with 3 distinct-QR blocks → partial batch is
+        processed, the remainder degrade to fecha=None, no exception raised."""
         pages = [
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
             {"text": _GUIA_TEXT, "image": b"\x89PNG"},
         ]
+        line = _make_line()
         vision = FakeVisionBatch()
         pipeline, ctx = _build_pipeline(
-            pages=pages, vision=vision, max_vision_calls=1, tmp_path=tmp_path
+            pages=pages, table_lines=[line], vision=vision, max_vision_calls=1,
+            tmp_path=tmp_path, identity=FakeIdentityPerPage(),
         )
-        with pytest.raises(VisionCapExceededError) as exc_info:
-            pipeline.run(ctx)
-        detail = exc_info.value.detail
-        assert detail["cap"] == 1
-        assert detail["calls_made"] == 1
-        assert detail["pages_remaining"] == 2
+        result = pipeline.run(ctx)  # must NOT raise
+        assert result.vision_calls_made == 1
+        assert len(result.guias) == 3
+        assert len([g for g in result.guias if g.fecha is not None]) == 1
+        assert len([g for g in result.guias if g.fecha is None]) == 2
 
-    def test_error_detail_contains_required_keys(self, tmp_path: Path) -> None:
-        pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
-        pipeline, ctx = _build_pipeline(
-            pages=pages, max_vision_calls=0, tmp_path=tmp_path
+    def test_declared_stage_shares_guia_cap(self, tmp_path: Path) -> None:
+        """W2-A: ``_stage_extract_declared_date`` continues counting against the
+        SHARED ``max_vision_calls`` cap consumed by the guía stage — it does NOT
+        reset to a fresh budget.
+
+        With cap=2 and the guía stage having ALREADY consumed 2 calls, the
+        declared stage (two Protocolo registros) must issue ZERO vision calls.
+        Conversely with calls_already_made=0 it may issue up to the cap.
+        """
+        vision = _CountingVision()
+        cfg = AppConfig()
+        object.__setattr__(cfg.vision, "max_vision_calls", 2)
+        pipeline = ReconciliationPipeline(
+            doc_source=FakeDocumentSource(
+                [{"image": b"\x89PNG"}, {"image": b"\x89PNG"}]
+            ),
+            extractor=FakeExtractor(),
+            vision=vision,
+            config=cfg,
         )
-        with pytest.raises(VisionCapExceededError) as exc_info:
-            pipeline.run(ctx)
-        detail = exc_info.value.detail
-        assert "calls_made" in detail
-        assert "cap" in detail
-        assert "pages_remaining" in detail
+        registros = [
+            _make_registro_with_protocolo("100", protocolo_page=0),
+            _make_registro_with_protocolo("101", protocolo_page=1),
+        ]
+
+        # Cap already exhausted by the guía stage → declared stage issues 0 calls.
+        updated, calls = pipeline._stage_extract_declared_date(
+            registros, calls_already_made=2
+        )
+        assert vision.calls == 0
+        assert calls == 2
+        assert all(r.fecha_declarada_handwritten is None for r in updated)
+
+        # Fresh budget (0 consumed) → declared stage may issue up to the cap (2).
+        vision2 = _CountingVision()
+        pipeline2 = ReconciliationPipeline(
+            doc_source=FakeDocumentSource(
+                [{"image": b"\x89PNG"}, {"image": b"\x89PNG"}]
+            ),
+            extractor=FakeExtractor(),
+            vision=vision2,
+            config=cfg,
+        )
+        _updated2, calls2 = pipeline2._stage_extract_declared_date(
+            registros, calls_already_made=0
+        )
+        assert vision2.calls == 2
+        assert calls2 == 2
 
     def test_no_guia_pages_no_vision_calls(self, tmp_path: Path) -> None:
         """Pipeline with only DECLARED pages must not call vision at all."""
@@ -399,6 +545,52 @@ class TestVisionCostCap:
         pipeline, ctx = _build_pipeline(pages=pages, tmp_path=tmp_path)
         result = pipeline.run(ctx)
         assert result.vision_calls_made == 0
+
+
+# ---------------------------------------------------------------------------
+# 7.2: Vision audit record in sidecar
+# ---------------------------------------------------------------------------
+
+
+class TestVisionAuditRecord:
+    """Task 7.2: pipeline writes vision audit {stage, calls_made, cap_reached} to sidecar."""
+
+    def test_audit_record_written_on_normal_run(self, tmp_path: Path) -> None:
+        """After a successful run, sidecar contains vision_audit with cap_reached=False."""
+        pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
+        pipeline, ctx = _build_pipeline(pages=pages, tmp_path=tmp_path)
+        pipeline.run(ctx)
+        sidecar = ctx.read_review_sidecar()
+        assert "vision_audit" in sidecar, "vision_audit key missing from sidecar"
+        audit = sidecar["vision_audit"]
+        assert len(audit) >= 1
+        record = audit[-1]
+        assert record["stage"] == "vision"
+        assert record["calls_made"] >= 0
+        assert record["cap_reached"] is False
+
+    def test_audit_record_no_guia_pages(self, tmp_path: Path) -> None:
+        """Runs with no GUIA pages write audit record with calls_made=0, cap_reached=False."""
+        pages = [{"text": _DECLARED_TEXT}]
+        pipeline, ctx = _build_pipeline(pages=pages, tmp_path=tmp_path)
+        pipeline.run(ctx)
+        sidecar = ctx.read_review_sidecar()
+        audit = sidecar.get("vision_audit", [])
+        assert len(audit) >= 1
+        record = audit[-1]
+        assert record["stage"] == "vision"
+        assert record["calls_made"] == 0
+        assert record["cap_reached"] is False
+
+    def test_sidecar_still_has_edits_after_audit(self, tmp_path: Path) -> None:
+        """Vision audit record does not overwrite the edits key in the sidecar."""
+        pages = [{"text": _DECLARED_TEXT}]
+        pipeline, ctx = _build_pipeline(pages=pages, tmp_path=tmp_path)
+        pipeline.run(ctx)
+        sidecar = ctx.read_review_sidecar()
+        # Both keys must be present
+        assert "edits" in sidecar, "edits key lost after vision audit write"
+        assert "vision_audit" in sidecar
 
 
 # ---------------------------------------------------------------------------
@@ -789,3 +981,244 @@ class TestDeskewTitleOcrSeam:
         assert deskew.extract_title_calls == 0, (
             "extract_title should NOT be called for pages with meaningful digital text"
         )
+
+
+# ---------------------------------------------------------------------------
+# R8.9: _stage_normalize upgrade + key_resolver defensive default (ADR-6)
+# ---------------------------------------------------------------------------
+
+
+from decimal import Decimal as _Decimal
+from unittest.mock import MagicMock
+
+from reconciliation.domain.material_key import CanonicalKey
+from reconciliation.domain.material_key_normalizer import MaterialKeyNormalizer
+from reconciliation.domain.material_key_resolver import MaterialKeyResolver
+
+
+class TestKeyResolverDefensive:
+    """Pipeline instantiated without key_resolver → deterministic-only mode."""
+
+    def _build_minimal_pipeline(self):
+        """Build a pipeline without key_resolver (defensive default path)."""
+        doc = FakeDocumentSource([
+            {"text": None, "image": b"\x89PNG\r\n"},
+        ])
+        extractor = FakeExtractor()
+        vision = FakeVisionSerial()
+        config = AppConfig()
+        return ReconciliationPipeline(
+            doc_source=doc,
+            extractor=extractor,
+            vision=vision,
+            config=config,
+        )
+
+    def test_pipeline_without_key_resolver_has_default(self) -> None:
+        """key_resolver is populated with the defensive default."""
+        pipeline = self._build_minimal_pipeline()
+        assert pipeline._key_resolver is not None
+
+    def test_default_resolver_inference_is_none(self) -> None:
+        """Defensive default uses deterministic-only resolver (no inference port)."""
+        pipeline = self._build_minimal_pipeline()
+        assert pipeline._key_resolver._inference is None
+
+    def test_stage_normalize_populates_description_canonical(self, tmp_path) -> None:
+        """_stage_normalize fills description_canonical using the resolver."""
+        from datetime import date
+
+        pipeline = self._build_minimal_pipeline()
+
+        declared_line = MaterialLine(
+            description_raw='BARRA AG615/A706 G60 1/2" x 9M',
+            description_canonical="",  # empty before normalize
+            unidad="TN",
+            cantidad=_Decimal("4.124"),
+        )
+        from reconciliation.domain.models import Registro
+        declared = [Registro(
+            numero="232",
+            fecha_declarada=date(2024, 1, 15),
+            declared_lines=[declared_line],
+        )]
+        guias = []
+        norm_declared, norm_guias = pipeline._stage_normalize(declared, guias)
+        assert norm_declared[0].declared_lines[0].description_canonical != ""
+        assert norm_declared[0].declared_lines[0].match_method == "deterministic"
+
+    def test_stage_normalize_with_llm_inferred_resolver(self, tmp_path) -> None:
+        """Pipeline with mock resolver returning llm_inferred sets match_method correctly."""
+        from datetime import date
+
+        mock_resolver = MagicMock()
+        mock_resolver.resolve.return_value = CanonicalKey(
+            familia="BARRA",
+            grado="A615 G60",
+            diametro='1/2"',
+            presentacion="9M",
+            unidad="TN",
+            method="llm_inferred",
+        )
+
+        doc = FakeDocumentSource([{"text": None, "image": b"\x89PNG\r\n"}])
+        extractor = FakeExtractor()
+        vision = FakeVisionSerial()
+        pipeline = ReconciliationPipeline(
+            doc_source=doc,
+            extractor=extractor,
+            vision=vision,
+            config=AppConfig(),
+            key_resolver=mock_resolver,
+        )
+
+        declared_line = MaterialLine(
+            description_raw="ambiguous description",
+            description_canonical="",
+            unidad="TN",
+            cantidad=_Decimal("1.0"),
+        )
+        from reconciliation.domain.models import Registro
+        declared = [Registro(
+            numero="100",
+            fecha_declarada=date(2024, 1, 1),
+            declared_lines=[declared_line],
+        )]
+        norm_declared, _ = pipeline._stage_normalize(declared, [])
+        assert norm_declared[0].declared_lines[0].match_method == "llm_inferred"
+        assert norm_declared[0].declared_lines[0].requires_review is True
+
+    def test_stage_normalize_with_unresolved_resolver(self, tmp_path) -> None:
+        """Pipeline with mock resolver returning unresolved sets UNRESOLVED:: prefix."""
+        from datetime import date
+
+        mock_resolver = MagicMock()
+        raw = "some unresolvable text"
+        mock_resolver.resolve.return_value = CanonicalKey.unresolved(raw, "TN")
+
+        doc = FakeDocumentSource([{"text": None, "image": b"\x89PNG\r\n"}])
+        extractor = FakeExtractor()
+        vision = FakeVisionSerial()
+        pipeline = ReconciliationPipeline(
+            doc_source=doc,
+            extractor=extractor,
+            vision=vision,
+            config=AppConfig(),
+            key_resolver=mock_resolver,
+        )
+
+        declared_line = MaterialLine(
+            description_raw=raw,
+            description_canonical="",
+            unidad="TN",
+            cantidad=_Decimal("1.0"),
+        )
+        from reconciliation.domain.models import Registro
+        declared = [Registro(
+            numero="100",
+            fecha_declarada=date(2024, 1, 1),
+            declared_lines=[declared_line],
+        )]
+        norm_declared, _ = pipeline._stage_normalize(declared, [])
+        assert norm_declared[0].declared_lines[0].description_canonical.startswith("UNRESOLVED::")
+
+
+# ---------------------------------------------------------------------------
+# OCR disabled mode — _stage_extract_ocr with NullOcrExtractor
+# ---------------------------------------------------------------------------
+
+from reconciliation.adapters.ocr.null_extractor import NullOcrExtractor
+from reconciliation.application.config import OcrConfig
+
+
+class TestOcrDisabledPipelineStage:
+    """Pipeline stage tests for ocr.enabled=False mode.
+
+    Uses fake doc source and NullOcrExtractor directly — no paddle, no real PDF.
+    """
+
+    def _build_ocr_disabled_pipeline(
+        self,
+        pages: list[dict],
+        tmp_path: Path,
+    ) -> tuple[ReconciliationPipeline, RunContext]:
+        cfg = AppConfig(ocr=OcrConfig(enabled=False))
+        doc = FakeDocumentSource(pages)
+        # NullOcrExtractor as the extractor (satisfies ExtractionPort)
+        extractor = NullOcrExtractor()
+        vision = FakeVisionSerial()
+        pipeline = ReconciliationPipeline(
+            doc_source=doc,
+            extractor=extractor,
+            vision=vision,
+            config=cfg,
+            deskew=None,  # explicitly no deskew (mirrors what build_pipeline wires)
+        )
+        ctx = RunContext(pdf_path=tmp_path / "input.pdf", output_base=tmp_path / "runs")
+        return pipeline, ctx
+
+    def test_stage_extract_ocr_with_null_extractor_returns_raw_guias_with_empty_lines(
+        self, tmp_path: Path
+    ) -> None:
+        """With NullOcrExtractor, _stage_extract_ocr creates _RawGuia objects
+        with empty lines per GUIA page — no OCR failure warning emitted.
+        """
+        from reconciliation.application.pipeline import DecodeOutcome
+        from reconciliation.domain.models import PageClassification
+
+        pipeline, ctx = self._build_ocr_disabled_pipeline(
+            pages=[{"text": _GUIA_TEXT, "image": b"\x89PNG\r\n"}],
+            tmp_path=tmp_path,
+        )
+        classifications = [
+            PageClassification(page=0, kind="GUIA", title_matched="GUIA DE REMISION", confidence=1.0)
+        ]
+        decode_map = {
+            0: DecodeOutcome(
+                identity=None,
+                hashqr_url=None,
+                rendered=b"\x89PNG\r\n",
+                decoded=False,
+            )
+        }
+
+        raw_guias, ocr_warnings = pipeline._stage_extract_ocr(
+            classifications, decode_map=decode_map
+        )
+
+        assert len(raw_guias) == 1
+        assert raw_guias[0].lines == []
+        # No _ocr_failed warning — empty lines are INTENTIONAL (skip, not failure)
+        assert ocr_warnings == []
+
+    def test_stage_extract_ocr_no_ocr_failed_flag_on_null_extractor(
+        self, tmp_path: Path
+    ) -> None:
+        """NullOcrExtractor does NOT set _ocr_failed — intentional skip != failure."""
+        from reconciliation.application.pipeline import DecodeOutcome
+        from reconciliation.domain.models import PageClassification
+
+        pipeline, ctx = self._build_ocr_disabled_pipeline(
+            pages=[{"text": _GUIA_TEXT, "image": b"\x89PNG\r\n"}],
+            tmp_path=tmp_path,
+        )
+        # Confirm _ocr_failed is absent or False on the extractor
+        assert not getattr(pipeline._extractor, "_ocr_failed", False)
+
+    def test_full_run_ocr_disabled_guia_gets_empty_lines(
+        self, tmp_path: Path
+    ) -> None:
+        """End-to-end run with ocr.enabled=False: GUIA page produces a guía with
+        empty lines and no OCR warnings in the result.
+        """
+        pipeline, ctx = self._build_ocr_disabled_pipeline(
+            pages=[{"text": _GUIA_TEXT, "image": b"\x89PNG\r\n"}],
+            tmp_path=tmp_path,
+        )
+        result = pipeline.run(ctx)
+        assert result.classifications[0].kind == "GUIA"
+        assert len(result.guias) == 1
+        assert result.guias[0].lines == []
+        # No OCR failure warnings — empty lines are intentional
+        ocr_warnings = [w for w in result.warnings if "OCR unavailable" in w]
+        assert ocr_warnings == []

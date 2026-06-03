@@ -1,0 +1,81 @@
+# docker-compose.yml — ctr-rosales-qc backend verification environment (r10 / D5)
+#
+# Cloud vision profile: provider=ollama → qwen3.5:397b-cloud via host Ollama daemon.
+# SUNAT fetch: opt-in (enabled=true); cross-run cache at /data/sunat-cache (named volume).
+# OCR: disabled (ocr.enabled=false) — quantities come from SUNAT; paddle never instantiated.
+#
+# Prerequisites:
+#   - make build (or docker compose build backend)
+#   - Ollama host daemon running with qwen3.5:397b-cloud pulled
+#   - PDF file present at the path bound below (read-only)
+#
+# Air-gap default is PRESERVED — the cloud + SUNAT profile is opt-in via this compose file.
+# Running the backend directly (outside compose) uses its own defaults (provider=anthropic,
+# sunat.enabled=false) — no cloud egress.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      # `test` stage = runtime superset with pytest + tests/ for in-container
+      # verification (CONT-S03/S12). Still paddle-free. Prod-lean image is the
+      # default `runtime` target (build it explicitly with --target runtime).
+      target: test
+    image: ctr-backend:test
+    # Host networking (Linux): the container shares the host net stack so it can
+    # reach the host Ollama daemon bound to 127.0.0.1:11434 (host.docker.internal
+    # via the bridge does NOT work — ollama listens on localhost only) AND egress
+    # to SUNAT. `ports:` is incompatible with host mode (uvicorn binds host :8000
+    # directly). Verified: ollama + SUNAT both HTTP 200 from a --network host run.
+    network_mode: host
+    environment:
+      # OCR: disabled — SUNAT supplies authoritative quantities (paddle never loaded)
+      RECONCILIATION__OCR__ENABLED: "false"
+      # Vision: cloud via host Ollama (host networking → localhost reaches the daemon)
+      RECONCILIATION__VISION__PROVIDER: "ollama"
+      # Model + base URL are env-configurable (12-factor) so each host can point at
+      # its own Ollama port / model without editing this file. Defaults assume the
+      # standard Ollama port (11434) and the cloud model. Override via .env or shell:
+      #   OLLAMA_BASE_URL=http://localhost:11435/v1   (this host binds 11435)
+      #   OLLAMA_MODEL=qwen3.5:9b                      (local-vision fallback)
+      RECONCILIATION__VISION__OLLAMA__MODEL: "${OLLAMA_MODEL:-qwen3.5:397b-cloud}"
+      RECONCILIATION__VISION__OLLAMA__BASE_URL: "${OLLAMA_BASE_URL:-http://localhost:11434/v1}"
+      # max_tokens: 640 sits in the 512-768 range — survives the <think> phase
+      RECONCILIATION__VISION__MAX_TOKENS: "640"
+      # Protocolo crop: calibrated (0.60,0.14,1.00,0.22) — targets Registro N° + Fecha rows only.
+      # Excludes printed template revision date (Rev:02 Fecha:08/09/2025). R10.9 calibrated.
+      RECONCILIATION__VISION__PROTOCOLO_CROP__X0: "0.60"
+      RECONCILIATION__VISION__PROTOCOLO_CROP__Y0: "0.14"
+      RECONCILIATION__VISION__PROTOCOLO_CROP__X1: "1.00"
+      RECONCILIATION__VISION__PROTOCOLO_CROP__Y1: "0.22"
+      # SUNAT: enabled with cross-run cache (stable named volume)
+      RECONCILIATION__SUNAT__ENABLED: "true"
+      RECONCILIATION__SUNAT__CACHE: "true"
+      RECONCILIATION__SUNAT__CACHE_DIR: "/data/sunat-cache"
+      # Output: named volume for run results
+      RECONCILIATION__OUTPUT_DIR: "/data/runs"
+    volumes:
+      # Real PDF: read-only bind-mount (input PDF must not be modified)
+      - "/data/Projects/ctr-rosales-qc/Informe de detalle del formulario-202606020255.pdf:/data/input.pdf:ro"
+      # Run output: named volume (persistent across compose up/down)
+      - run-output:/data/runs
+      # SUNAT cache: stable cross-run named volume (D4 CONT-S10)
+      - sunat-cache:/data/sunat-cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # frontend: DEFERRED — frontend tree absent from this branch (feat/rev2-identity-domain)
+  # Uncomment when frontend/ lands on this branch.
+  # frontend:
+  #   profiles: [ui]
+  #   build: { context: ./frontend }
+  #   ports: ["5173:5173"]
+
+volumes:
+  run-output:
+  sunat-cache:

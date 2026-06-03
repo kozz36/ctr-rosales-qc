@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+# tests/ stays in the build context so the `test` stage can COPY it.
+# The runtime stage never copies tests/, so the prod image stays lean.
+*.egg-info/
+.git
+runs/
+config.yaml
+*.md

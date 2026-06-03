@@ -115,6 +115,35 @@ class TestParseVisionJson:
         result = _parse_vision_json(raw)
         assert result.raw == raw
 
+    def test_think_block_stripped_before_json_parse(self) -> None:
+        """Extended-thinking models (e.g. qwen3.5:9b) prepend <think>…</think> blocks.
+
+        The parser must strip these before attempting JSON parsing so that the
+        structured response is extracted correctly from the remaining content.
+        """
+        raw = (
+            "<think>I need to look at the stamp region and find the date.</think>"
+            '\n{"date": "2026-05-28", "confidence": 0.95}'
+        )
+        result = _oai_parse(raw)
+        assert result.date == date(2026, 5, 28)
+        assert result.confidence == pytest.approx(0.95)
+
+    def test_think_block_multiline_stripped(self) -> None:
+        raw = (
+            "<think>\nStep 1: Examine image\nStep 2: Find date\n</think>"
+            '\n```json\n{"date": "2026-05-28", "confidence": 0.90}\n```'
+        )
+        result = _oai_parse(raw)
+        assert result.date == date(2026, 5, 28)
+        assert result.confidence == pytest.approx(0.90)
+
+    def test_empty_content_after_think_block_returns_null(self) -> None:
+        """When max_tokens is exhausted during thinking, content is empty → null."""
+        result = _oai_parse("")
+        assert result.date is None
+        assert result.confidence == pytest.approx(0.0)
+
 
 # ---------------------------------------------------------------------------
 # AnthropicVisionAdapter
@@ -302,6 +331,56 @@ class TestOpenAICompatibleVisionAdapterLazyLoad:
         client.chat.completions.create.assert_called_once()
 
 
+class TestOpenAICompatibleVisionAdapterTimeout:
+    """Timeout is passed to the OpenAI client constructor and to each create() call."""
+
+    def test_default_timeout_is_30(self) -> None:
+        adapter = OpenAICompatibleVisionAdapter()
+        assert adapter._timeout == pytest.approx(30.0)
+
+    def test_custom_timeout_stored(self) -> None:
+        adapter = OpenAICompatibleVisionAdapter(timeout=30.0)
+        assert adapter._timeout == 30.0
+
+    def test_timeout_passed_to_openai_constructor(self) -> None:
+        """_get_client() must forward timeout= to OpenAI(**kwargs)."""
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_openai_cls.return_value = MagicMock()
+            adapter = OpenAICompatibleVisionAdapter(timeout=45.0)
+            adapter._get_client()
+            _, ctor_kwargs = mock_openai_cls.call_args
+            assert ctor_kwargs.get("timeout") == 45.0
+
+    def test_timeout_passed_to_create_call(self) -> None:
+        """chat.completions.create() must receive timeout= on each call."""
+        client = MagicMock()
+        client.chat.completions.create.return_value = _make_openai_response(
+            '{"date": null, "confidence": 0.0}'
+        )
+        adapter = OpenAICompatibleVisionAdapter(timeout=60.0, client=client)
+        adapter.read_handwritten_date(_make_png())
+        _, call_kwargs = client.chat.completions.create.call_args
+        assert call_kwargs.get("timeout") == 60.0
+
+    def test_max_retries_set_to_0_on_constructor(self) -> None:
+        """Client must be built with max_retries=0 (fast-fail, no retry amplification)."""
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_openai_cls.return_value = MagicMock()
+            adapter = OpenAICompatibleVisionAdapter()
+            adapter._get_client()
+            _, ctor_kwargs = mock_openai_cls.call_args
+            assert ctor_kwargs.get("max_retries") == 0
+
+    def test_timeout_exception_degrades_gracefully(self) -> None:
+        """A timeout-like exception from create() must return VisionResult(date=None)."""
+        client = MagicMock()
+        client.chat.completions.create.side_effect = TimeoutError("connection timed out")
+        adapter = OpenAICompatibleVisionAdapter(timeout=5.0, client=client)
+        result = adapter.read_handwritten_date(_make_png())
+        assert result.date is None
+        assert result.confidence == pytest.approx(0.0)
+
+
 # ---------------------------------------------------------------------------
 # factory.build_vision_adapter
 # ---------------------------------------------------------------------------
@@ -381,3 +460,253 @@ class TestVisionFactory:
 
         adapter = build_vision_adapter(self._make_cfg("ollama"))
         assert adapter.supports_batch is False
+
+    def test_openai_adapter_receives_timeout_from_cfg(self) -> None:
+        """factory must route cfg.vision.timeout_s into the openai adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("openai")
+        cfg.vision.timeout_s = 120.0
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._timeout == 120.0
+
+    def test_ollama_adapter_receives_timeout_from_cfg(self) -> None:
+        """factory must route cfg.vision.timeout_s into the ollama adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("ollama")
+        cfg.vision.timeout_s = 55.0
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._timeout == 55.0
+
+    def test_openai_adapter_receives_disable_thinking_from_cfg(self) -> None:
+        """factory must route cfg.vision.disable_thinking into the openai adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("openai")
+        cfg.vision.disable_thinking = True
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._disable_thinking is True
+
+    def test_ollama_adapter_receives_disable_thinking_from_cfg(self) -> None:
+        """factory must route cfg.vision.disable_thinking into the ollama adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("ollama")
+        cfg.vision.disable_thinking = True
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._disable_thinking is True
+
+    def test_factory_disable_thinking_default_false_for_openai(self) -> None:
+        """When disable_thinking=False (default), factory routes False to openai adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("openai")
+        cfg.vision.disable_thinking = False
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._disable_thinking is False
+
+    def test_factory_disable_thinking_default_false_for_ollama(self) -> None:
+        """When disable_thinking=False (default), factory routes False to ollama adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("ollama")
+        cfg.vision.disable_thinking = False
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._disable_thinking is False
+
+    def test_openai_adapter_receives_deadline_s_from_cfg(self) -> None:
+        """factory must route cfg.vision.deadline_s into the openai adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("openai")
+        cfg.vision.deadline_s = 15.0
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._deadline == pytest.approx(15.0)
+
+    def test_ollama_adapter_receives_deadline_s_from_cfg(self) -> None:
+        """factory must route cfg.vision.deadline_s into the ollama adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("ollama")
+        cfg.vision.deadline_s = 25.0
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._deadline == pytest.approx(25.0)
+
+
+# ---------------------------------------------------------------------------
+# OpenAICompatibleVisionAdapter — disable_thinking + max_retries=0
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAICompatibleDisableThinking:
+    """Tests for /no_think injection and max_retries=0 client construction."""
+
+    def test_disable_thinking_false_default(self) -> None:
+        adapter = OpenAICompatibleVisionAdapter()
+        assert adapter._disable_thinking is False
+
+    def test_disable_thinking_stored_true(self) -> None:
+        adapter = OpenAICompatibleVisionAdapter(disable_thinking=True)
+        assert adapter._disable_thinking is True
+
+    def test_messages_no_think_token_when_enabled(self) -> None:
+        """When disable_thinking=True, user text must contain '/no_think'."""
+        from reconciliation.adapters.vision.openai_compatible import _build_messages
+
+        msgs = _build_messages(_make_png(), disable_thinking=True)
+        user_msg = msgs[1]
+        user_content = user_msg["content"]
+        # User content is a list; first item is the text block
+        text_block = next(c for c in user_content if c.get("type") == "text")
+        assert "/no_think" in text_block["text"]
+
+    def test_messages_no_think_absent_when_disabled(self) -> None:
+        """When disable_thinking=False (default), '/no_think' must NOT appear."""
+        from reconciliation.adapters.vision.openai_compatible import _build_messages
+
+        msgs = _build_messages(_make_png(), disable_thinking=False)
+        user_msg = msgs[1]
+        user_content = user_msg["content"]
+        text_block = next(c for c in user_content if c.get("type") == "text")
+        assert "/no_think" not in text_block["text"]
+
+    def test_messages_no_think_absent_by_default(self) -> None:
+        """_build_messages with no disable_thinking arg must NOT inject /no_think."""
+        from reconciliation.adapters.vision.openai_compatible import _build_messages
+
+        msgs = _build_messages(_make_png())
+        user_msg = msgs[1]
+        user_content = user_msg["content"]
+        text_block = next(c for c in user_content if c.get("type") == "text")
+        assert "/no_think" not in text_block["text"]
+
+    def test_max_retries_zero_on_constructor(self) -> None:
+        """Client must be built with max_retries=0 (fast-fail, no retry amplification)."""
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_openai_cls.return_value = MagicMock()
+            adapter = OpenAICompatibleVisionAdapter()
+            adapter._get_client()
+            _, ctor_kwargs = mock_openai_cls.call_args
+            assert ctor_kwargs.get("max_retries") == 0
+
+    def test_default_timeout_is_30(self) -> None:
+        """Adapter default timeout must be 30.0 s (down from 90.0)."""
+        adapter = OpenAICompatibleVisionAdapter()
+        assert adapter._timeout == pytest.approx(30.0)
+
+    def test_disable_thinking_true_sends_no_think_in_create_call(self) -> None:
+        """Full path: adapter with disable_thinking=True passes /no_think in messages."""
+        client = MagicMock()
+        client.chat.completions.create.return_value = _make_openai_response(
+            '{"date": null, "confidence": 0.0}'
+        )
+        adapter = OpenAICompatibleVisionAdapter(
+            disable_thinking=True, client=client
+        )
+        adapter.read_handwritten_date(_make_png())
+        call_kwargs = client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs.get("messages") or call_kwargs.args[0]
+        # Find user message text
+        user_msg = next(m for m in messages if m["role"] == "user")
+        user_content = user_msg["content"]
+        text_block = next(c for c in user_content if c.get("type") == "text")
+        assert "/no_think" in text_block["text"]
+
+    def test_disable_thinking_false_no_think_absent_in_create_call(self) -> None:
+        """Full path: adapter with disable_thinking=False must NOT inject /no_think."""
+        client = MagicMock()
+        client.chat.completions.create.return_value = _make_openai_response(
+            '{"date": null, "confidence": 0.0}'
+        )
+        adapter = OpenAICompatibleVisionAdapter(
+            disable_thinking=False, client=client
+        )
+        adapter.read_handwritten_date(_make_png())
+        call_kwargs = client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs.get("messages") or call_kwargs.args[0]
+        user_msg = next(m for m in messages if m["role"] == "user")
+        user_content = user_msg["content"]
+        text_block = next(c for c in user_content if c.get("type") == "text")
+        assert "/no_think" not in text_block["text"]
+
+
+# ---------------------------------------------------------------------------
+# Hard wall-clock deadline (thinking-blowup guard)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAICompatibleVisionAdapterDeadline:
+    """Tests for the per-call wall-clock deadline that guards against thinking-blowup.
+
+    The deadline is implemented via concurrent.futures: the create() call is
+    submitted to a thread, then future.result(timeout=deadline_s) is called.
+    A TimeoutError causes the adapter to log a warning and degrade gracefully
+    (VisionResult date=None, confidence=0.0), exactly like any other exception.
+    """
+
+    def test_default_deadline_is_20(self) -> None:
+        adapter = OpenAICompatibleVisionAdapter()
+        assert adapter._deadline == pytest.approx(20.0)
+
+    def test_custom_deadline_stored(self) -> None:
+        adapter = OpenAICompatibleVisionAdapter(deadline_s=5.0)
+        assert adapter._deadline == pytest.approx(5.0)
+
+    def test_slow_create_degrades_within_deadline(self) -> None:
+        """A create() that sleeps longer than deadline_s must return the degraded
+        VisionResult fast (within ~2*deadline_s) — NOT after the full sleep duration.
+
+        This is the canonical proof that the hard deadline fires.
+        """
+        import time
+
+        DEADLINE = 0.5  # seconds — fast for CI
+        SLEEP = 5.0     # much longer than deadline; would stall the pipeline
+
+        client = MagicMock()
+
+        def slow_create(*args, **kwargs):  # type: ignore[no-untyped-def]
+            time.sleep(SLEEP)
+            return _make_openai_response('{"date": "2026-01-01", "confidence": 1.0}')
+
+        client.chat.completions.create.side_effect = slow_create
+
+        adapter = OpenAICompatibleVisionAdapter(deadline_s=DEADLINE, client=client)
+
+        start = time.monotonic()
+        result = adapter.read_handwritten_date(_make_png())
+        elapsed = time.monotonic() - start
+
+        # Must degrade — the sleep outlasted the deadline
+        assert result.date is None
+        assert result.confidence == pytest.approx(0.0)
+        # Must return well before the full SLEEP, but allow 2x deadline headroom for CI
+        assert elapsed < SLEEP / 2, f"took {elapsed:.2f}s — deadline did not fire"
+
+    def test_fast_create_returns_normal_result(self) -> None:
+        """A create() that returns immediately must NOT trigger the deadline path."""
+        client = MagicMock()
+        client.chat.completions.create.return_value = _make_openai_response(
+            '{"date": "2026-05-28", "confidence": 0.95}'
+        )
+        adapter = OpenAICompatibleVisionAdapter(deadline_s=0.5, client=client)
+        result = adapter.read_handwritten_date(_make_png())
+        assert result.date is not None
+        assert result.confidence == pytest.approx(0.95)

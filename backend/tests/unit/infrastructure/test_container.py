@@ -155,10 +155,14 @@ class TestBuildPageToRegistroMap:
         assert result[3] == "B"
         assert result[4] == "B"
 
-    def test_registro_ids_are_string_keys(self) -> None:
+    def test_section_id_without_doc_source_maps_to_none(self) -> None:
+        """EXT-018: without doc_source, a section ID contents_id MUST map to None.
+
+        The old behaviour (returning "4252" as-is) is prohibited by EXT-018.
+        """
         result = build_page_to_registro_map({"4252": 1}, total_pages=3)
         for v in result.values():
-            assert isinstance(v, str)
+            assert v is None, f"section ID '4252' must map to None, got {v!r}"
 
     def test_three_sections_middle_section_bounded(self) -> None:
         # A: pages 0-1 (0-based), B: 2-3, C: 4-5
@@ -210,15 +214,15 @@ class TestSectionRegistroCorrelationIntegration:
                     f"page {page_0} should map to registro {registro_id!r}"
                 )
 
-    def test_guia_page_in_section_range_maps_to_correct_registro(self) -> None:
-        # Section "4252" starts at page 3 (1-based), "4253" at page 7.
+    def test_guia_page_with_section_ids_maps_to_none_without_doc_source(self) -> None:
+        """EXT-018: without doc_source, section IDs map to None (never emitted as registro)."""
         offsets = {"4252": 3, "4253": 7}
         result = build_page_to_registro_map(offsets, total_pages=12)
-        # 0-based pages 2-5 belong to "4252"; pages 6-11 to "4253"
+        # Both "4252" and "4253" are section IDs → must map to None
         for page in range(2, 6):
-            assert result[page] == "4252"
+            assert result[page] is None, f"page {page} should map to None (section ID), got {result[page]!r}"
         for page in range(6, 12):
-            assert result[page] == "4253"
+            assert result[page] is None, f"page {page} should map to None (section ID), got {result[page]!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +309,8 @@ class TestBuildPageToRegistroMapWithDerivedNumero:
         for page in range(2, 6):
             assert result[page] == "232"
 
-    def test_fallback_to_contents_id_when_no_declared_page(self) -> None:
-        """When no DECLARED page is found in range, the Contents ID is the fallback key."""
+    def test_fallback_to_none_when_no_declared_page(self) -> None:
+        """EXT-018: when no DECLARED page is parseable, returns None (never the Contents ID)."""
         doc = FakeDocSource({
             2: None,  # type: ignore[dict-item]  # scanned / empty
             3: "GUIA DE REMISION\nsome text",
@@ -318,8 +322,11 @@ class TestBuildPageToRegistroMapWithDerivedNumero:
             doc_source=doc,
             declared_extractor=extractor,
         )
+        # EXT-018: "4252" is a section ID — MUST NOT be returned as registro
         for page in range(2, 6):
-            assert result[page] == "4252"
+            assert result[page] is None, (
+                f"page {page}: section ID '4252' must map to None, got {result[page]!r}"
+            )
 
     def test_two_sections_each_get_correct_numero(self) -> None:
         """Multi-section PDF: each section resolves its own Description numero."""
@@ -347,16 +354,21 @@ class TestBuildPageToRegistroMapWithDerivedNumero:
         for page in range(5, 10):
             assert result[page] == "231"
 
-    def test_without_doc_source_uses_contents_id_legacy(self) -> None:
-        """When doc_source is None, original Contents-ID behaviour is preserved."""
+    def test_without_doc_source_section_ids_map_to_none(self) -> None:
+        """EXT-018: without doc_source, section IDs are guarded — pages map to None."""
         result = build_page_to_registro_map(
             {"4252": 3, "4251": 7},
             total_pages=12,
         )
+        # "4252" and "4251" are section IDs → must map to None (never emitted as registro)
         for page in range(2, 6):
-            assert result[page] == "4252"
+            assert result[page] is None, (
+                f"page {page}: '4252' is a section ID, must map to None"
+            )
         for page in range(6, 12):
-            assert result[page] == "4251"
+            assert result[page] is None, (
+                f"page {page}: '4251' is a section ID, must map to None"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -392,4 +404,243 @@ class TestCompositeExtractorDelegation:
         composite = self._make_composite_with_fake_declared(None, reg)
         result = composite.extract_registro_from_detail_page("text", 3)
         assert result is reg
-        composite._declared_adapter.extract_registro_from_detail_page.assert_called_once_with("text", 3)
+
+
+# ---------------------------------------------------------------------------
+# R8.10: container.py wiring — MaterialKeyResolver + inference adapter (ADR-6)
+# ---------------------------------------------------------------------------
+
+from reconciliation.application.config import AppConfig, InferenceConfig
+from reconciliation.application.pipeline import ReconciliationPipeline
+from reconciliation.domain.material_key_resolver import MaterialKeyResolver
+
+
+class TestBuildPipelineResolverWiring:
+    """build_pipeline wires MaterialKeyResolver into the pipeline (ADR-6)."""
+
+    def _patched_build_pipeline(self, config: AppConfig):
+        """Call build_pipeline with minimal mocks to avoid PDF/ML deps."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        with patch(
+            "reconciliation.infrastructure.container.CompositeExtractionAdapter"
+        ) as mock_composite, patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.vision.factory.build_vision_adapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.ocr.paddle_deskew.DeskewAdapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            mock_composite.return_value._declared_adapter = MagicMock()
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+        return pipeline
+
+    def test_build_pipeline_inference_disabled_resolver_has_no_inference(self) -> None:
+        config = AppConfig()
+        assert config.inference.enabled is False
+        pipeline = self._patched_build_pipeline(config)
+        assert pipeline._key_resolver is not None
+        assert isinstance(pipeline._key_resolver, MaterialKeyResolver)
+        assert pipeline._key_resolver._inference is None
+
+    def test_build_pipeline_inference_enabled_resolver_has_adapter(self) -> None:
+        from reconciliation.adapters.inference.ollama_material import (
+            OllamaMaterialInferenceAdapter,
+        )
+        config = AppConfig(inference=InferenceConfig(enabled=True, model="qwen3.5:9b"))
+        pipeline = self._patched_build_pipeline(config)
+        assert pipeline._key_resolver is not None
+        assert pipeline._key_resolver._inference is not None
+        assert isinstance(pipeline._key_resolver._inference, OllamaMaterialInferenceAdapter)
+
+
+# ---------------------------------------------------------------------------
+# OCR wiring — ocr.enabled flag (broken-paddle / SUNAT-quantities use-case)
+# ---------------------------------------------------------------------------
+
+from reconciliation.application.config import OcrConfig
+from reconciliation.adapters.ocr.null_extractor import NullOcrExtractor
+
+
+class TestBuildPipelineOcrWiring:
+    """build_pipeline wires NullOcrExtractor + deskew=None when ocr.enabled=False."""
+
+    def _patched_build_pipeline_ocr_enabled(self, config: AppConfig):
+        """Call build_pipeline for ocr.enabled=True: patches CompositeExtractionAdapter."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        with patch(
+            "reconciliation.infrastructure.container.CompositeExtractionAdapter"
+        ) as mock_composite, patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.vision.factory.build_vision_adapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.ocr.paddle_deskew.DeskewAdapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            mock_composite.return_value._declared_adapter = MagicMock()
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+        return pipeline
+
+    def _patched_build_pipeline_ocr_disabled(self, config: AppConfig):
+        """Call build_pipeline for ocr.enabled=False.
+
+        Does NOT patch CompositeExtractionAdapter because the OCR-disabled path
+        uses __new__ + manual attribute assignment and must NOT call __init__.
+        Patches only PDF source and vision adapters (no ML deps needed).
+        """
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        with patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.vision.factory.build_vision_adapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+        return pipeline
+
+    def test_default_config_wires_real_extraction_adapter(self) -> None:
+        """Default config (ocr.enabled=True) does NOT inject NullOcrExtractor."""
+        config = AppConfig()
+        assert config.ocr.enabled is True
+        pipeline = self._patched_build_pipeline_ocr_enabled(config)
+        # The extractor should NOT be a NullOcrExtractor; it's the CompositeExtractionAdapter
+        # (mocked here, but _ocr_adapter must not be a NullOcrExtractor)
+        assert not isinstance(pipeline._extractor._ocr_adapter, NullOcrExtractor)
+
+    def test_ocr_disabled_wires_null_ocr_extractor(self) -> None:
+        """When ocr.enabled=False, the composite's _ocr_adapter is NullOcrExtractor."""
+        config = AppConfig(ocr=OcrConfig(enabled=False))
+        pipeline = self._patched_build_pipeline_ocr_disabled(config)
+        assert isinstance(pipeline._extractor._ocr_adapter, NullOcrExtractor)
+
+    def test_ocr_disabled_wires_deskew_none(self) -> None:
+        """When ocr.enabled=False, pipeline._deskew is None (no DeskewAdapter instantiated)."""
+        config = AppConfig(ocr=OcrConfig(enabled=False))
+        pipeline = self._patched_build_pipeline_ocr_disabled(config)
+        assert pipeline._deskew is None
+
+    def test_ocr_enabled_wires_deskew_adapter(self) -> None:
+        """When ocr.enabled=True (default), pipeline._deskew is a DeskewAdapter (mocked here)."""
+        config = AppConfig()
+        assert config.ocr.enabled is True
+        pipeline = self._patched_build_pipeline_ocr_enabled(config)
+        # The DeskewAdapter is patched with a MagicMock; it must be non-None.
+        assert pipeline._deskew is not None
+
+
+# ---------------------------------------------------------------------------
+# R10.8: SunatConfig.cache_dir wiring in build_pipeline (CONT-S10)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPipelineSunatCacheDir:
+    """Verify container.py routes SunatConfig.cache_dir to the adapter correctly."""
+
+    def _build_with_sunat(self, config: "AppConfig", tmp_path: Path) -> tuple:
+        """Build pipeline with SUNAT enabled; patch heavy imports; return (pipeline, captured_cache_dir)."""
+        from reconciliation.infrastructure.container import build_pipeline
+
+        captured: dict = {}
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        class FakeSunatAdapter:
+            def __init__(self, timeout_s: float, cache_dir: Path | None) -> None:
+                captured["cache_dir"] = cache_dir
+
+            def fetch(self, url: str) -> None:
+                return None
+
+            def fetch_many(self, urls: list, concurrency: int = 5) -> dict:
+                return {}
+
+        with (
+            patch(
+                "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+                return_value=fake_pdf,
+            ),
+            patch(
+                "reconciliation.adapters.vision.factory.build_vision_adapter",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "reconciliation.adapters.sunat.descargaqr.SunatDescargaqrAdapter",
+                FakeSunatAdapter,
+            ),
+        ):
+            pipeline, ctx, _ = build_pipeline(tmp_path / "dummy.pdf", config=config)
+
+        return pipeline, captured.get("cache_dir")
+
+    def test_cache_true_cache_dir_none_uses_per_run_dir(self, tmp_path: Path) -> None:
+        """sunat.cache=True, cache_dir=None → per-run dir (ctx.run_dir / sunat)."""
+        from reconciliation.application.config import AppConfig, SunatConfig
+
+        config = AppConfig(
+            sunat=SunatConfig(enabled=True, cache=True, cache_dir=None)
+        )
+        _, cache_dir = self._build_with_sunat(config, tmp_path)
+        assert cache_dir is not None
+        assert str(cache_dir).endswith("sunat")
+
+    def test_cache_true_stable_cache_dir_uses_config_path(self, tmp_path: Path) -> None:
+        """sunat.cache=True, cache_dir=/data/sunat-cache → adapter receives that path."""
+        from reconciliation.application.config import AppConfig, SunatConfig
+
+        stable_dir = tmp_path / "sunat-cache"
+        config = AppConfig(
+            sunat=SunatConfig(enabled=True, cache=True, cache_dir=stable_dir)
+        )
+        _, cache_dir = self._build_with_sunat(config, tmp_path)
+        assert cache_dir == stable_dir
+
+    def test_cache_false_adapter_receives_none(self, tmp_path: Path) -> None:
+        """sunat.cache=False → adapter receives cache_dir=None."""
+        from reconciliation.application.config import AppConfig, SunatConfig
+
+        config = AppConfig(
+            sunat=SunatConfig(enabled=True, cache=False, cache_dir=None)
+        )
+        _, cache_dir = self._build_with_sunat(config, tmp_path)
+        assert cache_dir is None

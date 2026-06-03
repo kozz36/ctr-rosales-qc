@@ -23,8 +23,12 @@
           </button>
         </div>
 
-        <!-- Context: current row -->
+        <!-- Context: guía + current row -->
         <div class="dialog__context" :id="dialogDescId">
+          <div class="dialog__context-row">
+            <span class="dialog__context-label">Guía</span>
+            <span class="dialog__context-value mono dialog__context-value--highlight">{{ guiaId }}</span>
+          </div>
           <div class="dialog__context-row">
             <span class="dialog__context-label">Registro actual</span>
             <span class="dialog__context-value mono">{{ row?.registro ?? '—' }}</span>
@@ -36,10 +40,6 @@
           <div class="dialog__context-row">
             <span class="dialog__context-label">Material</span>
             <span class="dialog__context-value">{{ row?.material_canonical ?? '—' }}</span>
-          </div>
-          <div class="dialog__context-row">
-            <span class="dialog__context-label">Estado</span>
-            <span class="dialog__context-value">{{ row?.status ?? '—' }}</span>
           </div>
         </div>
 
@@ -67,7 +67,7 @@
               :aria-required="true"
               :aria-invalid="!!errors.registro"
               :aria-describedby="errors.registro ? registroErrorId : undefined"
-              placeholder="ej: 4251"
+              placeholder="ej: 232"
               autocomplete="off"
               spellcheck="false"
             />
@@ -158,7 +158,12 @@ const fechaErrorId = `dialog-fecha-err-${uid}`
 const props = defineProps<{
   /** Controls visibility */
   modelValue: boolean
-  /** The row being reassigned */
+  /**
+   * The guía to reassign — identified by its serie-numero string (e.g. "T009-0741770").
+   * This is the authoritative identifier sent to POST /reassign (REV-C02 / CRITICAL-1 fix).
+   */
+  guiaId: string
+  /** The row that currently owns this guía (used for context display only). */
   row: ReconciliationRowResponse | null
   /** Is the mutation in-flight? */
   isPending?: boolean
@@ -168,8 +173,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
-  /** Submit payload: guia_id comes from the row itself */
+  /**
+   * Submit payload — guia_id is always props.guiaId (not row.row_id).
+   * Parent calls POST /runs/{id}/reassign with this body.
+   */
   submit: [payload: { guia_id: string; new_registro: string; new_fecha: string | null }]
+  /** Emitted on successful reassign so parent can invalidate the rows query. */
+  reassigned: []
 }>()
 
 const dialogRef = ref<HTMLDivElement | null>(null)
@@ -205,9 +215,9 @@ function validate(): boolean {
 }
 
 function onSubmit(): void {
-  if (!validate() || !props.row) return
+  if (!validate()) return
   emit('submit', {
-    guia_id: props.row.row_id, // row_id = "{registro}|{fecha}|{material}|{unidad}" — sent as guia_id per API
+    guia_id: props.guiaId, // always the actual serie-numero (REV-C02 / CRITICAL-1 fix)
     new_registro: form.value.registro.trim(),
     new_fecha: form.value.fecha.trim() || null,
   })
@@ -227,6 +237,8 @@ watch(
   () => props.modelValue,
   async (open) => {
     if (open) {
+      // Pre-fill with current row values as a convenience starting point.
+      // The actual guia_id submitted is props.guiaId (not row.row_id).
       form.value = { registro: props.row?.registro ?? '', fecha: props.row?.fecha ?? '' }
       errors.value = {}
       await nextTick()
@@ -337,6 +349,11 @@ watch(
   font-size: var(--text-xs);
   color: var(--text-primary);
   font-family: var(--font-mono);
+}
+
+.dialog__context-value--highlight {
+  font-weight: 600;
+  color: var(--confidence-ok);
 }
 
 /* Warning */

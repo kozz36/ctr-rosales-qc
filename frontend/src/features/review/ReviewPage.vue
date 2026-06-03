@@ -37,6 +37,13 @@
       <span v-if="runStatus?.error">: {{ runStatus.error }}</span>
     </div>
 
+    <!-- Unresolved guías bucket (REV-C04) — shown above the grid when guías exist -->
+    <UnresolvedGuiasPanel
+      v-if="isReady && unresolvedGuias.length > 0"
+      :unresolved-guias="unresolvedGuias"
+      @assign-guia="onAssignUnresolved"
+    />
+
     <!-- Review grid (only when ready) -->
     <ReviewGrid
       v-if="isReady"
@@ -46,16 +53,16 @@
       :error="tableError"
       :pending-edits="reconciliationStore.pendingEdits"
       :active-filter="reconciliationStore.statusFilter"
-      @edit="onEdit"
-      @reassign="onReassignRequest"
+      @open-reassign="onReassignRequest"
       @page-click="onPageClick"
       @filter-change="reconciliationStore.setFilter"
       @retry="void tableQuery.refetch()"
     />
 
-    <!-- Reassign dialog -->
+    <!-- Reassign dialog (rev-2: uses guiaId instead of row_id proxy) -->
     <GuiaReassignDialog
       v-model="showReassignDialog"
+      :guia-id="reassignGuiaId"
       :row="reassignTarget"
       :is-pending="reassignMutation.isPending.value"
       :api-error="reassignError"
@@ -84,13 +91,14 @@
 
 import { ref, computed, watch } from 'vue'
 import { useReconciliationStore } from '@/stores/reconciliation'
-import { useTable, useEditRow, useReassignGuia, useExportRun, queryKeys } from '@/composables/useReconciliationApi'
+import { useTable, useReassignGuia, useExportRun, queryKeys } from '@/composables/useReconciliationApi'
 import { getRunStatus } from '@/api/client'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import type { ReconciliationRowResponse, ExportFormat, ReassignRequest } from '@/api/types'
+import type { ReconciliationRowResponse, ExportFormat, ReassignRequest, UnresolvedGuiaResponse } from '@/api/types'
 import ReviewGrid from './ReviewGrid.vue'
 import GuiaReassignDialog from './GuiaReassignDialog.vue'
 import ExportButton from './ExportButton.vue'
+import UnresolvedGuiasPanel from './UnresolvedGuiasPanel.vue'
 
 const props = defineProps<{
   /** run_id from router prop */
@@ -137,6 +145,11 @@ const rows = computed<ReconciliationRowResponse[]>(
   () => tableQuery.data.value?.rows ?? [],
 )
 
+/** Rev-2: unresolved guías bucket (REV-C04). Never appears in the main grid. */
+const unresolvedGuias = computed<UnresolvedGuiaResponse[]>(
+  () => tableQuery.data.value?.unresolved_guias ?? [],
+)
+
 const tableError = computed<string | null>(() =>
   tableQuery.error.value ? String(tableQuery.error.value) : null,
 )
@@ -150,48 +163,31 @@ watch(
 )
 
 // ---------------------------------------------------------------------------
-// Edit flow — debounced PATCH
-// ---------------------------------------------------------------------------
-
-const editMutation = useEditRow(runIdRef)
-const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-function onEdit(rowId: string, _guiaId: string, value: string): void {
-  // Track dirty in store
-  reconciliationStore.setPendingEdit(rowId, {
-    guia_id: rowId,
-    field: 'fecha', // only fecha/registro editable per current API contract
-    value,
-  })
-
-  // Debounce the PATCH — 600ms after last keystroke
-  if (pendingTimers.has(rowId)) clearTimeout(pendingTimers.get(rowId)!)
-  const timer = setTimeout(async () => {
-    pendingTimers.delete(rowId)
-    try {
-      await editMutation.mutateAsync({
-        rowId,
-        body: { guia_id: rowId, field: 'fecha', value },
-      })
-      reconciliationStore.clearPendingEdit(rowId)
-    } catch {
-      // Error stays visible in grid; edit not cleared
-    }
-  }, 600)
-  pendingTimers.set(rowId, timer)
-}
-
-// ---------------------------------------------------------------------------
 // Reassign flow
 // ---------------------------------------------------------------------------
 
 const reassignMutation = useReassignGuia(runIdRef)
 const showReassignDialog = ref(false)
+const reassignGuiaId = ref<string>('')
 const reassignTarget = ref<ReconciliationRowResponse | null>(null)
 const reassignError = ref<string | null>(null)
 
-function onReassignRequest(row: ReconciliationRowResponse): void {
-  reassignTarget.value = row
+function onReassignRequest(payload: { guia_id: string }): void {
+  reassignGuiaId.value = payload.guia_id
+  // Find the row that currently owns this guía for context display in the dialog
+  reassignTarget.value =
+    rows.value.find((r) => r.guias?.some((g) => g.guia_id === payload.guia_id)) ?? null
+  reassignError.value = null
+  showReassignDialog.value = true
+}
+
+/**
+ * Handles "Assign to registro" from UnresolvedGuiasPanel.
+ * Opens GuiaReassignDialog with row=null (no parent row context — the guía is unresolved).
+ */
+function onAssignUnresolved(guiaId: string): void {
+  reassignGuiaId.value = guiaId
+  reassignTarget.value = null // unresolved guías have no parent row
   reassignError.value = null
   showReassignDialog.value = true
 }

@@ -24,12 +24,14 @@ from typing import Annotated, Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
+from reconciliation.domain.models import ReconciliationRow
 from reconciliation.infrastructure.api.schemas import (
     AuditEventResponse,
     AuditTrailResponse,
     ErrorResponse,  # noqa: F401 — imported for openapi docs
     ExportRequest,
-    ExportResponse,
+    GuiaContributionResponse,
+    GuiaLineEditRequest,
     ReassignRequest,
     ReassignResponse,
     ReconciliationRowResponse,
@@ -38,9 +40,9 @@ from reconciliation.infrastructure.api.schemas import (
     RowEditResponse,
     RunCreateResponse,
     RunStatusResponse,
+    UnresolvedGuiaResponse,
     _row_id,
 )
-from reconciliation.domain.models import ReconciliationRow
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +61,17 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
-def _get_registry(request: Request) -> "dict[str, Any]":
+def _get_registry(request: Request) -> dict[str, Any]:
     """Extract the run registry dict from FastAPI app state."""
     return request.app.state.run_registry  # type: ignore[no-any-return]
 
 
 def _get_config(request: Request) -> Any:
     """Extract the AppConfig from FastAPI app state."""
-    return request.app.state.config  # type: ignore[no-any-return]
+    return request.app.state.config  # noqa: ANN401
 
 
-RunRegistry = Annotated[dict, Depends(_get_registry)]
+RunRegistry = Annotated[dict[str, Any], Depends(_get_registry)]
 AppConfigDep = Annotated[Any, Depends(_get_config)]
 
 
@@ -79,7 +81,26 @@ AppConfigDep = Annotated[Any, Depends(_get_config)]
 
 
 def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
-    """Convert a domain ReconciliationRow to the API DTO."""
+    """Convert a domain ReconciliationRow to the API DTO (rev-2: includes guias[]).
+
+    Rev-3 D5 (REC-C07): maps year_inferred + any_year_inferred provenance fields.
+    """
+    guia_responses = [
+        GuiaContributionResponse(
+            guia_id=g.guia_id,
+            source_pages=g.source_pages,
+            cantidad=g.cantidad,
+            unidad=g.unidad,
+            confidence=g.confidence,
+            identity_source=g.identity_source,
+            year_inferred=g.year_inferred,
+            # R9.6 (FDR-008): fecha-divergence fields.
+            fecha=g.fecha,
+            fecha_divergence=g.fecha_divergence,
+            divergence_reason=g.divergence_reason,
+        )
+        for g in row.guias
+    ]
     return ReconciliationRowResponse(
         row_id=_row_id(row.registro, row.fecha, row.material_canonical, row.unidad),
         registro=row.registro,
@@ -92,10 +113,15 @@ def _row_to_response(row: ReconciliationRow) -> ReconciliationRowResponse:
         status=row.status,
         source_pages=row.source_pages,
         min_confidence=row.min_confidence,
+        requires_review=row.requires_review,
+        guias=guia_responses,
+        any_year_inferred=row.any_year_inferred,
+        match_method=row.match_method,  # R8.12 (MAT-008)
+        has_fecha_divergence=row.has_fecha_divergence,  # R9.6 (FDR-008)
     )
 
 
-def _require_run(registry: dict, run_id: str) -> Any:
+def _require_run(registry: dict[str, Any], run_id: str) -> Any:
     """Look up a run entry or raise 404."""
     entry = registry.get(run_id)
     if entry is None:
@@ -129,7 +155,7 @@ def _run_pipeline_background(
     run_id: str,
     pdf_path: Path,
     config: Any,
-    registry: dict,
+    registry: dict[str, Any],
 ) -> None:
     """Execute the pipeline synchronously inside a background task.
 
@@ -276,11 +302,33 @@ def get_run_status(run_id: str, registry: RunRegistry) -> RunStatusResponse:
     summary="Fetch the reconciliation table for a completed run.",
 )
 def get_table(run_id: str, registry: RunRegistry) -> ReconciliationTableResponse:
-    """Return all reconciliation rows for the run."""
+    """Return reconciliation rows and unresolved guías for the run.
+
+    Spec: REC-C05 / REV-C04 — guías whose ``registro`` is ``None`` surface in
+    ``unresolved_guias`` and are NEVER included in ``rows``.
+    """
     entry = _require_run(registry, run_id)
     review_service = _require_review_service(entry, run_id)
     rows = [_row_to_response(r) for r in review_service.rows]
-    return ReconciliationTableResponse(run_id=run_id, rows=rows)
+
+    # Populate unresolved_guias: any guía in the service whose registro is None
+    # was excluded from reconciliation rows (domain invariant REC-C05).
+    unresolved_guias = [
+        UnresolvedGuiaResponse(
+            guia_id=g.guia_id,
+            identity_source=g.identity_source,
+            source_pages=g.source_pages,
+            first_page=(
+                g.first_page
+                if g.first_page is not None
+                else (g.source_pages[0] if g.source_pages else None)
+            ),
+        )
+        for g in review_service.guias
+        if g.registro is None
+    ]
+
+    return ReconciliationTableResponse(run_id=run_id, rows=rows, unresolved_guias=unresolved_guias)
 
 
 @router.patch(
@@ -298,9 +346,16 @@ def edit_row(
 
     ``row_id`` is accepted in the URL for RESTful resource addressing but the
     actual mutation target is identified by ``body.guia_id``.
+
+    Prohibited fields:
+        ``summed_qty`` — computed property; returns 422 (REC-C04).
     """
     entry = _require_run(registry, run_id)
     review_service = _require_review_service(entry, run_id)
+
+    # Note: field='summed_qty' is rejected by Pydantic before reaching here
+    # (RowEditRequest.field is Literal["fecha", "registro"]).  The ReviewService
+    # also guards it explicitly (REC-C04) in case the schema is relaxed later.
 
     try:
         updated_rows = review_service.apply_edit(
@@ -310,6 +365,55 @@ def edit_row(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return RowEditResponse(
+        run_id=run_id,
+        rows=[_row_to_response(r) for r in updated_rows],
+    )
+
+
+@router.patch(
+    "/runs/{run_id}/guias/{guia_id}/lines",
+    response_model=RowEditResponse,
+    summary="Update a guía line quantity and recompute affected reconciliation rows.",
+)
+def edit_guia_line(
+    run_id: str,
+    guia_id: str,
+    body: GuiaLineEditRequest,
+    registry: RunRegistry,
+) -> RowEditResponse:
+    """Update the cantidad of a specific material line on a GuiaDeRemision.
+
+    Spec: REC-C04 / REV-C02 / S1.7.
+
+    Validation:
+        - ``cantidad < 0`` → 422 (enforced by Pydantic schema ``ge=0``).
+        - Unknown ``guia_id`` → 404.
+        - Idempotent: sending the same request twice returns the same result.
+    """
+    entry = _require_run(registry, run_id)
+    review_service = _require_review_service(entry, run_id)
+
+    from decimal import Decimal, InvalidOperation  # noqa: PLC0415
+
+    try:
+        new_cantidad = Decimal(str(body.cantidad))
+    except InvalidOperation:
+        raise HTTPException(status_code=422, detail=f"Invalid cantidad value: {body.cantidad!r}")
+
+    try:
+        updated_rows = review_service.apply_guia_line_edit(
+            guia_id=guia_id,
+            line_index=body.line_index,
+            material_canonical=body.material_canonical,
+            new_cantidad=new_cantidad,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail) from exc
+        raise HTTPException(status_code=422, detail=detail) from exc
 
     return RowEditResponse(
         run_id=run_id,
@@ -392,6 +496,50 @@ def export_run(
         path=str(out_path),
         media_type=media_type,
         filename=filename,
+    )
+
+
+@router.get(
+    "/runs/{run_id}/pages/{page}/thumbnail",
+    summary="Fetch the deskewed page render as a PNG thumbnail.",
+)
+def get_page_thumbnail(
+    run_id: str,
+    page: int,
+    registry: RunRegistry,
+) -> FileResponse:
+    """Return the deskewed PNG render for page *page* (0-based) of run *run_id*.
+
+    Spec: REV-005 / S1.8.
+
+    The file is expected at ``run_dir/pages/{page:04d}.png`` — written by the
+    pipeline's DeskewAdapter during processing.  Returns 404 if the page file
+    does not exist (run not yet processed or page index out of range).
+
+    No new dependencies — uses the standard ``FileResponse`` from ``fastapi``.
+    """
+    entry = _require_run(registry, run_id)
+    ctx = entry.get("ctx")
+    if ctx is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run '{run_id}' has no processed context yet (status: {entry.get('status')}).",
+        )
+
+    pages_dir: Path = ctx.run_dir / "pages"
+    page_file = pages_dir / f"{page:04d}.png"
+
+    if not page_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Page {page} not found for run '{run_id}'. "
+            "The page may not have been rendered or the index is out of range.",
+        )
+
+    return FileResponse(
+        path=str(page_file),
+        media_type="image/png",
+        filename=f"{run_id[:8]}_page_{page:04d}.png",
     )
 
 

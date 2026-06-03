@@ -33,6 +33,7 @@ from reconciliation.domain.models import (
     Registro,
 )
 from reconciliation.domain.reconciliation import ReconciliationService
+from reconciliation.domain.section_id_guard import is_section_id
 from reconciliation.application.run_context import RunContext
 
 
@@ -154,6 +155,9 @@ class ReviewService:
             ``fecha``       — accepts ``date``, ISO-8601 string, or None.
             ``registro``    — accepts str or None.
 
+        Prohibited fields (raise ValueError / 422 at API layer):
+            ``summed_qty``  — computed property; use apply_guia_line_edit instead (REC-C04).
+
         Args:
             guia_id:    Identifier of the target GuiaDeRemision.
             field:      Field name to update (``"fecha"`` or ``"registro"``).
@@ -163,8 +167,16 @@ class ReviewService:
             Updated list of reconciliation rows (all rows recomputed).
 
         Raises:
-            ValueError: If the guia_id is not found or field is unsupported.
+            ValueError: If the guia_id is not found, field is unsupported, or
+                        field is a prohibited write target (summed_qty).
         """
+        # Explicitly prohibit direct writes to computed/structural fields (REC-C04)
+        if field == "summed_qty":
+            raise ValueError(
+                "Field 'summed_qty' is a computed property and cannot be edited directly. "
+                "Use PATCH /guias/{guia_id}/lines to update a guía line quantity instead."
+            )
+
         target_idx = self._find_guia_index(guia_id)
         guia = self._guias[target_idx]
 
@@ -179,6 +191,11 @@ class ReviewService:
             old_value = guia.registro
             if new_value is not None and not isinstance(new_value, str):
                 raise ValueError(f"'registro' must be a string or None, got {type(new_value)}")
+            if is_section_id(new_value):
+                raise ValueError(
+                    f"{new_value!r} is a Contents/section ID, not a valid Registro N°. "
+                    "Three-identifier invariant: Contents-ID != Registro N° != QR serie-numero."
+                )
             updated_guia = guia.model_copy(update={"registro": new_value})
         else:
             raise ValueError(
@@ -208,6 +225,110 @@ class ReviewService:
 
         return list(self._rows)
 
+    def apply_guia_line_edit(
+        self,
+        guia_id: str,
+        line_index: int | None,
+        material_canonical: str | None,
+        new_cantidad: Decimal,
+    ) -> list[ReconciliationRow]:
+        """Update a specific line's ``cantidad`` on a GuiaDeRemision and recompute rows.
+
+        Spec: REC-C04 / REV-C02 / S1.7.
+
+        Identifies the target line by ``line_index`` (0-based within guia.lines) or
+        by ``material_canonical`` when ``line_index`` is None (matches first line with
+        that canonical description).  Updates the line's ``cantidad`` in-place on an
+        immutable copy, then re-runs reconcile to recompute MATCH/MISMATCH statuses.
+
+        KNOWN LIMITATION (B5): when matching by ``material_canonical`` the edit targets
+        the FIRST line whose ``description_canonical`` equals the canonical key. This is
+        exact for single-line guías (the common case), but a guía with MULTIPLE lines
+        sharing the same canonical key is semantically lossy — the drill-down
+        ``GuiaContribution`` shown to the engineer is the SUM of all such lines, yet only
+        the first one is updated. A future fix would carry a stable per-line identity
+        (e.g. ``source_page`` + line ordinal) so the exact contributing line can be
+        addressed. Prefer passing an explicit ``line_index`` when disambiguation matters.
+
+        Args:
+            guia_id:            Identifier of the target GuiaDeRemision.
+            line_index:         0-based index of the line to update, or None to match
+                                by material_canonical.
+            material_canonical: Canonical material description for lookup when
+                                line_index is None.
+            new_cantidad:       New quantity value (must be >= 0).
+
+        Returns:
+            Updated list of reconciliation rows (all rows recomputed).
+
+        Raises:
+            ValueError: If guia_id not found, line not found, or new_cantidad < 0.
+        """
+        if new_cantidad < Decimal(0):
+            raise ValueError(
+                f"new_cantidad must be >= 0; got {new_cantidad}"
+            )
+
+        target_idx = self._find_guia_index(guia_id)
+        guia = self._guias[target_idx]
+
+        # Locate the target line
+        lines = list(guia.lines)
+        resolved_index: int
+
+        if line_index is not None:
+            if line_index < 0 or line_index >= len(lines):
+                raise ValueError(
+                    f"line_index {line_index} out of range for guia_id={guia_id!r} "
+                    f"(has {len(lines)} lines)"
+                )
+            resolved_index = line_index
+        elif material_canonical is not None:
+            for i, line in enumerate(lines):
+                if line.description_canonical == material_canonical:
+                    resolved_index = i
+                    break
+            else:
+                raise ValueError(
+                    f"No line with description_canonical={material_canonical!r} "
+                    f"found in guia_id={guia_id!r}"
+                )
+        else:
+            raise ValueError("Either line_index or material_canonical must be provided.")
+
+        old_line = lines[resolved_index]
+        old_cantidad = old_line.cantidad
+        new_line = old_line.model_copy(update={"cantidad": new_cantidad})
+        lines[resolved_index] = new_line
+
+        updated_guia = guia.model_copy(update={"lines": lines})
+
+        event = EditEvent(
+            kind="guia_line_edit",
+            # B2: persist the line selector so restore_from_sidecar can replay it.
+            target={
+                "guia_id": guia_id,
+                "line_index": line_index,
+                "material_canonical": material_canonical,
+            },
+            field="cantidad",
+            old_value=str(old_cantidad),
+            new_value=str(new_cantidad),
+        )
+
+        # Mutate in-memory state
+        new_guias = list(self._guias)
+        new_guias[target_idx] = updated_guia
+        self._guias = new_guias
+
+        # Recompute all rows after the edit
+        self._rows = self._reconciler.reconcile(self._declared, self._guias)
+
+        self._audit_trail.append(event)
+        self._persist()
+
+        return list(self._rows)
+
     def apply_reassignment(
         self,
         guia_id: str,
@@ -230,11 +351,23 @@ class ReviewService:
         Raises:
             ValueError: If guia_id is not found.
         """
+        # B4: reject a Contents/section ID masquerading as a Registro N°.
+        if is_section_id(new_registro):
+            raise ValueError(
+                f"{new_registro!r} is a Contents/section ID, not a valid Registro N°. "
+                "Three-identifier invariant: Contents-ID != Registro N° != QR serie-numero."
+            )
+
         # Verify the guía exists before delegating
         self._find_guia_index(guia_id)
 
         guia_before = next(g for g in self._guias if g.guia_id == guia_id)
         parsed_date = _parse_date(new_fecha)
+
+        # B6: idempotent — skip the audit event + persist when nothing changes
+        # (double-click, or replay on every restart would otherwise inflate the trail).
+        if guia_before.registro == new_registro and guia_before.fecha == parsed_date:
+            return list(self._rows)
 
         event = EditEvent(
             kind="reassignment",
@@ -310,6 +443,27 @@ class ReviewService:
                     # Tolerate individual replay errors to avoid blocking restart
                     pass
 
+            elif kind == "guia_line_edit":
+                # B2: replay the line-level cantidad edit using the persisted selector.
+                from decimal import Decimal, InvalidOperation  # noqa: PLC0415
+
+                line_index = target.get("line_index")
+                material_canonical = target.get("material_canonical")
+                raw_value = edit.get("new_value")
+                try:
+                    new_cantidad = Decimal(str(raw_value))
+                except (InvalidOperation, TypeError, ValueError):
+                    continue
+                try:
+                    service.apply_guia_line_edit(
+                        guia_id,
+                        line_index,
+                        material_canonical,
+                        new_cantidad,
+                    )
+                except (ValueError, ReconciliationError):
+                    pass
+
             elif kind == "reassignment":
                 raw_new = edit.get("new_value", {})
                 if isinstance(raw_new, dict):
@@ -337,11 +491,19 @@ class ReviewService:
         raise ValueError(f"GuiaDeRemision with guia_id={guia_id!r} not found.")
 
     def _persist(self) -> None:
-        """Atomically overwrite the review sidecar with current state."""
-        data: dict[str, Any] = {
-            "edits": [e.to_dict() for e in self._audit_trail],
-            "audit_trail": [e.to_dict() for e in self._audit_trail],
-        }
+        """Atomically overwrite the review sidecar with current state.
+
+        B3: MERGE into the existing sidecar instead of replacing it wholesale.
+        The pipeline writes a ``vision_audit`` key (RunContext.append_vision_audit)
+        that carries vision-call provenance; a naive full overwrite on the first
+        review mutation permanently dropped it. We read the current sidecar, update
+        only the review-owned keys (``edits``/``audit_trail``), and preserve every
+        other key (e.g. ``vision_audit`` and any future provenance).
+        """
+        trail = [e.to_dict() for e in self._audit_trail]
+        data: dict[str, Any] = dict(self._ctx.read_review_sidecar())
+        data["edits"] = trail
+        data["audit_trail"] = trail
         self._ctx.write_review_sidecar(data)
 
 

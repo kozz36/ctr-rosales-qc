@@ -15,7 +15,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ReviewGrid from '@/features/review/ReviewGrid.vue'
-import type { ReconciliationRowResponse } from '@/api/types'
+import type { ReconciliationRowResponse, GuiaContributionResponse } from '@/api/types'
 
 // Stub child components to isolate ReviewGrid logic
 vi.mock('@/features/review/ReconciliationRow.vue', () => ({
@@ -23,7 +23,7 @@ vi.mock('@/features/review/ReconciliationRow.vue', () => ({
     name: 'ReconciliationRow',
     template: `<tr class="stub-row" :data-status="row.status" :data-row-id="row.row_id"><td>{{ row.status }}</td></tr>`,
     props: ['row', 'runId', 'pendingValue'],
-    emits: ['edit', 'reassign', 'pageClick', 'rowActivate'],
+    emits: ['edit', 'openReassign', 'pageClick', 'rowActivate', 'rowUpdated'],
   },
 }))
 
@@ -57,6 +57,10 @@ function makeRow(overrides: Partial<ReconciliationRowResponse> = {}): Reconcilia
     status: 'MATCH',
     source_pages: [1, 2],
     min_confidence: 0.92,
+    requires_review: false,
+    guias: [] as GuiaContributionResponse[],
+    any_year_inferred: false,
+    has_fecha_divergence: false,
     ...overrides,
   }
 }
@@ -189,12 +193,41 @@ describe('ReviewGrid', () => {
     expect(activeBtn.text()).toContain('Todos')
   })
 
-  it('emits reassign when ReconciliationRow emits reassign', async () => {
+  it('emits openReassign when ReconciliationRow emits openReassign', async () => {
     const row = makeRow({ status: 'MISMATCH' })
     const wrapper = mount(ReviewGrid, {
       props: { rows: [row], runId: 'run-abc', pendingEdits: EMPTY_MAP, activeFilter: null },
     })
-    await wrapper.findComponent({ name: 'ReconciliationRow' }).vm.$emit('reassign', row)
-    expect(wrapper.emitted('reassign')).toBeTruthy()
+    await wrapper.findComponent({ name: 'ReconciliationRow' }).vm.$emit('openReassign', { guia_id: 'T009-0741770' })
+    expect(wrapper.emitted('openReassign')).toBeTruthy()
+    const payload = wrapper.emitted('openReassign')![0][0] as { guia_id: string }
+    expect(payload.guia_id).toBe('T009-0741770')
+  })
+
+  it('aria-rowcount is bound reactively to filteredRows length (S2.5 / REV-001)', () => {
+    const rows = [
+      makeRow({ row_id: 'r1|d|A|K', status: 'MATCH' }),
+      makeRow({ row_id: 'r1|d|B|K', status: 'MISMATCH' }),
+    ]
+    const wrapper = mount(ReviewGrid, {
+      props: { rows, runId: 'run-abc', pendingEdits: EMPTY_MAP, activeFilter: 'MISMATCH' },
+    })
+    const table = wrapper.find('.review-grid__table')
+    expect(table.exists()).toBe(true)
+    // Only 1 MISMATCH row visible after filter → aria-rowcount should be "1"
+    expect(table.attributes('aria-rowcount')).toBe('1')
+  })
+
+  it('aria-rowcount shows all rows when no filter active', () => {
+    const rows = [
+      makeRow({ row_id: 'r1|d|A|K', status: 'MATCH' }),
+      makeRow({ row_id: 'r1|d|B|K', status: 'MISMATCH' }),
+      makeRow({ row_id: 'r1|d|C|K', status: 'DECLARED_MISSING' }),
+    ]
+    const wrapper = mount(ReviewGrid, {
+      props: { rows, runId: 'run-abc', pendingEdits: EMPTY_MAP, activeFilter: null },
+    })
+    const table = wrapper.find('.review-grid__table')
+    expect(table.attributes('aria-rowcount')).toBe('3')
   })
 })

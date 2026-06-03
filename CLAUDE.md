@@ -26,14 +26,21 @@ Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
 
 ## Domain rules (invariants — encode as MUST, never silently break)
 
-- Group by `(registro, fecha, material_canonical, unidad)`.
+- Group by `(registro, material_canonical, unidad)` — **`fecha` is NOT a grouping axis** (rev-3
+  R8/MAT-001). Including it split declared↔guía groups whenever the vision-read date differed
+  (year unreliable), killing MATCH. Material reconciliation is date-independent.
 - Units **KG/TN/RD/Rollo summed independently — NEVER converted**.
 - Classify pages by **TITLE**, not supplier name (Aceros Arequipa is on non-guía sheets too).
 - **MATCH tolerance EXACT (0)**; **confidence auto-flag at 0.85**; MISMATCH always flags.
 - Reconciliation vs the trusted digital declared side **is the OCR validation gate** —
   mismatches are flagged for human review, never auto-corrected.
-- The grouping **`fecha` is the HANDWRITTEN reception date** (vision-read), not the electronic
-  GRE date. They can differ; divergence = misfiled guía → reassignment.
+- **Reception-date authority** (rev-3 R9): the declared reception date is the **HANDWRITTEN
+  `Fecha:` on the Protocolo de Recepción** (vision-read), linked to the Registro N° — NOT the
+  electronic `fecha_declarada` nor the GRE date. Guías should carry that same handwritten date.
+  A guía whose handwritten date **diverges** (compared by **day-month**; year is vision-unreliable
+  and reconstructed by bounded inference) is a **misfiled signal** → non-blocking no-match
+  **WARNING** that flags the guía `requires_review` with its **page number** and a **red highlight**
+  (individual or per-registro group) for human review + manual reassign. Never auto-corrected.
 - **Three identifiers, don't confuse them**: Contents-ID `#4252` (section) ≠ Registro N° `232`
   (business key, group by this) ≠ QR `serie-numero` (deterministic guía id from rev-2).
 - Input PDF is **read-only**; each run writes its own isolated output dir. **Local-first**:
@@ -51,13 +58,38 @@ Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
 
 ## Status & next steps
 
-Backend complete + e2e-validated (455 tests). Frontend complete (85 tests). A design rev-2
-delta (QR identity tier + guía-granularity review) is specced and ready. **Resume at the
-spec-delta slice** — see `docs/HANDOFF.md` §3 for the exact ordered steps.
+**Close-out COMPLETE — branch `feat/rev2-identity-domain` ready to push.** All gates passed:
+sdd-verify (R8/R9/r10 + base material-reconciliation, PASS-WITH-WARNINGS) → Judgment-Day
+core R8+R9+r10 (APPROVED after 3 rounds; fixed C1 stale gate test, C2-A/B cross-registro
+pollution + ISO date parse, KI-1 graceful vision-cap degrade, dead-code W1, racy W2-A/B) →
+Judgment-Day base rev-2 areas (APPROVED after 2 rounds; recovered dead guía line-edit HTTP
+422, stopped restart data-loss, section-ID-as-Registro guard, idempotent reassign) → KI-4
+faithful e2e captured (TestR9RealPDFGate 5/5 PASS, 6:05, pages 1-25 subset, real cloud
+vision, #4252 1/2"×9M = 4.124 TN MATCH deterministic + R9 divergence confirmed) → sdd-archive
+(8 capability specs → `openspec/specs/`, 4 changes → `openspec/changes/archive/`) → visual
+validation via Playwright (review table, R8 MATCH "Conforme" 4.124 TN, R9 badges + page-refs,
+filters, drill-down, XLSX+CSV export 13 cols — 0 console errors). Only step remaining: push.
+
+**Test counts**: 886 backend unit/targeted passing (targeted paths only — monolithic `pytest
+-q` hangs on paddle import) + 188 frontend vitest. Real-PDF gates pass on the subset.
+
+**KI-1 FIXED** (ba3b0c5, graceful vision-cap degrade). **KI-4 CAPTURED** (R9 gate 5/5 on
+pages 1-25 subset; recipe in `docs/HANDOFF.md` §known-open-rev3b). **KI-2** (cloud
+throttling) and **KI-3** (SUNAT under load) remain open environment limitations — the subset
+sidesteps them. Three post-merge follow-ups deferred (see HANDOFF §follow-ups): disable_thinking
+perf lever, determinate progress bar UX, date-read variance verify.
+
+`ocr.enabled=false` is a config escape hatch (NullOcrExtractor → ZERO paddle) for machines
+where the paddle runtime is broken; SUNAT then supplies quantities. Vision can run local
+(Ollama) or cloud (Ollama-cloud `qwen3.5:397b-cloud`, openai-compatible base_url) — config
+only, never a vendor binding. Compose Ollama base_url/model are env-configurable (port 11435).
 
 ## Map
 
-- `docs/HANDOFF.md` — resume-here guide (read first).
-- `docs/DECISIONS.md` — every decision + audit finding (engram mirror).
+- `docs/HANDOFF.md` — resume-here guide (read first; §known-open-rev3b + §follow-ups + §infra).
+- `docs/DECISIONS.md` — every decision + audit finding (engram mirror; §dates, §rev-3 R8/R9).
+- `docs/MATERIAL-MATCHING.md` — R8 canonical-key domain reference.
 - `docs/ARCHITECTURE.md` — folder layout, pipeline, how to run.
-- `openspec/changes/material-reconciliation/` — proposal, specs, design (rev-2 §A–F), tasks, state.
+- `backend/Dockerfile` + `docker-compose.yml` + `Makefile` — r10 containerized verification.
+- `openspec/specs/` — 8 promoted capability specs (reconciliation, extraction, ingestion, review, export, material-matching, fecha-divergence, containerized-verification).
+- `openspec/changes/archive/` — 4 closed change folders (material-reconciliation, r8, r9, r10).

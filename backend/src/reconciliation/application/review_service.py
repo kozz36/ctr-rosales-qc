@@ -33,6 +33,7 @@ from reconciliation.domain.models import (
     Registro,
 )
 from reconciliation.domain.reconciliation import ReconciliationService
+from reconciliation.domain.section_id_guard import is_section_id
 from reconciliation.application.run_context import RunContext
 
 
@@ -190,6 +191,11 @@ class ReviewService:
             old_value = guia.registro
             if new_value is not None and not isinstance(new_value, str):
                 raise ValueError(f"'registro' must be a string or None, got {type(new_value)}")
+            if is_section_id(new_value):
+                raise ValueError(
+                    f"{new_value!r} is a Contents/section ID, not a valid Registro N°. "
+                    "Three-identifier invariant: Contents-ID != Registro N° != QR serie-numero."
+                )
             updated_guia = guia.model_copy(update={"registro": new_value})
         else:
             raise ValueError(
@@ -234,6 +240,15 @@ class ReviewService:
         by ``material_canonical`` when ``line_index`` is None (matches first line with
         that canonical description).  Updates the line's ``cantidad`` in-place on an
         immutable copy, then re-runs reconcile to recompute MATCH/MISMATCH statuses.
+
+        KNOWN LIMITATION (B5): when matching by ``material_canonical`` the edit targets
+        the FIRST line whose ``description_canonical`` equals the canonical key. This is
+        exact for single-line guías (the common case), but a guía with MULTIPLE lines
+        sharing the same canonical key is semantically lossy — the drill-down
+        ``GuiaContribution`` shown to the engineer is the SUM of all such lines, yet only
+        the first one is updated. A future fix would carry a stable per-line identity
+        (e.g. ``source_page`` + line ordinal) so the exact contributing line can be
+        addressed. Prefer passing an explicit ``line_index`` when disambiguation matters.
 
         Args:
             guia_id:            Identifier of the target GuiaDeRemision.
@@ -290,7 +305,12 @@ class ReviewService:
 
         event = EditEvent(
             kind="guia_line_edit",
-            target={"guia_id": guia_id},
+            # B2: persist the line selector so restore_from_sidecar can replay it.
+            target={
+                "guia_id": guia_id,
+                "line_index": line_index,
+                "material_canonical": material_canonical,
+            },
             field="cantidad",
             old_value=str(old_cantidad),
             new_value=str(new_cantidad),
@@ -331,11 +351,23 @@ class ReviewService:
         Raises:
             ValueError: If guia_id is not found.
         """
+        # B4: reject a Contents/section ID masquerading as a Registro N°.
+        if is_section_id(new_registro):
+            raise ValueError(
+                f"{new_registro!r} is a Contents/section ID, not a valid Registro N°. "
+                "Three-identifier invariant: Contents-ID != Registro N° != QR serie-numero."
+            )
+
         # Verify the guía exists before delegating
         self._find_guia_index(guia_id)
 
         guia_before = next(g for g in self._guias if g.guia_id == guia_id)
         parsed_date = _parse_date(new_fecha)
+
+        # B6: idempotent — skip the audit event + persist when nothing changes
+        # (double-click, or replay on every restart would otherwise inflate the trail).
+        if guia_before.registro == new_registro and guia_before.fecha == parsed_date:
+            return list(self._rows)
 
         event = EditEvent(
             kind="reassignment",
@@ -411,6 +443,27 @@ class ReviewService:
                     # Tolerate individual replay errors to avoid blocking restart
                     pass
 
+            elif kind == "guia_line_edit":
+                # B2: replay the line-level cantidad edit using the persisted selector.
+                from decimal import Decimal, InvalidOperation  # noqa: PLC0415
+
+                line_index = target.get("line_index")
+                material_canonical = target.get("material_canonical")
+                raw_value = edit.get("new_value")
+                try:
+                    new_cantidad = Decimal(str(raw_value))
+                except (InvalidOperation, TypeError, ValueError):
+                    continue
+                try:
+                    service.apply_guia_line_edit(
+                        guia_id,
+                        line_index,
+                        material_canonical,
+                        new_cantidad,
+                    )
+                except (ValueError, ReconciliationError):
+                    pass
+
             elif kind == "reassignment":
                 raw_new = edit.get("new_value", {})
                 if isinstance(raw_new, dict):
@@ -438,11 +491,19 @@ class ReviewService:
         raise ValueError(f"GuiaDeRemision with guia_id={guia_id!r} not found.")
 
     def _persist(self) -> None:
-        """Atomically overwrite the review sidecar with current state."""
-        data: dict[str, Any] = {
-            "edits": [e.to_dict() for e in self._audit_trail],
-            "audit_trail": [e.to_dict() for e in self._audit_trail],
-        }
+        """Atomically overwrite the review sidecar with current state.
+
+        B3: MERGE into the existing sidecar instead of replacing it wholesale.
+        The pipeline writes a ``vision_audit`` key (RunContext.append_vision_audit)
+        that carries vision-call provenance; a naive full overwrite on the first
+        review mutation permanently dropped it. We read the current sidecar, update
+        only the review-owned keys (``edits``/``audit_trail``), and preserve every
+        other key (e.g. ``vision_audit`` and any future provenance).
+        """
+        trail = [e.to_dict() for e in self._audit_trail]
+        data: dict[str, Any] = dict(self._ctx.read_review_sidecar())
+        data["edits"] = trail
+        data["audit_trail"] = trail
         self._ctx.write_review_sidecar(data)
 
 

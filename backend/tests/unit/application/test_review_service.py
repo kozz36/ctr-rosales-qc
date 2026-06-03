@@ -395,6 +395,36 @@ class TestRestoreFromSidecar:
         # The last edit wins
         assert restored_guia.fecha == date(2024, 6, 30)
 
+    def test_restore_replays_guia_line_edit(self, tmp_path: Path) -> None:
+        """B2: a persisted guia_line_edit must SURVIVE a restart (not revert)."""
+        from decimal import Decimal  # noqa: PLC0415
+
+        line = _make_line(qty="100", desc="barra 3/8")
+        guia = _make_guia(lines=[line])
+        declared = [_make_registro(lines=[_make_line(qty="200", desc="barra 3/8")])]
+        service1, ctx = _build_service(
+            tmp_path, guias=[guia], declared=declared, run_id="line-edit-restart"
+        )
+        service1.apply_guia_line_edit(
+            guia_id="g1",
+            line_index=None,
+            material_canonical="barra 3/8",
+            new_cantidad=Decimal("200"),
+        )
+
+        # Fresh restart: rebuild original objects (cantidad still 100)
+        fresh_guia = _make_guia(lines=[_make_line(qty="100", desc="barra 3/8")])
+        fresh_declared = [_make_registro(lines=[_make_line(qty="200", desc="barra 3/8")])]
+        reconciler = ReconciliationService()
+        fresh_rows = reconciler.reconcile(fresh_declared, [fresh_guia])
+
+        service2 = ReviewService.restore_from_sidecar(
+            declared=fresh_declared, guias=[fresh_guia], rows=fresh_rows, ctx=ctx
+        )
+        restored = next(g for g in service2.guias if g.guia_id == "g1")
+        # Edit must have been replayed: cantidad stays 200, NOT reverted to 100.
+        assert restored.lines[0].cantidad == Decimal("200")
+
 
 # ---------------------------------------------------------------------------
 # apply_guia_line_edit (S1.7 — rev-2 line-level edit)
@@ -487,6 +517,83 @@ class TestApplyGuiaLineEdit:
         service, _ = _build_service(tmp_path)
         with pytest.raises(ValueError, match="computed property"):
             service.apply_edit("g1", "summed_qty", "999")
+
+
+# ---------------------------------------------------------------------------
+# B3: vision_audit provenance survives the first review mutation
+# ---------------------------------------------------------------------------
+
+
+class TestVisionAuditPreservation:
+    def test_persist_preserves_vision_audit_on_edit(self, tmp_path: Path) -> None:
+        """B3: the first apply_edit must NOT destroy the pipeline's vision_audit."""
+        service, ctx = _build_service(tmp_path, run_id="vision-audit-test")
+        # Pipeline wrote a vision_audit record before any review mutation.
+        ctx.append_vision_audit(
+            {"stage": "vision", "calls_made": 3, "cap_reached": False}
+        )
+
+        service.apply_edit("g1", "fecha", date(2025, 1, 1))
+
+        sidecar = ctx.read_review_sidecar()
+        assert "vision_audit" in sidecar
+        assert sidecar["vision_audit"] == [
+            {"stage": "vision", "calls_made": 3, "cap_reached": False}
+        ]
+        # Review state is still persisted alongside it.
+        assert len(sidecar["edits"]) == 1
+
+    def test_persist_preserves_vision_audit_on_line_edit(self, tmp_path: Path) -> None:
+        """B3: apply_guia_line_edit must also preserve vision_audit."""
+        from decimal import Decimal  # noqa: PLC0415
+
+        service, ctx = _build_service(tmp_path, run_id="vision-audit-line-test")
+        ctx.append_vision_audit({"stage": "vision", "calls_made": 1})
+        service.apply_guia_line_edit("g1", 0, None, Decimal("42"))
+        sidecar = ctx.read_review_sidecar()
+        assert sidecar.get("vision_audit") == [{"stage": "vision", "calls_made": 1}]
+
+
+# ---------------------------------------------------------------------------
+# B4: reject a section-ID (Contents-ID) as a Registro N°
+# ---------------------------------------------------------------------------
+
+
+class TestSectionIdGuard:
+    def test_reassign_to_section_id_rejected(self, tmp_path: Path) -> None:
+        """B4: reassigning a guía to a section-ID (e.g. 4252) must raise ValueError."""
+        service, _ = _build_service(tmp_path)
+        with pytest.raises(ValueError, match="section"):
+            service.apply_reassignment("g1", new_registro="4252", new_fecha=date(2024, 4, 1))
+
+    def test_reassign_to_valid_registro_ok(self, tmp_path: Path) -> None:
+        """B4: a realistic registro (232) is still accepted."""
+        service, _ = _build_service(tmp_path)
+        service.apply_reassignment("g1", new_registro="232", new_fecha=date(2024, 4, 1))
+        restored = next(g for g in service.guias if g.guia_id == "g1")
+        assert restored.registro == "232"
+
+    def test_edit_registro_to_section_id_rejected(self, tmp_path: Path) -> None:
+        """B4: editing the registro field to a section-ID must raise ValueError."""
+        service, _ = _build_service(tmp_path)
+        with pytest.raises(ValueError, match="section"):
+            service.apply_edit("g1", "registro", "4251")
+
+
+# ---------------------------------------------------------------------------
+# B6: reassignment is idempotent — no duplicate audit event for a no-op
+# ---------------------------------------------------------------------------
+
+
+class TestReassignIdempotency:
+    def test_identical_reassign_twice_appends_once(self, tmp_path: Path) -> None:
+        """B6: applying the same reassign twice must not duplicate the audit event."""
+        service, _ = _build_service(tmp_path)
+        service.apply_reassignment("g1", "R777", date(2025, 9, 1))
+        first_len = len(service.get_audit_trail())
+        # Identical reassign — should be a no-op (no new event)
+        service.apply_reassignment("g1", "R777", date(2025, 9, 1))
+        assert len(service.get_audit_trail()) == first_len
 
 
 # ---------------------------------------------------------------------------

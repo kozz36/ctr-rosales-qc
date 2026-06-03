@@ -141,6 +141,88 @@ class TestCrossedBoundsSurvivesLineEdit:
         assert contrib.delivery_after_protocolo is True
 
 
+class TestCeilingRecomputesAfterCrossRegistroReassign:
+    """Reassigning a guía to a registro with a DIFFERENT Protocolo date must
+    recompute the reception ceiling against the NEW registro's authoritative date.
+
+    Scenario:
+      - Registro A (numero="231") Protocolo = 2026-05-28 (the existing _PROTOCOLO_DATE)
+      - Registro B (numero="232") Protocolo = 2026-06-30 (later ceiling)
+      - Guía: fecha_read=2026-06-10, fecha_entrega=2026-05-20
+
+    Against A: fecha_entrega (2026-05-20) <= ceiling (2026-05-28) → no crossed-bounds →
+      apply ceiling: 2026-06-10 > 2026-05-28 → clamp; reception_ceiling_applied=True.
+
+    After reassign to B: recompute → ceiling=2026-06-30; 2026-06-10 <= 2026-06-30 →
+      NOT clamped; reception_ceiling_applied=False; fecha stays 2026-06-10.
+
+    This proves ``authoritative_fecha.get(key.registro)`` picks the CURRENT registro's
+    ceiling after reassignment — not the stale source registro's ceiling.
+    """
+
+    _PROTOCOLO_B = date(2026, 6, 30)  # later ceiling on the target registro
+
+    def _registro_b(self) -> Registro:
+        return Registro(
+            numero="232",
+            fecha_declarada=self._PROTOCOLO_B,
+            fecha_declarada_handwritten=self._PROTOCOLO_B,
+            declared_lines=[_line()],
+        )
+
+    def _guia_in_a(self) -> GuiaDeRemision:
+        """Guía assigned to registro A with read date AFTER A's ceiling but BEFORE B's."""
+        return GuiaDeRemision(
+            guia_id="T011-0001",
+            registro="231",
+            fecha=_GUIA_READ,           # 2026-06-10
+            fecha_confidence=0.95,
+            lines=[_line()],
+            source_pages=[7],
+            fecha_entrega=date(2026, 5, 20),  # delivery floor well below both ceilings
+        )
+
+    def _build_two_registro_service(self, tmp_path: Path) -> ReviewService:
+        """Build a service with Registro A (ceiling 2026-05-28) and Registro B (2026-06-30)."""
+        registro_a = _registro("231")  # Protocolo = _PROTOCOLO_DATE = 2026-05-28
+        registro_b = self._registro_b()  # Protocolo = 2026-06-30
+        guia = self._guia_in_a()
+        return _build_service(tmp_path, [guia], [registro_a, registro_b])
+
+    def test_initial_state_ceiling_applied_in_registro_a(self, tmp_path: Path) -> None:
+        """Before reassign: guía in registro A is clamped to A's ceiling (2026-05-28)."""
+        service = self._build_two_registro_service(tmp_path)
+        contrib = _contrib(service.rows)
+        assert contrib.reception_ceiling_applied is True, (
+            "fecha 2026-06-10 exceeds A's ceiling 2026-05-28 → must be clamped initially"
+        )
+        assert contrib.fecha == _PROTOCOLO_DATE, (
+            "clamped fecha must equal A's Protocolo ceiling 2026-05-28"
+        )
+
+    def test_reassign_to_b_ceiling_not_applied(self, tmp_path: Path) -> None:
+        """After reassign to Registro B: ceiling recomputes to 2026-06-30;
+        2026-06-10 <= 2026-06-30 → NOT clamped, fecha stays 2026-06-10."""
+        service = self._build_two_registro_service(tmp_path)
+        rows = service.apply_reassignment("T011-0001", "232", _GUIA_READ)
+        contrib = _contrib(rows)
+        assert contrib.reception_ceiling_applied is False, (
+            "After reassign to B, fecha 2026-06-10 is within B's ceiling 2026-06-30 → no clamp"
+        )
+        assert contrib.fecha == _GUIA_READ, (
+            "fecha must remain 2026-06-10 (not clamped to the OLD registro A ceiling)"
+        )
+
+    def test_reassign_to_b_delivery_after_protocolo_false(self, tmp_path: Path) -> None:
+        """After reassign to B, delivery_after_protocolo stays False (no crossed bounds)."""
+        service = self._build_two_registro_service(tmp_path)
+        rows = service.apply_reassignment("T011-0001", "232", _GUIA_READ)
+        contrib = _contrib(rows)
+        assert contrib.delivery_after_protocolo is False, (
+            "fecha_entrega (2026-05-20) < B's ceiling (2026-06-30) → no crossed-bounds anomaly"
+        )
+
+
 class TestNoSunatDeliveryDatesUnchanged:
     def test_no_fecha_entrega_review_path_unchanged(self, tmp_path: Path) -> None:
         """No fecha_entrega on guías → empty delivery_dates → existing ceiling behavior."""

@@ -5,6 +5,8 @@ Each pipeline invocation gets its own RunContext, which owns:
   - A run-specific output directory under AppConfig.output_dir
   - An immutable extraction cache path (extraction_cache.json)
   - A mutable review sidecar path (review.json)
+  - An optional progress_cb (Callable[[ProgressEvent], None]) for live
+    progress reporting to infrastructure (determinate progress bar).
 
 The input PDF is treated as read-only; RunContext never writes to it.
 
@@ -15,11 +17,45 @@ partial writes from corrupting the review state.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+_logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# ProgressEvent — pure stdlib frozen dataclass; no adapter/framework imports
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """Emitted by the pipeline on each item within a slow stage.
+
+    Invariants:
+      - stage_index is 1-based (1..stage_total).
+      - item_done is 1-based (1..item_total).
+      - item_total always comes from REAL counts (never hardcoded).
+
+    Fields:
+        stage_label:  Human-readable Spanish label for the current stage.
+        stage_index:  1-based index of the current stage (1..stage_total).
+        stage_total:  Total number of instrumented stages (always 5).
+        item_done:    Number of items completed so far in this stage (1-based).
+        item_total:   Total number of items in this stage (from real counts).
+    """
+
+    stage_label: str
+    stage_index: int
+    stage_total: int
+    item_done: int
+    item_total: int
 
 
 class RunContext:
@@ -38,6 +74,7 @@ class RunContext:
         pdf_path: Path,
         output_base: Path,
         run_id: str | None = None,
+        progress_cb: Callable[[ProgressEvent], None] | None = None,
     ) -> None:
         """Create a RunContext, creating the run directory if needed.
 
@@ -46,6 +83,11 @@ class RunContext:
             output_base: Root output directory (from AppConfig.output_dir).
             run_id:      Optional explicit run ID (used for restart/resume).
                          Generates a new UUID4 if not provided.
+            progress_cb: Optional callable that receives ProgressEvent objects
+                         during pipeline execution.  Infrastructure-injected;
+                         application/ must never import a concrete type here.
+                         Exceptions from the callback are swallowed so they
+                         never interrupt a run.
         """
         self.run_id: str = run_id or str(uuid.uuid4())
         self.pdf_path: Path = Path(pdf_path)
@@ -54,6 +96,54 @@ class RunContext:
 
         self.extraction_cache: Path = self.run_dir / "extraction_cache.json"
         self.review_sidecar: Path = self.run_dir / "review.json"
+        self._progress_cb: Callable[[ProgressEvent], None] | None = progress_cb
+
+    # ------------------------------------------------------------------
+    # Progress reporting (observational-only; never alters run results)
+    # ------------------------------------------------------------------
+
+    def report_progress(
+        self,
+        stage_label: str,
+        stage_index: int,
+        stage_total: int,
+        item_done: int,
+        item_total: int,
+    ) -> None:
+        """Emit a ProgressEvent to the injected callback (if set).
+
+        This method is intentionally observational: it MUST NOT alter any
+        reconciliation result, grouping key, or quantity.  It is a pure
+        side-channel.
+
+        Any exception raised by ``_progress_cb`` is caught and logged at
+        DEBUG level — progress reporting must never break a run.
+
+        Args:
+            stage_label:  Human-readable Spanish label for the current stage.
+            stage_index:  1-based stage number (1..stage_total).
+            stage_total:  Total number of instrumented stages (5).
+            item_done:    Items completed so far in this stage (1-based).
+            item_total:   Total items in this stage (from real counts).
+        """
+        if self._progress_cb is None:
+            return
+        event = ProgressEvent(
+            stage_label=stage_label,
+            stage_index=stage_index,
+            stage_total=stage_total,
+            item_done=item_done,
+            item_total=item_total,
+        )
+        try:
+            self._progress_cb(event)
+        except Exception:  # noqa: BLE001
+            _logger.debug(
+                "report_progress: progress_cb raised (swallowed); stage=%r item=%d/%d",
+                stage_label,
+                item_done,
+                item_total,
+            )
 
     # ------------------------------------------------------------------
     # Extraction cache (write-once; immutable after first write)

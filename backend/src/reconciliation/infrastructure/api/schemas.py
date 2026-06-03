@@ -17,7 +17,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 # ---------------------------------------------------------------------------
 # Guía contribution (inline per reconciliation row — rev-2, REC-C02)
@@ -82,6 +82,36 @@ class RunCreateResponse(BaseModel):
     status: Literal["pending", "processing", "review", "error"]
 
 
+class ProgressResponse(BaseModel):
+    """Live progress snapshot for a running pipeline stage.
+
+    Percent formula:
+        percent = ((stage_index - 1) + (item_done / item_total if item_total else 1)) / stage_total
+        clamped to [0, 100].
+
+    The numerator gives fractional stage progress: completed stages contribute
+    a full 1.0 unit each; the current stage contributes its item-fraction.
+    """
+
+    stage_label: str = Field(description="Human-readable Spanish label for the current stage.")
+    stage_index: int = Field(description="1-based index of the current stage (1..stage_total).")
+    stage_total: int = Field(description="Total number of instrumented stages.")
+    item_done: int = Field(description="Items completed so far in this stage (1-based).")
+    item_total: int = Field(description="Total items in this stage.")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def percent(self) -> float:
+        """Completion percentage [0.0..100.0], clamped.
+
+        Formula: ((stage_index - 1) + (item_done / item_total)) / stage_total * 100
+        Treats item_total=0 as a completed stage (fraction=1.0) — no division by zero.
+        """
+        item_fraction = (self.item_done / self.item_total) if self.item_total > 0 else 1.0
+        raw = ((self.stage_index - 1) + item_fraction) / self.stage_total
+        return max(0.0, min(1.0, raw)) * 100.0
+
+
 class RunStatusResponse(BaseModel):
     """Returned by GET /runs/{run_id}."""
 
@@ -90,6 +120,15 @@ class RunStatusResponse(BaseModel):
     vision_calls_made: int = 0
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
+    # Determinate progress bar (backward-compatible: optional fields)
+    progress: ProgressResponse | None = Field(
+        default=None,
+        description="Live progress snapshot; None when the run is not yet processing.",
+    )
+    started_at: str | None = Field(
+        default=None,
+        description="ISO-8601 UTC timestamp when the run entered 'processing' state.",
+    )
 
 
 # ---------------------------------------------------------------------------

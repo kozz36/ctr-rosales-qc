@@ -79,6 +79,8 @@ const { MOCK_TABLE, MOCK_STATUS } = vi.hoisted(() => {
     vision_calls_made: 3,
     warnings: [],
     error: null,
+    started_at: null,
+    progress: null,
   }
 
   return { MOCK_TABLE, MOCK_STATUS }

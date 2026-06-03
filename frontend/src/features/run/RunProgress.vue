@@ -57,9 +57,38 @@
       class="run-progress__bar-track"
       role="progressbar"
       aria-label="Progreso del pipeline"
-      :aria-valuetext="statusLabel"
+      :aria-valuenow="isDeterminate ? Math.round(progressPercent) : undefined"
+      :aria-valuemin="isDeterminate ? 0 : undefined"
+      :aria-valuemax="isDeterminate ? 100 : undefined"
+      :aria-valuetext="isDeterminate ? progressAriaText : statusLabel"
     >
-      <div class="run-progress__bar-fill" />
+      <!--
+        Determinate: fill width is bound to progress.percent; smooth transition.
+        Indeterminate: slide animation, no inline width.
+      -->
+      <div
+        class="run-progress__bar-fill"
+        :class="{ 'run-progress__bar-fill--determinate': isDeterminate }"
+        :style="isDeterminate ? { width: progressPercent + '%' } : {}"
+      />
+    </div>
+
+    <!-- Stage detail line (visible when progress info is present) -->
+    <p
+      v-if="isActive && progressInfo"
+      class="run-progress__stage-detail"
+      aria-hidden="true"
+    >
+      {{ progressInfo.stage_label }} · ítem {{ progressInfo.item_done }}/{{ progressInfo.item_total }}
+    </p>
+
+    <!-- Elapsed / ETA timing row -->
+    <div
+      v-if="isActive && startedAt"
+      class="run-progress__timing-row"
+    >
+      <span class="run-progress__elapsed">{{ elapsedFormatted }} transcurrido</span>
+      <span v-if="etaFormatted" class="run-progress__eta">~{{ etaFormatted }} estimado</span>
     </div>
 
     <!-- Warnings -->
@@ -110,7 +139,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, watch, ref, onMounted, onUnmounted } from 'vue'
 import { useRunStatus } from '@/composables/useReconciliationApi'
 import { useRunStore } from '@/stores/run'
 import { toRef } from 'vue'
@@ -147,10 +176,24 @@ const currentStatus = computed(() => data.value?.status ?? 'pending')
 const visionCalls = computed(() => data.value?.vision_calls_made ?? 0)
 const warnings = computed(() => data.value?.warnings ?? [])
 const errorDetail = computed(() => data.value?.error ?? null)
+const progressInfo = computed(() => data.value?.progress ?? null)
+const startedAt = computed(() => data.value?.started_at ?? null)
 
 const isActive = computed(() => currentStatus.value === 'pending' || currentStatus.value === 'processing')
 const isDone = computed(() => currentStatus.value === 'review')
 const isError = computed(() => currentStatus.value === 'error' || queryIsError.value)
+
+/** True when progress data is available — switches bar from indeterminate to determinate. */
+const isDeterminate = computed(() => isActive.value && progressInfo.value !== null)
+
+const progressPercent = computed(() => progressInfo.value?.percent ?? 0)
+
+/** Spanish aria-valuetext summarising current progress. */
+const progressAriaText = computed(() => {
+  const p = progressInfo.value
+  if (!p) return statusLabel.value
+  return `${p.stage_label}, ítem ${p.item_done} de ${p.item_total}, ${Math.round(p.percent)}%`
+})
 
 const statusLabel = computed<string>(() => {
   switch (currentStatus.value) {
@@ -159,6 +202,60 @@ const statusLabel = computed<string>(() => {
     case 'review':     return 'Completado'
     case 'error':      return 'Error'
     default:           return 'Desconocido'
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Elapsed / ETA — ticking clock
+// ---------------------------------------------------------------------------
+
+/** Reactive elapsed seconds, updated every ~1s by a setInterval. */
+const elapsedSeconds = ref(0)
+let tickInterval: ReturnType<typeof setInterval> | null = null
+
+function computeElapsed(): number {
+  if (!startedAt.value) return 0
+  const start = new Date(startedAt.value).getTime()
+  return Math.max(0, Math.floor((Date.now() - start) / 1000))
+}
+
+function tick() {
+  elapsedSeconds.value = computeElapsed()
+}
+
+/** Format seconds as "Xm Ys". */
+function formatDuration(secs: number): string {
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return `${m}m ${s}s`
+}
+
+const elapsedFormatted = computed(() => formatDuration(elapsedSeconds.value))
+
+/**
+ * ETA = elapsed * (100 - percent) / percent.
+ * Only computed when percent >= 5 so the running average has enough signal —
+ * below that the estimate is wildly inflated (at 1% it is elapsed * 99).
+ */
+const ETA_MIN_PERCENT = 5
+
+const etaFormatted = computed<string | null>(() => {
+  const pct = progressPercent.value
+  if (pct < ETA_MIN_PERCENT) return null
+  const eta = Math.round(elapsedSeconds.value * (100 - pct) / pct)
+  return formatDuration(eta)
+})
+
+onMounted(() => {
+  // Start immediately so elapsed is accurate from mount
+  tick()
+  tickInterval = setInterval(tick, 1000)
+})
+
+onUnmounted(() => {
+  if (tickInterval !== null) {
+    clearInterval(tickInterval)
+    tickInterval = null
   }
 })
 
@@ -243,7 +340,7 @@ watch(currentStatus, (next) => {
   color: var(--text-tertiary);
 }
 
-/* Indeterminate progress bar */
+/* Progress bar track */
 .run-progress__bar-track {
   height: 3px;
   background-color: var(--surface-divider);
@@ -251,12 +348,45 @@ watch(currentStatus, (next) => {
   overflow: hidden;
 }
 
+/* Indeterminate fill — sliding animation */
 .run-progress__bar-fill {
   height: 100%;
   width: 40%;
   background-color: var(--action-primary-hover);
   border-radius: var(--radius-pill);
   animation: slide 1.6s ease-in-out infinite;
+}
+
+/* Determinate fill — smooth width transition, no slide animation */
+.run-progress__bar-fill--determinate {
+  width: 0%;
+  animation: none;
+  transition: width 0.4s ease-out;
+}
+
+/* Stage detail */
+.run-progress__stage-detail {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Timing row */
+.run-progress__timing-row {
+  display: flex;
+  gap: var(--space-4);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+}
+
+.run-progress__elapsed {
+  color: var(--text-secondary);
+}
+
+.run-progress__eta {
+  color: var(--text-tertiary);
 }
 
 /* Warnings */

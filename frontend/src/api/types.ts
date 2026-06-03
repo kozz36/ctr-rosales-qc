@@ -33,6 +33,25 @@ export interface RunCreateResponse {
   status: RunStatus
 }
 
+/**
+ * Progress snapshot emitted by the pipeline during a processing run.
+ * Mirrors backend RunProgressInfo (schemas.py).
+ */
+export interface RunProgressInfo {
+  /** Spanish label for the current stage, e.g. "Lectura de visión". */
+  stage_label: string
+  /** 1-based index of the current stage (1..stage_total). */
+  stage_index: number
+  /** Total number of pipeline stages (currently 5). */
+  stage_total: number
+  /** 1-based count of items completed within the current stage. */
+  item_done: number
+  /** Total items expected in the current stage (real count). */
+  item_total: number
+  /** Overall completion percentage, 0..100, computed server-side. */
+  percent: number
+}
+
 /** GET /runs/{run_id} */
 export interface RunStatusResponse {
   run_id: string
@@ -40,6 +59,10 @@ export interface RunStatusResponse {
   vision_calls_made: number
   warnings: string[]
   error: string | null
+  /** ISO-8601 UTC timestamp set when the run starts processing; null while pending. */
+  started_at: string | null
+  /** Progress snapshot; null until the first pipeline stage emits. */
+  progress: RunProgressInfo | null
 }
 
 // ---------------------------------------------------------------------------

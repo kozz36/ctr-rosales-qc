@@ -69,6 +69,8 @@ def build_vision_adapter(cfg: "AppConfig") -> "VisionLLMPort":
             # R10.5: route config.vision.max_tokens into the adapter (env-tunable)
             max_tokens=cfg.vision.max_tokens,
             supports_batch=True,
+            # Route timeout so a stalled cloud call fails fast (EXT-0XX / hang fix)
+            timeout=cfg.vision.timeout_s,
         )
 
     if provider == "ollama":
@@ -86,6 +88,8 @@ def build_vision_adapter(cfg: "AppConfig") -> "VisionLLMPort":
             # R10.5: route config.vision.max_tokens into the adapter (env-tunable)
             max_tokens=cfg.vision.max_tokens,
             supports_batch=False,
+            # Route timeout so a stalled local call fails fast (EXT-0XX / hang fix)
+            timeout=cfg.vision.timeout_s,
         )
 
     raise ValueError(

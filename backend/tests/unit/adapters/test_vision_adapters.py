@@ -331,6 +331,56 @@ class TestOpenAICompatibleVisionAdapterLazyLoad:
         client.chat.completions.create.assert_called_once()
 
 
+class TestOpenAICompatibleVisionAdapterTimeout:
+    """Timeout is passed to the OpenAI client constructor and to each create() call."""
+
+    def test_default_timeout_is_90(self) -> None:
+        adapter = OpenAICompatibleVisionAdapter()
+        assert adapter._timeout == 90.0
+
+    def test_custom_timeout_stored(self) -> None:
+        adapter = OpenAICompatibleVisionAdapter(timeout=30.0)
+        assert adapter._timeout == 30.0
+
+    def test_timeout_passed_to_openai_constructor(self) -> None:
+        """_get_client() must forward timeout= to OpenAI(**kwargs)."""
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_openai_cls.return_value = MagicMock()
+            adapter = OpenAICompatibleVisionAdapter(timeout=45.0)
+            adapter._get_client()
+            _, ctor_kwargs = mock_openai_cls.call_args
+            assert ctor_kwargs.get("timeout") == 45.0
+
+    def test_timeout_passed_to_create_call(self) -> None:
+        """chat.completions.create() must receive timeout= on each call."""
+        client = MagicMock()
+        client.chat.completions.create.return_value = _make_openai_response(
+            '{"date": null, "confidence": 0.0}'
+        )
+        adapter = OpenAICompatibleVisionAdapter(timeout=60.0, client=client)
+        adapter.read_handwritten_date(_make_png())
+        _, call_kwargs = client.chat.completions.create.call_args
+        assert call_kwargs.get("timeout") == 60.0
+
+    def test_max_retries_set_to_2_on_constructor(self) -> None:
+        """Client must be built with max_retries=2 (bounded retry, not unbounded)."""
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_openai_cls.return_value = MagicMock()
+            adapter = OpenAICompatibleVisionAdapter()
+            adapter._get_client()
+            _, ctor_kwargs = mock_openai_cls.call_args
+            assert ctor_kwargs.get("max_retries") == 2
+
+    def test_timeout_exception_degrades_gracefully(self) -> None:
+        """A timeout-like exception from create() must return VisionResult(date=None)."""
+        client = MagicMock()
+        client.chat.completions.create.side_effect = TimeoutError("connection timed out")
+        adapter = OpenAICompatibleVisionAdapter(timeout=5.0, client=client)
+        result = adapter.read_handwritten_date(_make_png())
+        assert result.date is None
+        assert result.confidence == pytest.approx(0.0)
+
+
 # ---------------------------------------------------------------------------
 # factory.build_vision_adapter
 # ---------------------------------------------------------------------------
@@ -410,3 +460,25 @@ class TestVisionFactory:
 
         adapter = build_vision_adapter(self._make_cfg("ollama"))
         assert adapter.supports_batch is False
+
+    def test_openai_adapter_receives_timeout_from_cfg(self) -> None:
+        """factory must route cfg.vision.timeout_s into the openai adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("openai")
+        cfg.vision.timeout_s = 120.0
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._timeout == 120.0
+
+    def test_ollama_adapter_receives_timeout_from_cfg(self) -> None:
+        """factory must route cfg.vision.timeout_s into the ollama adapter."""
+        from reconciliation.adapters.vision.factory import build_vision_adapter
+        from reconciliation.adapters.vision.openai_compatible import OpenAICompatibleVisionAdapter
+
+        cfg = self._make_cfg("ollama")
+        cfg.vision.timeout_s = 55.0
+        adapter = build_vision_adapter(cfg)
+        assert isinstance(adapter, OpenAICompatibleVisionAdapter)
+        assert adapter._timeout == 55.0

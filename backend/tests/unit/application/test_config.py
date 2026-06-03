@@ -116,6 +116,23 @@ class TestVisionConfig:
         with pytest.raises(Exception):
             VisionConfig(max_vision_calls=0)
 
+    def test_timeout_s_default_is_90(self) -> None:
+        v = VisionConfig()
+        assert v.timeout_s == pytest.approx(90.0)
+
+    def test_timeout_s_custom_value(self) -> None:
+        v = VisionConfig(timeout_s=30.0)
+        assert v.timeout_s == pytest.approx(30.0)
+
+    def test_timeout_s_must_be_positive(self) -> None:
+        with pytest.raises(Exception):
+            VisionConfig(timeout_s=0)
+
+    def test_timeout_s_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RECONCILIATION__VISION__TIMEOUT_S", "45.0")
+        cfg = AppConfig()
+        assert cfg.vision.timeout_s == pytest.approx(45.0)
+
 
 # ---------------------------------------------------------------------------
 # AppConfig.from_yaml

@@ -110,6 +110,12 @@ class VisionConfig(BaseSettings):
     # the <think> phase from extended-thinking models (qwen3.5 family).
     # Passed to the adapter constructor in the factory; overrides the adapter's default.
     max_tokens: int = Field(default=640, gt=0)
+    # Request timeout for OpenAI-compatible adapters (openai + ollama providers).
+    # A stalled cloud socket (ESTABLISHED but no bytes) would hang indefinitely with the
+    # SDK default (~600s + unbounded retries).  Normal 397b-cloud calls take 8-16s;
+    # 90s provides safe headroom while bounding the worst-case hang to one timeout window.
+    # Env: RECONCILIATION__VISION__TIMEOUT_S
+    timeout_s: float = Field(default=90.0, gt=0)
 
     @model_validator(mode="after")
     def _inject_env_api_keys(self) -> VisionConfig:

@@ -161,6 +161,11 @@ class OpenAICompatibleVisionAdapter:
                     before JSON parsing.
         supports_batch: Whether to enable the batch path via OpenAI Batch
                         API.  Must be ``False`` for Ollama.
+        timeout: Per-request timeout in seconds applied to both the OpenAI
+                 client constructor (socket-level) and each
+                 ``chat.completions.create()`` call (belt-and-suspenders so a
+                 stalled read fails fast).  Default 90 s — matches
+                 ``VisionConfig.timeout_s``.
         client: Injected ``openai.OpenAI`` instance for testing.  When
                 provided, the lazy-import path is skipped entirely.
     """
@@ -172,6 +177,7 @@ class OpenAICompatibleVisionAdapter:
         api_key: str | None = None,
         max_tokens: int = 4096,
         supports_batch: bool = True,
+        timeout: float = 90.0,
         client: object | None = None,
     ) -> None:
         self._model = model
@@ -179,6 +185,7 @@ class OpenAICompatibleVisionAdapter:
         self._api_key = api_key
         self._max_tokens = max_tokens
         self.supports_batch = supports_batch
+        self._timeout = timeout
         self._client = client
         # R10.6: per-instance token-consumption meter (CONT-S08)
         self._meter = _TokenMeter()
@@ -214,6 +221,7 @@ class OpenAICompatibleVisionAdapter:
                 model=self._model,
                 max_tokens=self._max_tokens,
                 messages=messages,  # type: ignore[arg-type]
+                timeout=self._timeout,
             )
             # R10.6: record token consumption from the response usage field (CONT-S08)
             self._meter.record(getattr(response, "usage", None))
@@ -269,13 +277,23 @@ class OpenAICompatibleVisionAdapter:
     # ------------------------------------------------------------------
 
     def _get_client(self) -> object:
-        """Return the OpenAI client, building it lazily on first call."""
+        """Return the OpenAI client, building it lazily on first call.
+
+        ``timeout`` bounds the socket-level wait so a stalled ESTABLISHED
+        connection fails after ``self._timeout`` seconds instead of waiting
+        for the SDK default (~600 s).  ``max_retries=2`` bounds retry
+        amplification: a transient failure retries twice, but a persistent
+        stall does not multiply the timeout unbounded.
+        """
         if self._client is not None:
             return self._client
 
         from openai import OpenAI  # type: ignore[import]  # noqa: PLC0415
 
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {
+            "timeout": self._timeout,
+            "max_retries": 2,
+        }
         if self._api_key is not None:
             kwargs["api_key"] = self._api_key
         if self._base_url is not None:

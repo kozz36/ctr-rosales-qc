@@ -216,8 +216,11 @@ class ReviewService:
         new_guias[target_idx] = updated_guia
         self._guias = new_guias
 
-        # Recompute all rows after the edit
-        self._rows = self._reconciler.reconcile(self._declared, self._guias)
+        # Recompute all rows after the edit (carry the SUNAT delivery floor so the
+        # crossed-bounds protection is not lost on the review path).
+        self._rows = self._reconciler.reconcile(
+            self._declared, self._guias, delivery_dates=self._delivery_dates()
+        )
 
         # Append audit event and persist
         self._audit_trail.append(event)
@@ -321,8 +324,11 @@ class ReviewService:
         new_guias[target_idx] = updated_guia
         self._guias = new_guias
 
-        # Recompute all rows after the edit
-        self._rows = self._reconciler.reconcile(self._declared, self._guias)
+        # Recompute all rows after the edit (carry the SUNAT delivery floor so the
+        # crossed-bounds protection is not lost on the review path).
+        self._rows = self._reconciler.reconcile(
+            self._declared, self._guias, delivery_dates=self._delivery_dates()
+        )
 
         self._audit_trail.append(event)
         self._persist()
@@ -385,8 +391,11 @@ class ReviewService:
             new_fecha=parsed_date,
         )
 
-        # Re-run full reconcile
-        self._rows = self._reconciler.reconcile(self._declared, self._guias)
+        # Re-run full reconcile (carry the SUNAT delivery floor so the crossed-bounds
+        # protection survives reassignment — the primary R9 misfiled-guía workflow).
+        self._rows = self._reconciler.reconcile(
+            self._declared, self._guias, delivery_dates=self._delivery_dates()
+        )
 
         # Audit + persist
         self._audit_trail.append(event)
@@ -482,6 +491,21 @@ class ReviewService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _delivery_dates(self) -> dict[str, date]:
+        """SUNAT delivery-floor map (``guia_id`` → ``fecha_entrega``) from the guías.
+
+        The crossed-bounds protection in ``ReconciliationService.reconcile``
+        (do NOT clamp below the SUNAT delivery floor when ``fecha_entrega >``
+        Protocolo) depends on this map.  ``fecha_entrega`` is persisted ON each
+        guía by the pipeline, so it survives the cache round-trip and every review
+        re-reconcile.  Empty map when SUNAT is off/unavailable (graceful).
+        """
+        return {
+            g.guia_id: g.fecha_entrega
+            for g in self._guias
+            if g.fecha_entrega is not None
+        }
 
     def _find_guia_index(self, guia_id: str) -> int:
         """Return the list index of the guía with ``guia_id``, or raise ValueError."""

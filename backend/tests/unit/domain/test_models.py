@@ -128,6 +128,44 @@ class TestGuiaDeRemision:
         )
         assert guia.fecha_confidence is None
 
+    def test_fecha_entrega_defaults_none(self) -> None:
+        """Additive R9b field: fecha_entrega defaults None (SUNAT off / unavailable)."""
+        guia = GuiaDeRemision(
+            guia_id="G-004",
+            registro="232",
+            fecha=date(2026, 5, 28),
+            lines=[],
+            source_pages=[5],
+        )
+        assert guia.fecha_entrega is None
+
+    def test_fecha_entrega_round_trips_through_model_dump_validate(self) -> None:
+        """fecha_entrega survives model_dump()/model_validate() (cache persistence proxy)."""
+        guia = GuiaDeRemision(
+            guia_id="G-005",
+            registro="232",
+            fecha=date(2026, 5, 28),
+            lines=[],
+            source_pages=[5],
+            fecha_entrega=date(2026, 5, 20),
+        )
+        # json-mode dump mirrors the extraction-cache write path.
+        dumped = guia.model_dump(mode="json")
+        restored = GuiaDeRemision.model_validate(dumped)
+        assert restored.fecha_entrega == date(2026, 5, 20)
+
+    def test_backward_compat_model_validate_without_fecha_entrega(self) -> None:
+        """Old cache dicts (no fecha_entrega key) validate with fecha_entrega=None."""
+        old_dict = {
+            "guia_id": "G-006",
+            "registro": "232",
+            "fecha": "2026-05-28",
+            "lines": [],
+            "source_pages": [5],
+        }
+        restored = GuiaDeRemision.model_validate(old_dict)
+        assert restored.fecha_entrega is None
+
 
 class TestRegistro:
     def test_instantiation(self) -> None:

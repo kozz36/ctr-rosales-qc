@@ -58,7 +58,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from datetime import date
 
 
 def asyncio_available() -> bool:
@@ -396,7 +399,7 @@ class ReconciliationPipeline:
                 _m.total_tokens,
             )
 
-        # Stage 8: reconcile
+        # Stage 8: reconcile (delivery_dates now sourced from guias' fecha_entrega)
         rows = self._stage_reconcile(declared, guias)
 
         # Stage 9: persist sidecar (also appends the vision audit record)
@@ -1181,7 +1184,24 @@ class ReconciliationPipeline:
                             item_total=_vision_item_total,
                         )
                     continue
-                vr = self._vision.read_handwritten_date(img)
+                # Build a Spanish context hint from the SUNAT delivery date when
+                # available.  The hint is ADVISORY — it gives the model a reference
+                # lower bound but does NOT constrain the returned {date, confidence}
+                # contract, and the year is still reconstructed by inference downstream.
+                # Only applied on the non-batch path; the batch variant
+                # ``read_handwritten_date_batch`` has no per-image hint parameter —
+                # adding per-image hints there requires a signature change (follow-up).
+                _sunat_map = sunat_fetch_map or {}
+                _gre = _sunat_map.get(blk.guia_id)
+                _fecha_entrega = _gre.fecha_entrega if _gre is not None else None
+                _vision_hint: str | None = (
+                    f"Para referencia, la guía fue entregada alrededor del "
+                    f"{_fecha_entrega:%d/%m/%Y}; la fecha de recepción manuscrita "
+                    f"debería coincidir o ser posterior a esa fecha."
+                    if _fecha_entrega is not None
+                    else None
+                )
+                vr = self._vision.read_handwritten_date(img, hint=_vision_hint)
                 calls_made += 1
                 guia = _build_guia_from_block(blk, vr)
                 guias.append(guia)
@@ -1435,6 +1455,14 @@ class ReconciliationPipeline:
             if official is not None and hasattr(official, "fecha_entrega"):
                 lower = official.fecha_entrega
 
+            # Persist the SUNAT delivery date ON the guía (single source of truth) so the
+            # delivery-floor / crossed-bounds bracket survives the extraction-cache round-trip
+            # and the ReviewService re-reconcile.  Carried on EVERY return path below;
+            # None when SUNAT is off/unavailable (graceful, backward compat).
+            entrega_update: dict[str, object] = (
+                {"fecha_entrega": lower} if lower is not None else {}
+            )
+
             if day is None or month is None:
                 # FIX F2: vision produced no parseable date (fecha None, fecha_raw "").
                 # If SUNAT supplied a fecha_entrega, R9b Rule 2 still floors the
@@ -1447,9 +1475,12 @@ class ReconciliationPipeline:
                             update={
                                 "fecha": floored_date,
                                 "delivery_floor_applied": True,
+                                **entrega_update,
                             }
                         )
                     )
+                elif entrega_update:
+                    result.append(guia.model_copy(update=entrega_update))
                 else:
                     result.append(guia)
                 continue
@@ -1468,8 +1499,12 @@ class ReconciliationPipeline:
             floored_date, was_floored = apply_delivery_floor(inferred_date, lower)
 
             if floored_date is None:
-                # No valid candidate in window and no floor available — leave unchanged.
-                result.append(guia)
+                # No valid candidate in window and no floor available — leave unchanged
+                # except for carrying the persisted SUNAT delivery date when available.
+                if entrega_update:
+                    result.append(guia.model_copy(update=entrega_update))
+                else:
+                    result.append(guia)
                 continue
 
             # Determine whether the year actually changed (for year_inferred flag).
@@ -1478,7 +1513,7 @@ class ReconciliationPipeline:
             year_changed = (vision_year != floored_date.year) or (guia.fecha is None)
 
             # Build the update dict: always update fecha; set flags as needed.
-            update: dict[str, object] = {"fecha": floored_date}
+            update: dict[str, object] = {"fecha": floored_date, **entrega_update}
             if year_changed:
                 update["year_inferred"] = True
             if was_floored:
@@ -1504,7 +1539,7 @@ class ReconciliationPipeline:
                     lower,
                 )
 
-            if year_changed or was_floored:
+            if year_changed or was_floored or entrega_update:
                 result.append(guia.model_copy(update=update))
             else:
                 # Vision year was already correct and no floor applied — keep original.
@@ -1556,8 +1591,20 @@ class ReconciliationPipeline:
         declared: list[Registro],
         guias: list[GuiaDeRemision],
     ) -> list[ReconciliationRow]:
-        """Stage 8: group + compare via ReconciliationService."""
-        rows = self._reconciler.reconcile(declared, guias)
+        """Stage 8: group + compare via ReconciliationService.
+
+        Builds ``delivery_dates`` (``guia_id`` → SUNAT ``fecha_entrega``) from the
+        GUÍAS THEMSELVES — the single source of truth.  ``_stage_normalize_dates``
+        persists ``fecha_entrega`` on each guía, so the map travels with the model
+        (cache round-trip + ReviewService re-reconcile).  Forwarded to the reconciler
+        so the crossed-bounds anomaly (``fecha_entrega > Protocolo ceiling``) is
+        detected and the ceiling clamp suppressed (never push a date below the
+        delivery floor).  Empty map → graceful air-gap default.
+        """
+        delivery_dates: dict[str, date] = {
+            g.guia_id: g.fecha_entrega for g in guias if g.fecha_entrega is not None
+        }
+        rows = self._reconciler.reconcile(declared, guias, delivery_dates=delivery_dates)
         logger.debug("reconcile: %d output rows", len(rows))
         return rows
 

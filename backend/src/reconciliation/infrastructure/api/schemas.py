@@ -68,6 +68,28 @@ class GuiaContributionResponse(BaseModel):
             "Advisory only; does not affect MATCH/MISMATCH logic."
         ),
     )
+    # Reception-ceiling side-channel — mirrors delivery_floor_applied.
+    reception_ceiling_applied: bool = Field(
+        default=False,
+        description=(
+            "True when this guía's reception date was clamped to the Protocolo "
+            "declared date upper ceiling (Registro.fecha_authoritative). "
+            "The ceiling is the symmetric upper bound to the delivery-floor lower bound. "
+            "Advisory only; does not affect MATCH/MISMATCH logic."
+        ),
+    )
+    # Crossed-bounds anomaly side-channel — mirrors reception_ceiling_applied.
+    delivery_after_protocolo: bool = Field(
+        default=False,
+        description=(
+            "True when this guía's SUNAT delivery date (fecha_entrega) is LATER than "
+            "the Protocolo declared ceiling — a physical impossibility (goods cannot "
+            "be delivered after the declared reception; likely a human error in the "
+            "Protocolo). The ceiling clamp is suppressed (the floored read date is "
+            "kept above the delivery floor) and the guía is flagged for review. "
+            "Advisory only; does not affect MATCH/MISMATCH logic."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +242,24 @@ class ReconciliationRowResponse(BaseModel):
             "True when at least one contributing guía had its reception date floored "
             "to the SUNAT fecha_entrega lower bound "
             "(group-level roll-up of guias[*].delivery_floor_applied). Advisory only."
+        ),
+    )
+    # Reception-ceiling group-level indicator (mirrors has_delivery_floor).
+    has_reception_ceiling: bool = Field(
+        default=False,
+        description=(
+            "True when at least one contributing guía had its reception date clamped "
+            "to the Protocolo declared date upper ceiling "
+            "(group-level roll-up of guias[*].reception_ceiling_applied). Advisory only."
+        ),
+    )
+    # Crossed-bounds anomaly group-level indicator (mirrors has_reception_ceiling).
+    has_delivery_after_protocolo: bool = Field(
+        default=False,
+        description=(
+            "True when at least one contributing guía hit the crossed-bounds anomaly "
+            "(SUNAT fecha_entrega later than the Protocolo ceiling — impossible) "
+            "(group-level roll-up of guias[*].delivery_after_protocolo). Advisory only."
         ),
     )
 

@@ -77,6 +77,7 @@ def asyncio_available() -> bool:
 from reconciliation.application.config import AppConfig
 from reconciliation.application.run_context import RunContext
 from reconciliation.domain.classifier import PageClassifier
+from reconciliation.domain.date_floor import apply_delivery_floor
 from reconciliation.domain.date_inference import infer_reception_year
 from reconciliation.domain.models import (
     GuiaDeRemision,
@@ -1315,30 +1316,49 @@ class ReconciliationPipeline:
                 upper=today,
             )
 
-            if inferred_date is None:
-                # No valid candidate in window — leave existing fecha as-is (may be None).
+            # R9b: apply delivery-date floor AFTER year inference.
+            # Physical invariant: reception date can never be earlier than fecha_entrega.
+            # ``lower`` carries fecha_entrega when SUNAT is enabled; None otherwise
+            # (graceful degrade — no floor applied when SUNAT is off/unavailable).
+            floored_date, was_floored = apply_delivery_floor(inferred_date, lower)
+
+            if floored_date is None:
+                # No valid candidate in window and no floor available — leave unchanged.
                 result.append(guia)
                 continue
 
-            # Determine whether the year actually changed
+            # Determine whether the year actually changed (for year_inferred flag).
+            # floored_date is always non-None here (guarded above).
             vision_year = guia.fecha.year if guia.fecha is not None else None
-            year_changed = (vision_year != inferred_date.year) or (guia.fecha is None)
+            year_changed = (vision_year != floored_date.year) or (guia.fecha is None)
 
+            # Build the update dict: always update fecha; set flags as needed.
+            update: dict[str, object] = {"fecha": floored_date}
             if year_changed:
-                result.append(
-                    guia.model_copy(
-                        update={"fecha": inferred_date, "year_inferred": True}
-                    )
+                update["year_inferred"] = True
+            if was_floored:
+                update["delivery_floor_applied"] = True
+                logger.debug(
+                    "normalize_dates: guia %r floored %s → %s "
+                    "(delivery_floor_applied=True, fecha_entrega=%s)",
+                    guia.guia_id,
+                    inferred_date,
+                    floored_date,
+                    lower,
                 )
+            elif year_changed:
                 logger.debug(
                     "normalize_dates: guia %r fecha %s → %s (year_inferred=True, lower=%s)",
                     guia.guia_id,
                     guia.fecha,
-                    inferred_date,
+                    floored_date,
                     lower,
                 )
+
+            if year_changed or was_floored:
+                result.append(guia.model_copy(update=update))
             else:
-                # Vision year was already correct — keep original, mark year_inferred=False.
+                # Vision year was already correct and no floor applied — keep original.
                 result.append(guia)
 
         return result

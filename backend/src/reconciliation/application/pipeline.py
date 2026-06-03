@@ -1196,9 +1196,14 @@ class ReconciliationPipeline:
                 continue
 
             # Reconstruct year from day/month — vision year is never trusted (#2753).
-            raw_str = vr.raw or (
+            # C2-B: prefer the already-parsed ``vr.date`` for the day/month so the
+            # full JSON ``raw`` (e.g. ``{"date": "2026-05-28", ...}``) cannot be
+            # mis-parsed — the legacy regex matched ``26-05`` from the ISO year and
+            # corrupted the authoritative reception date, making every guía falsely
+            # diverge (R9 inverted).
+            raw_str = (
                 vr.date.strftime("%d/%m/%Y") if vr.date is not None else None
-            )
+            ) or vr.raw
             day, month = _parse_day_month(vr.confidence, raw_str)
             if day is None or month is None:
                 # Vision confident but unparseable day/month → flag, no baseline.
@@ -1655,8 +1660,13 @@ def _parse_day_month(
     if not raw_vision_string:
         return None, None
 
-    # Match DD/MM or DD-MM (with or without year)
-    m = _re.search(r"(\d{1,2})[/\-](\d{1,2})", raw_vision_string)
+    # Match DD/MM or DD-MM (with or without year).
+    # C2-B defense-in-depth: ``(?<!\d)`` rejects a day digit embedded in a longer
+    # run of digits (e.g. the ``26`` inside the ISO year ``2026-05-28``), and
+    # ``(?!\d)`` rejects a month digit that is actually the head of a 4-digit year
+    # (e.g. ``28-2026``). Without these the full-JSON / ISO-date raw string parsed
+    # day=26, month=05 instead of the true 28/05 and corrupted the baseline.
+    m = _re.search(r"(?<!\d)(\d{1,2})[/\-](\d{1,2})(?!\d)", raw_vision_string)
     if not m:
         return None, None
 

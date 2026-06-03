@@ -14,6 +14,7 @@ from typing import Any
 from reconciliation.application.config import AppConfig
 from reconciliation.application.pipeline import (
     ReconciliationPipeline,
+    _parse_day_month,
     _prepare_vision_image_proto,
 )
 from reconciliation.domain.models import Registro, VisionResult
@@ -121,6 +122,54 @@ class TestStageExtractDeclaredDate:
         regs = [Registro(numero="232", fecha_declarada=None, declared_lines=[], protocolo_page=4)]
         pipe._stage_extract_declared_date(regs)
         assert 4 in doc.rendered
+
+    def test_raw_json_does_not_corrupt_day_month(self) -> None:
+        """C2-B: when ``raw`` is the model's full JSON (e.g.
+        ``{"date": "2026-05-28", ...}``), the day/month MUST come from the
+        already-parsed ``vr.date`` (28/05), NOT from the ISO year ``2026-05``
+        which the legacy regex matched as day=26, month=05. A wrong baseline
+        makes every correct guía falsely diverge (R9 inverted).
+        """
+        vis = _CountingVision(
+            VisionResult(
+                date=date(2026, 5, 28),
+                confidence=1.0,
+                raw='{"date": "2026-05-28", "confidence": 1.0}',
+            )
+        )
+        pipe = _pipeline(vis)
+        regs = [
+            Registro(
+                numero="232",
+                fecha_declarada=date(2026, 5, 1),
+                declared_lines=[],
+                protocolo_page=7,
+            )
+        ]
+        out = pipe._stage_extract_declared_date(regs)
+        hw = out[0].fecha_declarada_handwritten
+        assert hw is not None
+        assert (hw.day, hw.month) == (28, 5)
+
+
+class TestParseDayMonthHardening:
+    """C2-B defense-in-depth: a day digit embedded in a 4-digit run (an ISO year)
+    must NOT be matched. ``2026-05`` should not parse as day=26, month=05.
+    """
+
+    def test_iso_year_month_not_matched_as_day_month(self) -> None:
+        # The leading "20" of the ISO year precedes "26-05"; "26" must not be
+        # treated as the day because it is preceded by a digit.
+        assert _parse_day_month(1.0, "2026-05-28") == (None, None)
+
+    def test_iso_json_blob_not_matched_as_day_month(self) -> None:
+        assert _parse_day_month(1.0, '{"date": "2026-05-28"}') == (None, None)
+
+    def test_clean_dd_mm_still_parses(self) -> None:
+        assert _parse_day_month(1.0, "28/05/26") == (28, 5)
+
+    def test_clean_dd_mm_dash_still_parses(self) -> None:
+        assert _parse_day_month(1.0, "28-05-26") == (28, 5)
 
 
 class TestProtocoloCropConfig:

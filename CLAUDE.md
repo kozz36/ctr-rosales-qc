@@ -58,24 +58,38 @@ Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
 
 ## Status & next steps
 
-**R8** (canonical material matching), **R9** (handwritten-Protocolo-date authority +
-fecha-divergence review), and **r10** (paddle-free containerized cloud-vision verification)
-are implemented + committed on `feat/rev2-identity-domain` (NOT pushed). 766 backend + 188
-frontend unit tests green. **Resume per `docs/HANDOFF.md` §3 REVISED**: sdd-verify →
-judgment-day (fixes `§known-open-rev3b` KI-1..KI-4) → archive → visual validation (now LAST)
-→ push. The full-pipeline faithful e2e (R8 MATCH #4252=4.124 TN + R9 divergence) is the
-trusted gate and is pending a run where the cloud-vision/SUNAT services are not throttled.
+**Close-out COMPLETE — branch `feat/rev2-identity-domain` ready to push.** All gates passed:
+sdd-verify (R8/R9/r10 + base material-reconciliation, PASS-WITH-WARNINGS) → Judgment-Day
+core R8+R9+r10 (APPROVED after 3 rounds; fixed C1 stale gate test, C2-A/B cross-registro
+pollution + ISO date parse, KI-1 graceful vision-cap degrade, dead-code W1, racy W2-A/B) →
+Judgment-Day base rev-2 areas (APPROVED after 2 rounds; recovered dead guía line-edit HTTP
+422, stopped restart data-loss, section-ID-as-Registro guard, idempotent reassign) → KI-4
+faithful e2e captured (TestR9RealPDFGate 5/5 PASS, 6:05, pages 1-25 subset, real cloud
+vision, #4252 1/2"×9M = 4.124 TN MATCH deterministic + R9 divergence confirmed) → sdd-archive
+(8 capability specs → `openspec/specs/`, 4 changes → `openspec/changes/archive/`) → visual
+validation via Playwright (review table, R8 MATCH "Conforme" 4.124 TN, R9 badges + page-refs,
+filters, drill-down, XLSX+CSV export 13 cols — 0 console errors). Only step remaining: push.
+
+**Test counts**: 886 backend unit/targeted passing (targeted paths only — monolithic `pytest
+-q` hangs on paddle import) + 188 frontend vitest. Real-PDF gates pass on the subset.
+
+**KI-1 FIXED** (ba3b0c5, graceful vision-cap degrade). **KI-4 CAPTURED** (R9 gate 5/5 on
+pages 1-25 subset; recipe in `docs/HANDOFF.md` §known-open-rev3b). **KI-2** (cloud
+throttling) and **KI-3** (SUNAT under load) remain open environment limitations — the subset
+sidesteps them. Three post-merge follow-ups deferred (see HANDOFF §follow-ups): disable_thinking
+perf lever, determinate progress bar UX, date-read variance verify.
 
 `ocr.enabled=false` is a config escape hatch (NullOcrExtractor → ZERO paddle) for machines
 where the paddle runtime is broken; SUNAT then supplies quantities. Vision can run local
 (Ollama) or cloud (Ollama-cloud `qwen3.5:397b-cloud`, openai-compatible base_url) — config
-only, never a vendor binding.
+only, never a vendor binding. Compose Ollama base_url/model are env-configurable (port 11435).
 
 ## Map
 
-- `docs/HANDOFF.md` — resume-here guide (read first; §3 REVISED + §known-open-rev3b + §infra).
+- `docs/HANDOFF.md` — resume-here guide (read first; §known-open-rev3b + §follow-ups + §infra).
 - `docs/DECISIONS.md` — every decision + audit finding (engram mirror; §dates, §rev-3 R8/R9).
 - `docs/MATERIAL-MATCHING.md` — R8 canonical-key domain reference.
 - `docs/ARCHITECTURE.md` — folder layout, pipeline, how to run.
 - `backend/Dockerfile` + `docker-compose.yml` + `Makefile` — r10 containerized verification.
-- `openspec/changes/{material-reconciliation,r8-material-matching,r9-fecha-divergence-review,r10-containerized-verification}/`.
+- `openspec/specs/` — 8 promoted capability specs (reconciliation, extraction, ingestion, review, export, material-matching, fecha-divergence, containerized-verification).
+- `openspec/changes/archive/` — 4 closed change folders (material-reconciliation, r8, r9, r10).

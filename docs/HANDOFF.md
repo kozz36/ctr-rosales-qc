@@ -4,11 +4,10 @@
 > original machine** and does NOT travel with the repo. This document (plus the other
 > files in `docs/`) is the versioned source of truth for continuing the work anywhere.
 
-Last session: **2026-06-02** (long session). Rev-3 + **R8 (canonical matching)** + **R9
-(fecha-divergence)** + **r10 (containerized cloud-vision verification)** all implemented +
-committed. Branch `feat/rev2-identity-domain` — **NOT yet pushed**. **Resume at §3 REVISED
-plan: sdd-verify → judgment-day (fixes the §known-open-rev3b issues) → archive → visual
-validation (now last).** The full e2e was blocked by transient external cloud/SUNAT throttling.
+Last session: **2026-06-03** (close-out session). All gates passed: sdd-verify → JD core
+(R8/R9/r10) → JD base (rev-2 areas) → KI-4 e2e captured → sdd-archive → visual validation.
+Branch `feat/rev2-identity-domain` — **READY TO PUSH** (not yet pushed). **Only action
+remaining: push + PRs (user-gated). See §3 REVISED — steps 1-5 all DONE.**
 
 ---
 
@@ -28,48 +27,47 @@ Full domain context: `docs/DECISIONS.md`. Architecture: `docs/ARCHITECTURE.md`.
 ```
 proposal ✅  spec ✅(rev-2+rev-3 delta)  design ✅ rev-2  tasks ✅(98/98 complete)
 apply ✅ ALL COMPLETE — branch feat/rev2-identity-domain (NOT pushed)
-verify ⏳   judgment-day ⏳   archive ⏳
+verify ✅   judgment-day ✅   archive ✅   visual-validation ✅
 ```
 
-- **Backend**: 590 unit tests + integration gates passing (r1: 10/10, r2: 7/7, r3 airgap:
-  3/3). Branch `feat/rev2-identity-domain`.
+- **Backend**: 886 unit/targeted tests passing. Run targeted (not monolithic — paddle import
+  hangs `pytest -q` on this machine). Branch `feat/rev2-identity-domain`.
   Runs: `cd backend && uvicorn reconciliation.infrastructure.api.main:app --reload`.
-- **Frontend**: 175 vitest passing, 0 TS errors. `cd frontend && npm install && npm run dev`.
+- **Frontend**: 188 vitest passing, 0 TS errors. `cd frontend && npm install && npm run dev`.
 - **Heavy deps**: `pyzbar`, `zxing-cpp`, `pillow`, `numpy`, `paddleocr`, `openai` installed
-  in the dev venv (uv, Python 3.12) on the development machine this session.
-- **Ollama models pulled**: `qwen3.5:9b` (6.6GB, vision — the selected local model).
+  in the dev venv (uv, Python 3.12) on the development machine.
+- **Ollama models pulled**: `qwen3.5:9b` (6.6GB, vision — local model); `qwen3.5:397b-cloud`
+  (Ollama cloud) used for the KI-4 e2e gate.
 - **PaddleOCR status**: paddle 3.3.1 + paddleocr 3.6.0 API compat fixed (R5); BUT
   `predict()` raises `NotImplementedError` (oneDNN/PIR CPU bug on this machine). Graceful
   degradation active — runs complete with OCR quantities empty + `_ocr_failed=True` warning.
   See `docs/DECISIONS.md` §rev-3 R6–R7.
 
-## 3. RESUME HERE — REVISED plan (user, 2026-06-02 session close)
+## 3. RESUME HERE — REVISED plan (user, 2026-06-03 close-out session)
+
+**ALL STEPS COMPLETE. Only action remaining: push + PRs (user-gated).**
 
 R8 (canonical matching), R9 (fecha-divergence), `ocr.enabled`, and r10 (containerized
-cloud-vision verification) are all IMPLEMENTED + COMMITTED on `feat/rev2-identity-domain`
-(NOT pushed). 766 backend + 188 frontend unit tests green (verified). The strategy CHANGED:
-**defer the visual validation to the very end (after archive), defer the known issues below
-to be fixed in the verify/JD fix phases, and drive the close-out as verify → JD → archive.**
+cloud-vision verification) were implemented + committed. Close-out proceeded:
 
-Run in THIS order next session:
+1. ✅ **sdd-verify** — PASS-WITH-WARNINGS (R8/R9/r10 + base material-reconciliation).
+2. ✅ **judgment-day core (R8+R9+r10)** — APPROVED after 3 rounds. Fixed: C1 stale gate
+   test, C2-A cross-registro match_method/requires_review pollution, C2-B ISO date y-m-d
+   parse order, KI-1 graceful vision-cap degrade (ba3b0c5), W1 dead-code concurrency shrink,
+   W2-A/B declared reads cap + racy SUNAT pacing. Commits 7e5f897..ba3b0c5, 596704f..182d72a, a3069ad.
+3. ✅ **judgment-day base (rev-2 areas)** — APPROVED after 2 rounds. Fixed: guía line-edit
+   dead feature (HTTP 422), restart data-loss (guia_line_edit not replayed; vision_audit
+   destroyed on first review mutation), section-ID-as-Registro guard, idempotent reassign.
+   Commits 010036c, ca65b0b, a0aeb99.
+4. ✅ **KI-4 faithful e2e captured** — `TestR9RealPDFGate` 5/5 PASS in 6:05 on pages 1-25
+   subset. See §known-open-rev3b for recipe.
+5. ✅ **sdd-archive** — 8 capability specs → `openspec/specs/`; 4 changes →
+   `openspec/changes/archive/`. Commit ef15a61.
+6. ✅ **Visual validation** (Playwright) — review table, R8 MATCH "Conforme" 4.124 TN, R9
+   divergence badges + requires_review + year-inferred + page-refs, filters, drill-down,
+   XLSX+CSV export 13 cols including Método/Revisión/Año-inferido — 0 console errors.
 
-1. **sdd-verify** (full rev-3 + R8 + R9 + r10 vs spec/design/tasks). Surface the KNOWN ISSUES
-   below as findings so JD fixes them.
-
-2. **judgment-day** (canonical: blind dual review → FIX → re-judge). MANDATORY pre-push gate.
-   Its fix phase MUST resolve the deferred KNOWN ISSUES (§known-open-rev3b).
-
-3. **(within/after JD) the full-pipeline faithful e2e** — R8 MATCH (#4252 = 4.124 TN) +
-   R9 divergence — run in the r10 container (`make`/`docker compose`, see §infra below).
-   This is the trusted gate (HANDOFF §4). It was BLOCKED this session by transient external
-   throttling — retry in a quiet window and/or after the pacing fix (KI-2).
-
-4. **sdd-archive**.
-
-5. **Visual validation** (Playwright MCP) — MOVED HERE, after archive. Drive the running app:
-   upload → review table → drill-down/reassign/export + the R9 red-highlight/page-ref UI.
-
-6. **Push + PRs** (user-gated). Do not push until JD passes.
+7. **Push + PRs** (user-gated). Branch is READY.
 
 ### §known-open-rev3b — deferred KNOWN ISSUES (fix in verify/JD fix phases)
 
@@ -86,8 +84,27 @@ deadline** (48bb268, confirmed firing live), paddle-free container + `ocr.enable
   complete this session (deadline correctly degraded all calls; nothing was a code bug).
 - **KI-3 — SUNAT subset re-fetch.** Intermittent `read operation timed out / retry` on the
   subset's guías under load; cross-run cache only works via the container named volume.
-- **KI-4 — Full e2e not yet captured.** The end-to-end R8 MATCH + R9 divergence run has NOT
-  completed once (blocked by KI-2/KI-3). MUST pass before final "done" per §4.
+- **KI-4 — [CAPTURED — 2026-06-03]** `TestR9RealPDFGate` 5/5 PASS in 6:05. Subset recipe:
+  pages 1-25 of the full PDF (contents + Registro 232 block) → `/tmp/ctr_section1.pdf`.
+  Run: `docker compose run --rm -v /tmp/ctr_section1.pdf:/data/section1.pdf:ro -e CTR_PDF_PATH=/data/section1.pdf -e OLLAMA_BASE_URL=http://localhost:11435/v1 backend python -m pytest tests/integration/test_pipeline_r9_gate.py::TestR9RealPDFGate -p no:cacheprovider -v -s`.
+  Result: #4252 1/2"×9M = 4.124 TN MATCH deterministic + R9 date/divergence confirmed on
+  real data. Full-PDF run is impractical under KI-2 throttling; the subset is the tractable
+  fixture. KI-2 and KI-3 remain open environment limitations (not code bugs).
+
+### §follow-ups — post-merge SDD slices (deferred)
+
+These are NOT blockers for push; they are the next SDD changes after merge:
+
+- **disable_thinking (perf)**: `VisionConfig.disable_thinking` defaults `false` and is NOT
+  set in `docker-compose.yml` → `qwen3.5:397b-cloud` runs with `<think>` blocks (~12s/call),
+  compounding slowness under KI-2. Lever: `RECONCILIATION__VISION__DISABLE_THINKING=true`.
+  Tradeoff: may reduce handwritten-date read accuracy — A/B test before enabling in prod.
+- **Determinate progress bar (UX)**: current pipeline progressbar is indeterminate. Add
+  stage+count reporting in `GET /runs/{id}` + a determinate frontend bar with ETA for
+  operator monitoring.
+- **Date-read variance (verify)**: a visual run read Registro 232 declared fecha as 2026-05-26
+  vs the smoke run's 2026-05-28 — likely cloud-vision non-determinism on the handwritten day.
+  Confirm it's natural variance, not residual mass-false-divergence from a code path.
 
 ### §infra — how to run the faithful e2e in the r10 container
 

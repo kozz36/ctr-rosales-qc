@@ -81,6 +81,10 @@ class GuiaContribution(BaseModel):
     fecha: date | None = None
     fecha_divergence: bool = False
     divergence_reason: Literal["fecha_divergence"] | None = None
+    # R9b: delivery-floor side-channel — True when the guía's resolved reception
+    # date was adjusted to the SUNAT fecha_entrega lower floor (apply_delivery_floor).
+    # Mirrors the year_inferred pattern (rev-3 D5).  False by default (backward compat).
+    delivery_floor_applied: bool = False
 
 
 class GuiaDeRemision(BaseModel):
@@ -118,6 +122,10 @@ class GuiaDeRemision(BaseModel):
     # Rev-3 D5: Raw string from VisionResult.raw; needed by _stage_normalize_dates
     # to extract day/month when fecha is None (year missing in model output).
     fecha_raw: str = ""
+    # R9b: delivery-floor side-channel — True when the resolved reception date was
+    # adjusted to the SUNAT fecha_entrega lower floor (apply_delivery_floor).
+    # Mirrors the year_inferred pattern (rev-3 D5).  False by default (backward compat).
+    delivery_floor_applied: bool = False
 
 
 class Registro(BaseModel):
@@ -229,6 +237,16 @@ class ReconciliationRow(BaseModel):
         Advisory side-channel — does NOT affect MATCH/MISMATCH/delta logic.
         """
         return any(g.fecha_divergence for g in self.guias)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def has_delivery_floor(self) -> bool:
+        """True when at least one contributing guía had its reception date floored.
+
+        R9b: group-level indicator mirroring ``has_fecha_divergence``.
+        Advisory side-channel — does NOT affect MATCH/MISMATCH/delta logic.
+        """
+        return any(g.delivery_floor_applied for g in self.guias)
 
 
 class VisionResult(BaseModel):

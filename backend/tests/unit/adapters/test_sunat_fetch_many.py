@@ -146,6 +146,87 @@ class TestFetchManyNShrink:
 
         assert len(result) == 10
 
+    def test_sustained_failures_actually_reduce_in_flight_concurrency(self) -> None:
+        """W1 (KI-3): under sustained None/429 the EFFECTIVE in-flight concurrency
+        must genuinely drop across waves — not just decrement a dead local int.
+
+        Pacing is patched near-zero so concurrent fetches actually overlap; each
+        fetch is slow enough to overlap with its wave-mates. We record the live
+        concurrent-call count and assert the early peak exceeds the late peak.
+        """
+        from reconciliation.adapters.sunat import descargaqr as _mod
+
+        urls = [f"url-{i}" for i in range(18)]
+        adapter = SunatDescargaqrAdapter()
+
+        lock = threading.Lock()
+        live = {"count": 0}
+        # Sample the live concurrent-count at each fetch entry, in call order.
+        # Waves run sequentially (gather awaits each fully), so the count returns
+        # to 0 between waves — we segment on that boundary to get per-wave peaks.
+        samples: list[int] = []
+
+        def _failing_fetch(url: str) -> Any:
+            import time
+            with lock:
+                live["count"] += 1
+                samples.append(live["count"])
+            time.sleep(0.03)  # overlap window so wave-mates are concurrent
+            with lock:
+                live["count"] -= 1
+            return None  # sustained failure → 429-like
+
+        with patch.object(_mod, "_FETCH_PACING_S", 0.0), patch.object(
+            adapter, "fetch", side_effect=_failing_fetch
+        ):
+            result = asyncio.run(adapter.fetch_many(urls, concurrency=6))
+
+        assert len(result) == 18
+
+        # Segment samples into waves: a new wave begins when a sample value of 1
+        # follows a prior wave (the count had drained to 0 between gather calls).
+        waves: list[list[int]] = []
+        for s in samples:
+            if s == 1:
+                waves.append([])
+            waves[-1].append(s)
+        wave_peaks = [max(w) for w in waves]
+
+        # Adaptive back-pressure: the first wave's peak in-flight count MUST exceed
+        # the last wave's peak — the ceiling genuinely dropped (not a dead int).
+        assert len(wave_peaks) >= 2
+        assert wave_peaks[0] > wave_peaks[-1]
+
+
+class TestFetchManyPacing:
+    def test_inter_request_pacing_holds_under_concurrency(self) -> None:
+        """W2-B (KI-2): the inter-request pace must be enforced even when fetches
+        run concurrently. Record dispatch timestamps and assert the minimum gap
+        between consecutive dispatches is >= the pacing interval (minus jitter).
+        """
+        import time as _time
+
+        from reconciliation.adapters.sunat import descargaqr as _mod
+
+        urls = [f"url-{i}" for i in range(5)]
+        adapter = SunatDescargaqrAdapter()
+
+        lock = threading.Lock()
+        dispatch_times: list[float] = []
+
+        def _timed_fetch(url: str) -> Any:
+            with lock:
+                dispatch_times.append(_time.monotonic())
+            return _stub_gre()
+
+        with patch.object(adapter, "fetch", side_effect=_timed_fetch):
+            asyncio.run(adapter.fetch_many(urls, concurrency=5))
+
+        dispatch_times.sort()
+        gaps = [b - a for a, b in zip(dispatch_times, dispatch_times[1:])]
+        # Allow a small scheduling jitter tolerance below the nominal pace.
+        assert min(gaps) >= _mod._FETCH_PACING_S - 0.05
+
 
 # ---------------------------------------------------------------------------
 # SunatGreFetchPort.fetch_many default implementation

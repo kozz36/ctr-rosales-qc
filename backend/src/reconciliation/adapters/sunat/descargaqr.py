@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from datetime import date as datetime_date
 from pathlib import Path
@@ -168,6 +169,11 @@ class SunatDescargaqrAdapter:
         # Monotonic timestamp of the last completed network download; used to
         # pace consecutive fetches (None until the first network download).
         self._last_download_monotonic: float | None = None
+        # KI-2: guards the pace read/write so the inter-request interval is honoured
+        # when fetch_many() runs self.fetch concurrently via asyncio.to_thread.
+        # (fetch_many also paces at the scheduling layer; this lock keeps the
+        #  per-thread guard correct for the direct sequential fetch() entry point.)
+        self._pace_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # SunatGreFetchPort interface
@@ -178,23 +184,30 @@ class SunatDescargaqrAdapter:
         urls: list[str],
         concurrency: int = 5,
     ) -> dict[str, OfficialGre | None]:
-        """Bounded-concurrency batch fetch (R10.7 / CONT-S09/S11).
+        """Bounded-concurrency batch fetch with REAL adaptive back-pressure
+        (R10.7 / CONT-S09/S11; KI-2 / KI-3 fix).
 
-        Uses ``asyncio.Semaphore(concurrency)`` to limit parallel in-flight
-        requests.  Each slot runs ``self.fetch(url)`` in a thread via
-        ``asyncio.to_thread`` so the blocking HTTP call does not stall the
-        event loop.
+        The URL list is processed in concurrency-sized WAVES.  Each wave dispatches
+        at most ``wave_size`` fetches concurrently via ``asyncio.to_thread`` so the
+        blocking HTTP call never stalls the event loop.  Dispatches WITHIN a wave
+        are spaced by ``_FETCH_PACING_S`` at this scheduling layer (W2-B / KI-2):
+        because pacing is enforced here — not in the per-thread ``_download`` —
+        the inter-request interval holds even under concurrency, where the shared
+        ``_last_download_monotonic`` was previously racy.
 
-        Includes an N-shrink guard: when 3+ consecutive slots return ``None``
-        (indicating SUNAT rate-limiting / 429), ``concurrency`` is reduced by 1
-        (minimum 1) to ease back pressure.
+        Adaptive back-pressure (W1 / KI-3): after a wave in which 3+ fetches
+        returned ``None`` (SUNAT 429 / rate-limit signal), the NEXT wave's size is
+        reduced by 1 (floor 1).  Unlike the previous implementation — which only
+        decremented a dead local int while a fixed-capacity ``Semaphore`` kept
+        every URL in flight — this genuinely lowers the number of concurrent
+        in-flight requests for subsequent waves.
 
         The graceful-None contract from ``fetch()`` is preserved: a URL whose
-        fetch fails appears in the result as ``None`` — the pipeline continues.
+        fetch fails appears in the result as ``None`` — the run still completes.
 
         Args:
             urls:        List of hashqr URLs to fetch (may be empty).
-            concurrency: Maximum parallel in-flight requests.  Default 5.
+            concurrency: Maximum parallel in-flight requests for the FIRST wave.
 
         Returns:
             Dict mapping each URL to its ``OfficialGre`` or ``None``.
@@ -205,35 +218,55 @@ class SunatDescargaqrAdapter:
             return {}
 
         results: dict[str, OfficialGre | None] = {}
-        effective_concurrency = max(1, concurrency)
-        semaphore = asyncio.Semaphore(effective_concurrency)
+        wave_size = max(1, concurrency)
+        pending = list(urls)
 
-        # N-shrink guard state: consecutive None counter
-        consecutive_nones = 0
-        _lock = asyncio.Lock()
+        # Shared async pacing gate (W2-B / KI-2): a single coroutine-serialised
+        # monotonic timestamp enforces a MINIMUM interval between dispatches.
+        # Enforcing it here (the scheduling layer) — rather than in the per-thread
+        # _download via the racy _last_download_monotonic — keeps the inter-request
+        # spacing correct under concurrency. Because it gates DISPATCH (not
+        # completion), slow concurrent fetches still overlap up to wave_size.
+        pace_lock = asyncio.Lock()
+        last_dispatch: list[float | None] = [None]
+        loop = asyncio.get_event_loop()
 
-        async def _fetch_one(url: str) -> None:
-            nonlocal effective_concurrency, consecutive_nones
+        async def _pace_gate() -> None:
+            async with pace_lock:
+                prev = last_dispatch[0]
+                if prev is not None:
+                    remaining = _FETCH_PACING_S - (loop.time() - prev)
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+                last_dispatch[0] = loop.time()
 
-            async with semaphore:
-                result: OfficialGre | None = await asyncio.to_thread(self.fetch, url)
+        async def _fetch_one(url: str) -> tuple[str, OfficialGre | None]:
+            await _pace_gate()
+            return url, await asyncio.to_thread(self.fetch, url)
+
+        while pending:
+            wave = pending[:wave_size]
+            pending = pending[wave_size:]
+
+            wave_results = await asyncio.gather(*(_fetch_one(url) for url in wave))
+
+            none_count = 0
+            for url, result in wave_results:
                 results[url] = result
+                if result is None:
+                    none_count += 1
 
-                async with _lock:
-                    if result is None:
-                        consecutive_nones += 1
-                        # N-shrink: after 3 consecutive None results, reduce concurrency
-                        if consecutive_nones >= 3 and effective_concurrency > 1:
-                            effective_concurrency = max(1, effective_concurrency - 1)
-                            logger.debug(
-                                "fetch_many: 3+ consecutive None results → "
-                                "shrinking concurrency to %d",
-                                effective_concurrency,
-                            )
-                    else:
-                        consecutive_nones = 0
+            # Adaptive back-pressure (W1 / KI-3): sustained failures in this wave
+            # genuinely shrink the next wave's in-flight ceiling.
+            if none_count >= 3 and wave_size > 1:
+                wave_size = max(1, wave_size - 1)
+                logger.debug(
+                    "fetch_many: %d None results this wave → "
+                    "shrinking next wave size to %d",
+                    none_count,
+                    wave_size,
+                )
 
-        await asyncio.gather(*(_fetch_one(url) for url in urls))
         return results
 
     def fetch(self, hashqr_url: str) -> OfficialGre | None:
@@ -364,16 +397,24 @@ class SunatDescargaqrAdapter:
                 return self._download_httpx(url, _http_client)
             return self._download_urllib(url)
         finally:
-            self._last_download_monotonic = time.monotonic()
+            with self._pace_lock:
+                self._last_download_monotonic = time.monotonic()
 
     def _pace_request(self) -> None:
-        """Sleep so consecutive network downloads are spaced by ``_FETCH_PACING_S``."""
-        if self._last_download_monotonic is None:
-            return
-        elapsed = time.monotonic() - self._last_download_monotonic
-        remaining = _FETCH_PACING_S - elapsed
-        if remaining > 0:
-            time.sleep(remaining)
+        """Sleep so consecutive network downloads are spaced by ``_FETCH_PACING_S``.
+
+        KI-2: the read-compute-sleep sequence is guarded by ``_pace_lock`` so the
+        interval is enforced even when ``fetch_many`` issues concurrent fetches.
+        Holding the lock across the sleep serialises the spacing decision (a
+        thread waits while another is pacing), which is the intended back-pressure.
+        """
+        with self._pace_lock:
+            if self._last_download_monotonic is None:
+                return
+            elapsed = time.monotonic() - self._last_download_monotonic
+            remaining = _FETCH_PACING_S - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
 
     def _download_httpx(self, url: str, httpx_module: object) -> bytes | None:
         """Download using httpx with exponential-backoff retry on read-timeouts.

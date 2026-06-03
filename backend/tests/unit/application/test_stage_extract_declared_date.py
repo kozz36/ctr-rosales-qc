@@ -153,23 +153,29 @@ class TestStageExtractDeclaredDate:
 
 
 class TestParseDayMonthHardening:
-    """C2-B defense-in-depth: a day digit embedded in a 4-digit run (an ISO year)
-    must NOT be matched. ``2026-05`` should not parse as day=26, month=05.
+    """W-2 defense-in-depth: when the raw contains an ISO date (``YYYY-MM-DD``)
+    parse it in the CORRECT year-month-day order — never let the loose
+    ``dd[/-]mm`` regex grab the ``MM-DD`` slice and swap day/month. Only fall
+    through to the loose regex when no ISO date is present.
     """
 
-    def test_iso_year_month_not_matched_as_day_month(self) -> None:
-        # The leading "20" of the ISO year precedes "26-05"; "26" must not be
-        # treated as the day because it is preceded by a digit.
-        assert _parse_day_month(1.0, "2026-05-28") == (None, None)
+    def test_iso_blob_parses_correct_day_month_no_swap(self) -> None:
+        # {"date": "2026-11-05"} → Nov 5 → day=5, month=11 (NOT day=11, month=5).
+        assert _parse_day_month(1.0, '{"date": "2026-11-05", "confidence": 1.0}') == (5, 11)
 
-    def test_iso_json_blob_not_matched_as_day_month(self) -> None:
-        assert _parse_day_month(1.0, '{"date": "2026-05-28"}') == (None, None)
+    def test_iso_year_month_day_parses_correctly(self) -> None:
+        # 2026-12-05 → Dec 5 → day=5, month=12 (NOT swapped to day=12, month=5).
+        assert _parse_day_month(1.0, "2026-12-05") == (5, 12)
+
+    def test_iso_year_month_day_28(self) -> None:
+        # 2026-05-28 → May 28 → day=28, month=5 (was previously rejected as None).
+        assert _parse_day_month(1.0, "2026-05-28") == (28, 5)
 
     def test_clean_dd_mm_still_parses(self) -> None:
         assert _parse_day_month(1.0, "28/05/26") == (28, 5)
 
     def test_clean_dd_mm_dash_still_parses(self) -> None:
-        assert _parse_day_month(1.0, "28-05-26") == (28, 5)
+        assert _parse_day_month(1.0, "28-05-2026") == (28, 5)
 
 
 class TestProtocoloCropConfig:

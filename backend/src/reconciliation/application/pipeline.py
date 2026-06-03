@@ -1678,12 +1678,27 @@ def _parse_day_month(
     if not raw_vision_string:
         return None, None
 
-    # Match DD/MM or DD-MM (with or without year).
-    # C2-B defense-in-depth: ``(?<!\d)`` rejects a day digit embedded in a longer
-    # run of digits (e.g. the ``26`` inside the ISO year ``2026-05-28``), and
-    # ``(?!\d)`` rejects a month digit that is actually the head of a 4-digit year
-    # (e.g. ``28-2026``). Without these the full-JSON / ISO-date raw string parsed
-    # day=26, month=05 instead of the true 28/05 and corrupted the baseline.
+    # W-2 defense-in-depth: if the raw contains an ISO date (``YYYY-MM-DD``,
+    # including inside a JSON blob like ``{"date": "2026-11-05", ...}``) parse THAT
+    # in the correct year-month-day order. The loose ``dd[/-]mm`` regex below would
+    # otherwise grab the ``MM-DD`` slice and SWAP day/month for any date with day
+    # <= 12 (e.g. ``2026-11-05`` → day=11, month=5), corrupting the reception date
+    # and faking R9 divergences. Only fall through to the loose regex when no ISO
+    # date is present.
+    iso = _re.search(r"(\d{4})-(\d{2})-(\d{2})", raw_vision_string)
+    if iso:
+        try:
+            month = int(iso.group(2))
+            day = int(iso.group(3))
+            if 1 <= day <= 31 and 1 <= month <= 12:
+                return day, month
+        except ValueError:
+            pass
+        return None, None
+
+    # Match DD/MM or DD-MM (with or without year) for legitimate handwritten
+    # ``28/05/26`` / ``28-05-2026`` raws. ``(?!\d)`` rejects a month digit that is
+    # actually the head of a 4-digit year (e.g. ``28-2026``).
     m = _re.search(r"(?<!\d)(\d{1,2})[/\-](\d{1,2})(?!\d)", raw_vision_string)
     if not m:
         return None, None

@@ -70,3 +70,34 @@ ENV PATH="/app/.venv/bin:$PATH" \
 EXPOSE 8000
 
 CMD ["uvicorn", "reconciliation.infrastructure.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# ─── Stage 3: test ────────────────────────────────────────────────────────────
+# Superset of runtime for IN-CONTAINER verification (CONT-S03/S12): adds the dev
+# extra (pytest) + the tests/ tree.  Still paddle-free (no ml extra).  Runs as
+# root so the named-volume mounts (/data/runs, /data/sunat-cache) stay writable.
+# Build:  docker build --target test -t ctr-backend:test ./backend
+FROM builder AS test
+
+# pyzbar needs libzbar0 at runtime (same as the runtime stage)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libzbar0 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Add the dev extra (pytest etc.) on top of the builder venv — still no ml/paddle
+RUN uv sync --frozen --extra identity --extra llm --extra dev
+
+# Copy the test tree (pytest config lives in the already-present pyproject.toml)
+COPY tests/ ./tests/
+
+# paddle-free guarantee holds in the test image too (CONT-S02)
+RUN /app/.venv/bin/python -c "import paddle; raise RuntimeError('paddle must not be present')" 2>&1 | \
+    grep -q "ModuleNotFoundError" && echo "paddle absent (test image) — CONT-S02 OK" || \
+    (echo "ERROR: paddle present in test image" && exit 1)
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src
+
+CMD ["uvicorn", "reconciliation.infrastructure.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

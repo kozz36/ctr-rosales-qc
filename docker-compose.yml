@@ -18,20 +18,24 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: ctr-backend:latest
-    ports:
-      - "8000:8000"
-    # Route host.docker.internal → host gateway so the container can reach
-    # the host's Ollama daemon at http://host.docker.internal:11434
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      # `test` stage = runtime superset with pytest + tests/ for in-container
+      # verification (CONT-S03/S12). Still paddle-free. Prod-lean image is the
+      # default `runtime` target (build it explicitly with --target runtime).
+      target: test
+    image: ctr-backend:test
+    # Host networking (Linux): the container shares the host net stack so it can
+    # reach the host Ollama daemon bound to 127.0.0.1:11434 (host.docker.internal
+    # via the bridge does NOT work — ollama listens on localhost only) AND egress
+    # to SUNAT. `ports:` is incompatible with host mode (uvicorn binds host :8000
+    # directly). Verified: ollama + SUNAT both HTTP 200 from a --network host run.
+    network_mode: host
     environment:
       # OCR: disabled — SUNAT supplies authoritative quantities (paddle never loaded)
       RECONCILIATION__OCR__ENABLED: "false"
-      # Vision: cloud via host Ollama proxy
+      # Vision: cloud via host Ollama (host networking → localhost reaches the daemon)
       RECONCILIATION__VISION__PROVIDER: "ollama"
       RECONCILIATION__VISION__OLLAMA__MODEL: "qwen3.5:397b-cloud"
-      RECONCILIATION__VISION__OLLAMA__BASE_URL: "http://host.docker.internal:11434/v1"
+      RECONCILIATION__VISION__OLLAMA__BASE_URL: "http://localhost:11434/v1"
       # max_tokens: 640 sits in the 512-768 range — survives the <think> phase
       RECONCILIATION__VISION__MAX_TOKENS: "640"
       # Protocolo crop: calibrated (0.60,0.14,1.00,0.22) — targets Registro N° + Fecha rows only.

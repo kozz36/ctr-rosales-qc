@@ -1181,7 +1181,24 @@ class ReconciliationPipeline:
                             item_total=_vision_item_total,
                         )
                     continue
-                vr = self._vision.read_handwritten_date(img)
+                # Build a Spanish context hint from the SUNAT delivery date when
+                # available.  The hint is ADVISORY — it gives the model a reference
+                # lower bound but does NOT constrain the returned {date, confidence}
+                # contract, and the year is still reconstructed by inference downstream.
+                # Only applied on the non-batch path; the batch variant
+                # ``read_handwritten_date_batch`` has no per-image hint parameter —
+                # adding per-image hints there requires a signature change (follow-up).
+                _sunat_map = sunat_fetch_map or {}
+                _gre = _sunat_map.get(blk.guia_id)
+                _fecha_entrega = _gre.fecha_entrega if _gre is not None else None
+                _vision_hint: str | None = (
+                    f"Para referencia, la guía fue entregada alrededor del "
+                    f"{_fecha_entrega:%d/%m/%Y}; la fecha de recepción manuscrita "
+                    f"debería coincidir o ser posterior a esa fecha."
+                    if _fecha_entrega is not None
+                    else None
+                )
+                vr = self._vision.read_handwritten_date(img, hint=_vision_hint)
                 calls_made += 1
                 guia = _build_guia_from_block(blk, vr)
                 guias.append(guia)

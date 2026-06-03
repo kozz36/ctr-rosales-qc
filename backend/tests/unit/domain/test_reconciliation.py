@@ -900,3 +900,48 @@ class TestMatchMethodAggregation:
         assert len(match_rows) == 1
         assert match_rows[0].match_method == "deterministic"
         assert match_rows[0].requires_review is False
+
+    def test_cross_registro_method_does_not_leak(self) -> None:
+        """C2-A: a different registro's llm_inferred declared line MUST NOT
+        pollute another registro's clean deterministic MATCH.
+
+        The group key is (registro, material_canonical, unidad). Registro A is
+        fully deterministic with matching quantities; Registro B shares the same
+        canonical material + unit but its declared line is llm_inferred. The
+        declared-line scan inside the per-key loop must restrict to the key's
+        registro, otherwise B's worse method leaks into A's worst-wins
+        aggregation and falsely flags A's clean MATCH.
+        """
+        mat = "BARRA A615 G60 1/2\" 9M"
+        reg_a = Registro(
+            numero="A",
+            fecha_declarada=date(2024, 1, 15),
+            declared_lines=[_line_with_method(mat, "TN", "1.0", "deterministic")],
+        )
+        reg_b = Registro(
+            numero="B",
+            fecha_declarada=date(2024, 1, 15),
+            declared_lines=[_line_with_method(mat, "TN", "1.0", "llm_inferred")],
+        )
+        guia_a = GuiaDeRemision(
+            guia_id="T009-A",
+            registro="A",
+            fecha=date(2024, 1, 15),
+            lines=[_line_with_method(mat, "TN", "1.0", "deterministic")],
+            source_pages=[1],
+            identity_source="qr",
+            identity_confidence=1.0,
+        )
+        guia_b = GuiaDeRemision(
+            guia_id="T009-B",
+            registro="B",
+            fecha=date(2024, 1, 15),
+            lines=[_line_with_method(mat, "TN", "1.0", "deterministic")],
+            source_pages=[2],
+            identity_source="qr",
+            identity_confidence=1.0,
+        )
+        rows = self._svc.reconcile([reg_a, reg_b], [guia_a, guia_b])
+        row_a = next(r for r in rows if r.registro == "A" and r.status == "MATCH")
+        assert row_a.match_method == "deterministic"
+        assert row_a.requires_review is False

@@ -190,6 +190,12 @@ class ReconciliationService:
             # the key scan below by scanning declared lines matching this group key.
             # Simple approach: scan all declared lines matching this key's canonical+unidad.
             for reg in declared:
+                # C2-A: the group key is (registro, material_canonical, unidad);
+                # restrict the declared-line scan to THIS key's registro so a
+                # different registro's llm_inferred/unresolved line cannot leak
+                # into this group's worst-wins aggregation.
+                if reg.numero != key.registro:
+                    continue
                 for dline in reg.declared_lines:
                     if (
                         dline.description_canonical == key.material_canonical

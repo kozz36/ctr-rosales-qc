@@ -333,6 +333,7 @@ def build_pipeline(
     pdf_path: Path,
     config: AppConfig,
     run_id: str | None = None,
+    progress_cb=None,  # Callable[[ProgressEvent], None] | None — plain Callable, no import needed
 ) -> tuple[ReconciliationPipeline, RunContext, dict[int, str | None]]:
     """Instantiate all adapters, build the pipeline, and return a RunContext.
 
@@ -447,6 +448,7 @@ def build_pipeline(
         pdf_path=pdf_path,
         output_base=config.output_dir,
         run_id=run_id,
+        progress_cb=progress_cb,
     )
 
     # --- SUNAT descargaqr adapter (opt-in; OFF by default for air-gap — D3/EXT-023) ---

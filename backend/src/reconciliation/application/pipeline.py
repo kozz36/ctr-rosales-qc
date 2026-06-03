@@ -313,11 +313,11 @@ class ReconciliationPipeline:
         # Renders each page ONCE at QR DPI; caches page → DecodeOutcome.
         # The rendered bytes are reused by extract_ocr and assemble_blocks
         # so total renders stay constant (EXT-019 render-cache invariant).
-        decode_map = self._stage_decode_identities(page_count)
+        decode_map = self._stage_decode_identities(page_count, ctx=ctx)
 
         # Stage 2: classify — HYBRID OR-gate (rev-3 EXT-019).
         # Passes qr_is_guia + image_dominant booleans from the cached decode map.
-        classifications = self._stage_classify(page_count, decode_map=decode_map)
+        classifications = self._stage_classify(page_count, decode_map=decode_map, ctx=ctx)
 
         # Stage 3: deskew (orientation correction for GUIA pages; no-op if deskew=None)
         # Note: title-OCR for scanned pages is already wired in _stage_classify above.
@@ -329,7 +329,9 @@ class ReconciliationPipeline:
 
         # Stage 5: extract OCR tables from guia pages; reuses cached rendered bytes.
         # Returns (raw_guias, ocr_warnings) — ocr_warnings non-empty on graceful degradation.
-        raw_guias, ocr_warnings = self._stage_extract_ocr(classifications, decode_map=decode_map)
+        raw_guias, ocr_warnings = self._stage_extract_ocr(
+            classifications, decode_map=decode_map, ctx=ctx
+        )
 
         # Stage 5b: assemble multi-page guía blocks; reuses cached DecodeOutcome map.
         blocks = self._stage_assemble_blocks(raw_guias, classifications, decode_map=decode_map)
@@ -348,7 +350,7 @@ class ReconciliationPipeline:
         vision_cap_reached = False
         try:
             guias, vision_calls_made, warnings = self._stage_extract_vision(
-                blocks, sunat_fetch_map=sunat_fetch_map
+                blocks, sunat_fetch_map=sunat_fetch_map, ctx=ctx
             )
         except Exception:
             vision_cap_reached = True
@@ -378,7 +380,7 @@ class ReconciliationPipeline:
         # Failures/low-confidence fall back to the electronic fecha (ADR-2/7), so the
         # reconciliation gate never asserts a wrong baseline.
         declared, vision_calls_made = self._stage_extract_declared_date(
-            declared, calls_already_made=vision_calls_made
+            declared, calls_already_made=vision_calls_made, ctx=ctx
         )
 
         # R10.6: log aggregate token consumption after all vision calls complete (CONT-S08).
@@ -398,6 +400,17 @@ class ReconciliationPipeline:
 
         # Stage 9: persist sidecar (also appends the vision audit record)
         self._stage_persist(ctx, classifications, declared, guias, rows)
+
+        # Final completion event — guarantees the bar reaches 100% even when
+        # stage 5 had zero items (no registros with Protocolo pages).
+        _final_total = max(len(declared), 1)
+        ctx.report_progress(
+            stage_label="Fecha de protocolo",
+            stage_index=5,
+            stage_total=5,
+            item_done=_final_total,
+            item_total=_final_total,
+        )
 
         return PipelineResult(
             run_id=ctx.run_id,
@@ -419,7 +432,9 @@ class ReconciliationPipeline:
         logger.debug("split: %d pages", count)
         return count
 
-    def _stage_decode_identities(self, page_count: int) -> dict[int, DecodeOutcome]:
+    def _stage_decode_identities(
+        self, page_count: int, ctx: RunContext | None = None
+    ) -> dict[int, DecodeOutcome]:
         """Stage 1b (rev-3 / D1): decode QR identities for every page in one pre-pass.
 
         Renders each page once at ``_QR_DPI`` DPI, calls
@@ -486,6 +501,14 @@ class ReconciliationPipeline:
                 rendered=rendered,
                 decoded=decoded,
             )
+            if ctx is not None:
+                ctx.report_progress(
+                    stage_label="Decodificando identidades",
+                    stage_index=1,
+                    stage_total=5,
+                    item_done=idx + 1,
+                    item_total=page_count,
+                )
             logger.debug(
                 "decode_identities: page %d → qr_is_guia=%s hashqr_url=%s",
                 idx,
@@ -504,6 +527,7 @@ class ReconciliationPipeline:
         self,
         page_count: int,
         decode_map: dict[int, DecodeOutcome] | None = None,
+        ctx: RunContext | None = None,
     ) -> list[PageClassification]:
         """Stage 2: classify each page using the hybrid OR-gate (rev-3 EXT-019).
 
@@ -559,6 +583,14 @@ class ReconciliationPipeline:
                 image_dominant=image_dominant,
             )
             classifications.append(classification)
+            if ctx is not None:
+                ctx.report_progress(
+                    stage_label="Clasificando páginas",
+                    stage_index=2,
+                    stage_total=5,
+                    item_done=idx + 1,
+                    item_total=page_count,
+                )
             logger.debug(
                 "classify: page %d → %s (title=%r, qr_is_guia=%s, image_dominant=%s, ocr_title=%r)",
                 idx,
@@ -704,6 +736,7 @@ class ReconciliationPipeline:
         self,
         classifications: list[PageClassification],
         decode_map: dict[int, DecodeOutcome] | None = None,
+        ctx: RunContext | None = None,
     ) -> tuple[list[_RawGuia], list[str]]:
         """Stage 5: OCR material tables from GUIA pages; tag with registro numero.
 
@@ -730,6 +763,9 @@ class ReconciliationPipeline:
         _decode = decode_map or {}
         raw_guias: list[_RawGuia] = []
         ocr_warnings: list[str] = []
+        # item_total = real GUIA page count (never hardcoded — handles variable input)
+        _guia_page_count = sum(1 for c in classifications if c.kind == "GUIA")
+        _ocr_item_done = 0
 
         for cls in classifications:
             if cls.kind != "GUIA":
@@ -773,6 +809,15 @@ class ReconciliationPipeline:
                     registro=registro_numero,
                 )
             )
+            _ocr_item_done += 1
+            if ctx is not None:
+                ctx.report_progress(
+                    stage_label="OCR de guías",
+                    stage_index=3,
+                    stage_total=5,
+                    item_done=_ocr_item_done,
+                    item_total=_guia_page_count,
+                )
             logger.debug(
                 "extract_ocr: page %d → %d lines, registro=%r",
                 cls.page,
@@ -1045,6 +1090,7 @@ class ReconciliationPipeline:
         self,
         blocks: list[_GuiaBlock],
         sunat_fetch_map: dict[str, Any] | None = None,
+        ctx: RunContext | None = None,
     ) -> tuple[list[GuiaDeRemision], int, list[str]]:
         """Stage 6: attach handwritten dates to guía blocks via VisionLLMPort.
 
@@ -1080,6 +1126,8 @@ class ReconciliationPipeline:
             for blk in blocks
         ]
 
+        _vision_item_total = len(blocks)
+
         if self._vision.supports_batch:
             # Batch path: one call per batch of (possibly cropped) images.
             remaining = max(0, cap - calls_made)
@@ -1090,11 +1138,27 @@ class ReconciliationPipeline:
                     vision_images[:remaining]
                 )
                 calls_made += len(to_process)
-                for blk, vr in zip(to_process, results):
+                for _vi, (blk, vr) in enumerate(zip(to_process, results)):
                     guias.append(_build_guia_from_block(blk, vr))
+                    if ctx is not None:
+                        ctx.report_progress(
+                            stage_label="Lectura de visión",
+                            stage_index=4,
+                            stage_total=5,
+                            item_done=_vi + 1,
+                            item_total=_vision_item_total,
+                        )
             # KI-1: degrade the over-cap blocks to a null-fecha guía (no call).
-            for blk in skipped:
+            for _vi2, blk in enumerate(skipped):
                 guias.append(_build_guia_from_block(blk, _NULL_VISION_RESULT))
+                if ctx is not None:
+                    ctx.report_progress(
+                        stage_label="Lectura de visión",
+                        stage_index=4,
+                        stage_total=5,
+                        item_done=len(to_process) + _vi2 + 1,
+                        item_total=_vision_item_total,
+                    )
             if skipped:
                 warnings.append(
                     f"Vision cost cap ({cap}) reached after {calls_made} calls; "
@@ -1103,15 +1167,31 @@ class ReconciliationPipeline:
                 )
         else:
             # Sequential path (Ollama / non-batch)
-            for blk, img in zip(blocks, vision_images):
+            for _vi, (blk, img) in enumerate(zip(blocks, vision_images)):
                 if calls_made >= cap:
                     # KI-1: degrade — no further calls; null fecha, flagged.
                     guias.append(_build_guia_from_block(blk, _NULL_VISION_RESULT))
+                    if ctx is not None:
+                        ctx.report_progress(
+                            stage_label="Lectura de visión",
+                            stage_index=4,
+                            stage_total=5,
+                            item_done=_vi + 1,
+                            item_total=_vision_item_total,
+                        )
                     continue
                 vr = self._vision.read_handwritten_date(img)
                 calls_made += 1
                 guia = _build_guia_from_block(blk, vr)
                 guias.append(guia)
+                if ctx is not None:
+                    ctx.report_progress(
+                        stage_label="Lectura de visión",
+                        stage_index=4,
+                        stage_total=5,
+                        item_done=_vi + 1,
+                        item_total=_vision_item_total,
+                    )
                 if vr.confidence < self._config.confidence.threshold:
                     warnings.append(
                         f"Low vision confidence ({vr.confidence:.2f}) "
@@ -1131,6 +1211,7 @@ class ReconciliationPipeline:
         self,
         registros: list[Registro],
         calls_already_made: int = 0,
+        ctx: RunContext | None = None,
     ) -> tuple[list[Registro], int]:
         """Stage 6b: read the handwritten Protocolo "Fecha:" via VisionLLMPort (R9.5).
 
@@ -1165,16 +1246,33 @@ class ReconciliationPipeline:
         calls_made = calls_already_made
 
         updated: list[Registro] = []
-        for reg in registros:
+        _date_item_total = len(registros)
+        for _di, reg in enumerate(registros):
             # Detail-page-only registro: no Protocolo to read; fecha_authoritative
             # falls back to electronic fecha_declarada (rollback path, ADR-2).
             if reg.protocolo_page is None:
                 updated.append(reg)
+                if ctx is not None:
+                    ctx.report_progress(
+                        stage_label="Fecha de protocolo",
+                        stage_index=5,
+                        stage_total=5,
+                        item_done=_di + 1,
+                        item_total=_date_item_total,
+                    )
                 continue
 
             if calls_made >= cap:
                 # Cap exhausted — leave remaining registros unread (fail-safe).
                 updated.append(reg)
+                if ctx is not None:
+                    ctx.report_progress(
+                        stage_label="Fecha de protocolo",
+                        stage_index=5,
+                        stage_total=5,
+                        item_done=_di + 1,
+                        item_total=_date_item_total,
+                    )
                 continue
 
             try:
@@ -1185,6 +1283,14 @@ class ReconciliationPipeline:
                     reg.protocolo_page, exc,
                 )
                 updated.append(reg)
+                if ctx is not None:
+                    ctx.report_progress(
+                        stage_label="Fecha de protocolo",
+                        stage_index=5,
+                        stage_total=5,
+                        item_done=_di + 1,
+                        item_total=_date_item_total,
+                    )
                 continue
 
             vision_image = _prepare_vision_image_proto(page_bytes, self._config)
@@ -1201,6 +1307,14 @@ class ReconciliationPipeline:
                         }
                     )
                 )
+                if ctx is not None:
+                    ctx.report_progress(
+                        stage_label="Fecha de protocolo",
+                        stage_index=5,
+                        stage_total=5,
+                        item_done=_di + 1,
+                        item_total=_date_item_total,
+                    )
                 continue
 
             # Reconstruct year from day/month — vision year is never trusted (#2753).
@@ -1223,6 +1337,14 @@ class ReconciliationPipeline:
                         }
                     )
                 )
+                if ctx is not None:
+                    ctx.report_progress(
+                        stage_label="Fecha de protocolo",
+                        stage_index=5,
+                        stage_total=5,
+                        item_done=_di + 1,
+                        item_total=_date_item_total,
+                    )
                 continue
 
             reconstructed, year_inferred = infer_reception_year(
@@ -1240,6 +1362,14 @@ class ReconciliationPipeline:
                     }
                 )
             )
+            if ctx is not None:
+                ctx.report_progress(
+                    stage_label="Fecha de protocolo",
+                    stage_index=5,
+                    stage_total=5,
+                    item_done=_di + 1,
+                    item_total=_date_item_total,
+                )
 
         return updated, calls_made
 

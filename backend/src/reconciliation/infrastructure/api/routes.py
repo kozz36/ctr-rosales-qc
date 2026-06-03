@@ -32,6 +32,7 @@ from reconciliation.infrastructure.api.schemas import (
     ExportRequest,
     GuiaContributionResponse,
     GuiaLineEditRequest,
+    ProgressResponse,
     ReassignRequest,
     ReassignResponse,
     ReconciliationRowResponse,
@@ -162,15 +163,37 @@ def _run_pipeline_background(
     Updates the registry entry with status transitions:
       processing → review  (success)
       processing → error   (exception)
+
+    Progress wiring:
+      - Sets registry[run_id]["started_at"] (ISO-8601 UTC) at run start.
+      - Builds a progress_cb closure that writes registry[run_id]["progress"]
+        on each ProgressEvent so GET /runs/{id} can return live progress.
+      - Passes progress_cb to RunContext so the pipeline can emit events.
     """
+    import datetime  # noqa: PLC0415
+
+    from reconciliation.application.run_context import ProgressEvent  # noqa: PLC0415
     from reconciliation.infrastructure.container import (  # noqa: PLC0415
         build_pipeline,
         build_review_service,
     )
 
+    def _progress_cb(event: ProgressEvent) -> None:
+        registry[run_id]["progress"] = {
+            "stage_label": event.stage_label,
+            "stage_index": event.stage_index,
+            "stage_total": event.stage_total,
+            "item_done": event.item_done,
+            "item_total": event.item_total,
+        }
+
     try:
+        started_at = datetime.datetime.now(datetime.UTC).isoformat()
         registry[run_id]["status"] = "processing"
-        pipeline, ctx, page_to_registro = build_pipeline(pdf_path, config, run_id=run_id)
+        registry[run_id]["started_at"] = started_at
+        pipeline, ctx, page_to_registro = build_pipeline(
+            pdf_path, config, run_id=run_id, progress_cb=_progress_cb
+        )
         result = pipeline.run(ctx)
         review_service = build_review_service(ctx)
 
@@ -287,12 +310,27 @@ async def create_run(
 def get_run_status(run_id: str, registry: RunRegistry) -> RunStatusResponse:
     """Return the current status of a reconciliation run."""
     entry = _require_run(registry, run_id)
+
+    # Map raw progress dict (written by _progress_cb) to ProgressResponse.
+    progress_resp: ProgressResponse | None = None
+    raw_progress = entry.get("progress")
+    if raw_progress is not None:
+        progress_resp = ProgressResponse(
+            stage_label=raw_progress["stage_label"],
+            stage_index=raw_progress["stage_index"],
+            stage_total=raw_progress["stage_total"],
+            item_done=raw_progress["item_done"],
+            item_total=raw_progress["item_total"],
+        )
+
     return RunStatusResponse(
         run_id=run_id,
         status=entry["status"],
         vision_calls_made=entry.get("vision_calls_made", 0),
         warnings=entry.get("warnings", []),
         error=entry.get("error"),
+        progress=progress_resp,
+        started_at=entry.get("started_at"),
     )
 
 

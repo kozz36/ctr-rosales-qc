@@ -80,6 +80,52 @@ class TestDiameterNormalization:
         assert result is None
 
 
+class TestCompoundFractionSeparators:
+    """Issue #28: SUNAT GRE writes the compound fraction with a DOT ('1.3/8'),
+    not the whitespace Forma uses ('1 3/8'). The compound pattern must accept
+    dot/hyphen/no separator so the guía matches its declared row instead of
+    being mis-canonicalized to the bare '3/8"'.
+    """
+
+    def test_real_sunat_dot_separator(self, normalizer: MaterialKeyNormalizer) -> None:
+        """The REAL SUNAT string (Corporación Aceros Arequipa)."""
+        raw = 'ACERO DIMENSIONADO - BARRA A615 G60 1.3/8" DOB Apl'
+        result = normalizer.parse(raw, "TN")
+        assert result is not None
+        assert result.diametro == '1 3/8"', f"Expected '1 3/8\"' for {raw!r}, got {result.diametro!r}"
+        assert result.presentacion == "DOB"
+
+    def test_dot_separator_diameter(self, normalizer: MaterialKeyNormalizer) -> None:
+        result = normalizer.parse('BARRA A615 G60 1.3/8" DOB', "TN")
+        assert result is not None
+        assert result.diametro == '1 3/8"', f"got {result.diametro!r}"
+
+    def test_space_separator_still_works(self, normalizer: MaterialKeyNormalizer) -> None:
+        """REGRESSION: the original Forma space form must stay '1 3/8\"'."""
+        result = normalizer.parse('BARRA A615 G60 1 3/8" DOB', "TN")
+        assert result is not None
+        assert result.diametro == '1 3/8"', f"got {result.diametro!r}"
+
+    def test_bare_three_eighths_not_promoted(self, normalizer: MaterialKeyNormalizer) -> None:
+        """REGRESSION: bare '3/8\"' must NOT be promoted to '1 3/8\"'."""
+        result = normalizer.parse('BARRA A615 G60 3/8" DOB', "TN")
+        assert result is not None
+        assert result.diametro == '3/8"', f"got {result.diametro!r}"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            'BARRA A615 G60 1-3/8" DOB',
+            'BARRA A615 G60 13/8" DOB',
+        ],
+    )
+    def test_hyphen_and_no_separator(self, normalizer: MaterialKeyNormalizer, raw: str) -> None:
+        """Separator robustness: hyphen and no-separator forms also → '1 3/8\"'."""
+        result = normalizer.parse(raw, "TN")
+        assert result is not None
+        assert result.diametro == '1 3/8"', f"Expected '1 3/8\"' for {raw!r}, got {result.diametro!r}"
+
+
 class TestPresentacionNormalization:
     """MAT-S03: 9M vs DOB signals — NEVER merged."""
 

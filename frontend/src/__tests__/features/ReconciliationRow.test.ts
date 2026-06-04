@@ -168,6 +168,70 @@ describe('ReconciliationRow', () => {
     expect(wrapper.find('.stub-drill-down').exists()).toBe(false)
   })
 
+  // -------------------------------------------------------------------------
+  // #19 — full-row click expands the existing GuiaDrillDown (discoverability)
+  // -------------------------------------------------------------------------
+
+  it('#19: clicking a data cell of the row → GuiaDrillDown visible', async () => {
+    const row = makeRow()
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    expect(wrapper.find('.stub-drill-down').exists()).toBe(false)
+    await wrapper.find('.recon-row__cell--material').trigger('click')
+    expect(wrapper.find('.stub-drill-down').exists()).toBe(true)
+  })
+
+  it('#19: clicking the row again → GuiaDrillDown hidden (toggle)', async () => {
+    const row = makeRow()
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    await wrapper.find('.recon-row__cell--material').trigger('click')
+    expect(wrapper.find('.stub-drill-down').exists()).toBe(true)
+    await wrapper.find('.recon-row__cell--material').trigger('click')
+    expect(wrapper.find('.stub-drill-down').exists()).toBe(false)
+  })
+
+  it('#19: row click does NOT toggle when there are no guias', async () => {
+    const row = makeRow({ guias: [] })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    await wrapper.find('.recon-row__cell--material').trigger('click')
+    expect(wrapper.find('.stub-drill-down').exists()).toBe(false)
+  })
+
+  it('#19: clicking the chevron toggles exactly once (row @click does not double-fire)', async () => {
+    // The chevron is a <button> with @click.stop; the row @click must NOT also
+    // fire and double-toggle back to collapsed.
+    const row = makeRow()
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    await wrapper.find('.recon-row__expand-btn').trigger('click')
+    expect(wrapper.find('.stub-drill-down').exists()).toBe(true)
+  })
+
+  it('#19: expandable row carries the recon-row--expandable class (cursor affordance)', () => {
+    const withGuias = mount(ReconciliationRow, { props: { row: makeRow(), runId: 'r' } })
+    expect(withGuias.find('.recon-row').classes()).toContain('recon-row--expandable')
+    const noGuias = mount(ReconciliationRow, { props: { row: makeRow({ guias: [] }), runId: 'r' } })
+    expect(noGuias.find('.recon-row').classes()).not.toContain('recon-row--expandable')
+  })
+
+  it('#19: expandable row exposes aria-expanded reflecting drill-down state', async () => {
+    const wrapper = mount(ReconciliationRow, { props: { row: makeRow(), runId: 'r' } })
+    expect(wrapper.find('.recon-row').attributes('aria-expanded')).toBe('false')
+    await wrapper.find('.recon-row__cell--material').trigger('click')
+    expect(wrapper.find('.recon-row').attributes('aria-expanded')).toBe('true')
+  })
+
+  it('#19: non-expandable row (no guias) does not advertise aria-expanded', () => {
+    const wrapper = mount(ReconciliationRow, { props: { row: makeRow({ guias: [] }), runId: 'r' } })
+    expect(wrapper.find('.recon-row').attributes('aria-expanded')).toBeUndefined()
+  })
+
   it('GuiaDrillDown reassign event propagated as openReassign with guia_id', async () => {
     const row = makeRow()
     const wrapper = mount(ReconciliationRow, {

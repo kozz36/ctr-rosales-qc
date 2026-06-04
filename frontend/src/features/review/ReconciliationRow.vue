@@ -5,9 +5,11 @@
     :class="rowClass"
     :data-status="row.status"
     :aria-label="`${row.registro} — ${row.material_canonical} — ${statusLabel}`"
+    :aria-expanded="isExpandable ? isExpanded : undefined"
     tabindex="0"
-    @keydown.enter="emit('rowActivate', row)"
-    @keydown.space.prevent="emit('rowActivate', row)"
+    @click="onRowClick"
+    @keydown.enter="onRowKeyToggle"
+    @keydown.space.prevent="onRowKeyToggle"
   >
     <!-- Col 0: Expand/collapse chevron -->
     <td class="recon-row__cell recon-row__cell--expand">
@@ -179,8 +181,38 @@ const emit = defineEmits<{
 
 const isExpanded = ref(false)
 
+/** A row is expandable only when it has contributing guías to drill into. */
+const isExpandable = computed(() => !!props.row.guias && props.row.guias.length > 0)
+
 function toggleExpand(): void {
   isExpanded.value = !isExpanded.value
+}
+
+/**
+ * #19 — full-row click toggles the guía drill-down (discoverability), so the
+ * operator can validate per-guía serie-número + cantidad. The small `›` chevron
+ * remains the primary accessible disclosure control. Clicks that land on an
+ * interactive control inside the row (chevron, page chips, edit/reassign inputs)
+ * are ignored here so those controls keep their own behaviour.
+ */
+function onRowClick(event: MouseEvent): void {
+  if (!isExpandable.value) return
+  const target = event.target as HTMLElement | null
+  if (
+    target?.closest(
+      'button, a, input, select, textarea, [role="button"], [contenteditable="true"]',
+    )
+  ) {
+    return
+  }
+  toggleExpand()
+}
+
+/** Keyboard parity for the row: Enter/Space toggles the drill-down (when expandable). */
+function onRowKeyToggle(): void {
+  // Backward-compat: keep emitting the legacy row-activation event.
+  emit('rowActivate', props.row)
+  if (isExpandable.value) toggleExpand()
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +303,7 @@ const divergentPages = computed((): Set<number> => {
 
 const rowClass = computed(() => ({
   [`recon-row--${props.row.status.toLowerCase().replace(/_/g, '-')}`]: true,
+  'recon-row--expandable': isExpandable.value,
 }))
 </script>
 
@@ -284,6 +317,11 @@ const rowClass = computed(() => ({
 
 .recon-row:hover {
   background-color: var(--surface-hover);
+}
+
+/* #19: expandable rows show a pointer affordance so the click-to-drill-down is discoverable. */
+.recon-row--expandable {
+  cursor: pointer;
 }
 
 .recon-row:focus-visible {

@@ -23,6 +23,75 @@ from reconciliation.application.config import (
 
 
 # ---------------------------------------------------------------------------
+# VisionConfig.enabled — vision-off / SUNAT-authoritative date mode
+# ---------------------------------------------------------------------------
+
+
+class TestVisionEnabledFlag:
+    def test_vision_enabled_default_is_true(self) -> None:
+        """VisionConfig.enabled defaults to True — preserves existing behaviour."""
+        cfg = AppConfig()
+        assert cfg.vision.enabled is True
+
+    def test_vision_config_directly_disabled(self) -> None:
+        """VisionConfig can be constructed directly with enabled=False."""
+        v = VisionConfig(enabled=False)
+        assert v.enabled is False
+
+    def test_app_config_vision_enabled_false_inline(self) -> None:
+        """AppConfig accepts vision sub-config with enabled=False (+ sunat enabled)."""
+        cfg = AppConfig(
+            vision=VisionConfig(enabled=False),
+            sunat=SunatConfig(enabled=True),
+        )
+        assert cfg.vision.enabled is False
+
+    def test_vision_enabled_env_override_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RECONCILIATION__VISION__ENABLED=false binds cfg.vision.enabled is False."""
+        monkeypatch.setenv("RECONCILIATION__VISION__ENABLED", "false")
+        monkeypatch.setenv("RECONCILIATION__SUNAT__ENABLED", "true")
+        cfg = AppConfig()
+        assert cfg.vision.enabled is False
+
+    def test_vision_enabled_env_override_true_explicit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RECONCILIATION__VISION__ENABLED=true keeps default behaviour."""
+        monkeypatch.setenv("RECONCILIATION__VISION__ENABLED", "true")
+        cfg = AppConfig()
+        assert cfg.vision.enabled is True
+
+    def test_vision_off_sunat_off_raises(self) -> None:
+        """vision.enabled=False + sunat.enabled=False must raise ValidationError.
+
+        make-invalid-states-unrepresentable: vision-off with no SUNAT leaves no
+        date source; the validator must reject this configuration.
+        """
+        with pytest.raises(Exception):  # pydantic ValidationError
+            AppConfig(
+                vision=VisionConfig(enabled=False),
+                sunat=SunatConfig(enabled=False),
+            )
+
+    def test_vision_off_sunat_on_is_allowed(self) -> None:
+        """vision.enabled=False + sunat.enabled=True is valid — SUNAT is the date source."""
+        cfg = AppConfig(
+            vision=VisionConfig(enabled=False),
+            sunat=SunatConfig(enabled=True),
+        )
+        assert cfg.vision.enabled is False
+        assert cfg.sunat.enabled is True
+
+    def test_vision_on_sunat_off_is_allowed(self) -> None:
+        """Default (vision on, SUNAT off) is always valid."""
+        cfg = AppConfig()
+        assert cfg.vision.enabled is True
+        assert cfg.sunat.enabled is False
+
+
+# ---------------------------------------------------------------------------
 # AppConfig defaults
 # ---------------------------------------------------------------------------
 

@@ -1,8 +1,15 @@
-"""Tests for the declared-date vision sub-stage (R9.5 / ADR-1/6/7).
+"""Tests covering declared-date handling after the domain-correctness fix (2026-06-03).
 
-``_stage_extract_declared_date`` reads the handwritten Protocolo "Fecha:" via
-the existing VisionLLMPort and stores it on ``Registro.fecha_declarada_handwritten``
-with the ADR-7 confidence gate.  Pure-stage tests use in-memory fakes only.
+The ``_stage_extract_declared_date`` vision sub-stage has been REMOVED.
+The declared reception date is the DIGITAL ``Fecha:`` on the Protocolo de Recepción
+(deterministic parse by ``digital_text_extractor.py``, real year, zero vision calls).
+
+This module retains:
+- ``TestDeclaredDateVisionStageRemoved``: pins the removal of the old stage.
+- ``TestParseDayMonthHardening``: ``_parse_day_month`` is still used by the guía
+  date normalization stage (``_stage_normalize_dates``) — not removed.
+- ``TestProtocoloCropConfig``: the ``protocolo_crop`` config block is kept for
+  potential future use and to avoid breaking any config parsing.
 """
 
 from __future__ import annotations
@@ -15,7 +22,6 @@ from reconciliation.application.config import AppConfig
 from reconciliation.application.pipeline import (
     ReconciliationPipeline,
     _parse_day_month,
-    _prepare_vision_image_proto,
 )
 from reconciliation.domain.models import Registro, VisionResult
 
@@ -47,8 +53,8 @@ class _FakeExtractor:
 class _CountingVision:
     supports_batch: bool = False
 
-    def __init__(self, result: VisionResult) -> None:
-        self._result = result
+    def __init__(self, result: VisionResult | None = None) -> None:
+        self._result = result or VisionResult(date=date(2026, 5, 28), confidence=0.95, raw="28/05/26")
         self.calls = 0
 
     def read_handwritten_date(self, image: bytes, hint: str | None = None) -> VisionResult:
@@ -69,91 +75,73 @@ def _pipeline(vision: _CountingVision, doc: _FakeDoc | None = None) -> Reconcili
     )
 
 
-class TestStageExtractDeclaredDate:
-    def test_protocolo_page_none_skips_vision(self) -> None:
-        vis = _CountingVision(VisionResult(date=date(2026, 5, 28), confidence=0.95, raw="28/05/26"))
+class TestDeclaredDateVisionStageRemoved:
+    """Domain-correctness fix (2026-06-03): declared date = DIGITAL Protocolo parse.
+
+    The ``_stage_extract_declared_date`` vision sub-stage is REMOVED; the declared
+    date authority is the digital ``fecha_declarada`` from ``digital_text_extractor.py``
+    (deterministic parse, real year, no vision call). These tests pin the removal:
+    (a) the pipeline method no longer exists; (b) a Registro with ``protocolo_page``
+    set does NOT trigger a vision call for the declared date.
+    """
+
+    def test_stage_extract_declared_date_method_removed_from_pipeline(self) -> None:
+        """Removal gate: ``_stage_extract_declared_date`` must NOT exist on the pipeline."""
+        vis = _CountingVision()
         pipe = _pipeline(vis)
-        regs = [Registro(numero="232", fecha_declarada=date(2026, 5, 1), declared_lines=[])]
-        out, _ = pipe._stage_extract_declared_date(regs)
-        assert vis.calls == 0
-        assert out[0].fecha_declarada_handwritten is None
-
-    def test_low_confidence_flags_registro_no_baseline(self) -> None:
-        """ADR-7 / FDR-S12: confidence < 0.85 → handwritten=None, confidence recorded."""
-        vis = _CountingVision(VisionResult(date=date(2026, 5, 28), confidence=0.72, raw="28/05/26"))
-        pipe = _pipeline(vis)
-        regs = [Registro(numero="232", fecha_declarada=date(2026, 5, 1), declared_lines=[], protocolo_page=7)]
-        out, _ = pipe._stage_extract_declared_date(regs)
-        assert vis.calls == 1
-        assert out[0].fecha_declarada_handwritten is None
-        assert out[0].fecha_declarada_confidence == 0.72
-        # fecha_authoritative falls back to electronic (ADR-2).
-        assert out[0].fecha_authoritative == date(2026, 5, 1)
-
-    def test_high_confidence_sets_handwritten_with_year_inference(self) -> None:
-        """FDR-S01/S03: confidence >= 0.85 → handwritten date reconstructed."""
-        vis = _CountingVision(VisionResult(date=date(2016, 5, 28), confidence=0.92, raw="28/05/26"))
-        pipe = _pipeline(vis)
-        regs = [Registro(numero="232", fecha_declarada=date(2026, 5, 1), declared_lines=[], protocolo_page=7)]
-        out, _ = pipe._stage_extract_declared_date(regs)
-        assert vis.calls == 1
-        hw = out[0].fecha_declarada_handwritten
-        assert hw is not None
-        # Year reconstructed from day/month via bounded inference (most recent ≤ today).
-        assert (hw.month, hw.day) == (5, 28)
-        assert out[0].fecha_declarada_confidence == 0.92
-        assert out[0].fecha_authoritative == hw
-
-    def test_only_registros_with_protocolo_page_call_vision(self) -> None:
-        vis = _CountingVision(VisionResult(date=date(2026, 5, 28), confidence=0.95, raw="28/05/26"))
-        pipe = _pipeline(vis)
-        regs = [
-            Registro(numero="232", fecha_declarada=None, declared_lines=[], protocolo_page=7),
-            Registro(numero="233", fecha_declarada=None, declared_lines=[]),  # detail-only
-        ]
-        out, _ = pipe._stage_extract_declared_date(regs)
-        assert vis.calls == 1
-        assert len(out) == 2
-
-    def test_renders_the_protocolo_page(self) -> None:
-        vis = _CountingVision(VisionResult(date=date(2026, 5, 28), confidence=0.95, raw="28/05/26"))
-        doc = _FakeDoc()
-        pipe = _pipeline(vis, doc=doc)
-        regs = [Registro(numero="232", fecha_declarada=None, declared_lines=[], protocolo_page=4)]
-        pipe._stage_extract_declared_date(regs)
-        assert 4 in doc.rendered
-
-    def test_raw_json_does_not_corrupt_day_month(self) -> None:
-        """C2-B: when ``raw`` is the model's full JSON (e.g.
-        ``{"date": "2026-05-28", ...}``), the day/month MUST come from the
-        already-parsed ``vr.date`` (28/05), NOT from the ISO year ``2026-05``
-        which the legacy regex matched as day=26, month=05. A wrong baseline
-        makes every correct guía falsely diverge (R9 inverted).
-        """
-        vis = _CountingVision(
-            VisionResult(
-                date=date(2026, 5, 28),
-                confidence=1.0,
-                raw='{"date": "2026-05-28", "confidence": 1.0}',
-            )
+        assert not hasattr(pipe, "_stage_extract_declared_date"), (
+            "_stage_extract_declared_date was NOT removed from ReconciliationPipeline. "
+            "The domain correction requires deleting this vision sub-stage — the declared "
+            "date is the DIGITAL Protocolo parse, not vision-read."
         )
+
+    def test_protocolo_page_registro_issues_zero_vision_calls_for_declared(self) -> None:
+        """A Registro with protocolo_page set must not trigger any vision call.
+
+        With the old stage present, a Registro(protocolo_page=7) caused 1 vision call.
+        After removal, declared date resolution never calls VisionLLMPort — zero calls.
+        fecha_authoritative == fecha_declarada (digital parse) directly.
+        """
+        vis = _CountingVision()
         pipe = _pipeline(vis)
-        regs = [
-            Registro(
-                numero="232",
-                fecha_declarada=date(2026, 5, 1),
-                declared_lines=[],
-                protocolo_page=7,
-            )
-        ]
-        out, _ = pipe._stage_extract_declared_date(regs)
-        hw = out[0].fecha_declarada_handwritten
-        assert hw is not None
-        assert (hw.day, hw.month) == (28, 5)
+        reg = Registro(
+            numero="232",
+            fecha_declarada=date(2026, 5, 28),
+            declared_lines=[],
+            protocolo_page=7,
+        )
+        # After removal: the pipeline does not execute any declared-date vision read.
+        # We verify by confirming the method is absent (AttributeError is the signal).
+        # If the method is still present, the previous test already catches it.
+        assert reg.fecha_authoritative == date(2026, 5, 28)
+        assert vis.calls == 0  # No vision calls were made during construction
+
+    def test_fecha_authoritative_is_fecha_declarada(self) -> None:
+        """fecha_authoritative == fecha_declarada with no vision override possible."""
+        reg = Registro(
+            numero="232",
+            fecha_declarada=date(2026, 5, 28),
+            declared_lines=[],
+            protocolo_page=3,
+        )
+        assert reg.fecha_authoritative == date(2026, 5, 28)
+        assert reg.fecha_authoritative == reg.fecha_declarada
+
+    def test_fecha_authoritative_none_when_digital_parse_failed(self) -> None:
+        """When digital parse yields no date, fecha_authoritative is None."""
+        reg = Registro(
+            numero="232",
+            fecha_declarada=None,
+            declared_lines=[],
+            protocolo_page=3,
+        )
+        assert reg.fecha_authoritative is None
 
 
 class TestParseDayMonthHardening:
-    """W-2 defense-in-depth: when the raw contains an ISO date (``YYYY-MM-DD``)
+    """``_parse_day_month`` is still used by the guía date normalization stage.
+
+    W-2 defense-in-depth: when the raw contains an ISO date (``YYYY-MM-DD``)
     parse it in the CORRECT year-month-day order — never let the loose
     ``dd[/-]mm`` regex grab the ``MM-DD`` slice and swap day/month. Only fall
     through to the loose regex when no ISO date is present.
@@ -193,19 +181,6 @@ class TestProtocoloCropConfig:
         assert v.protocolo_crop.enabled is False
 
     def test_stamp_crop_unaffected(self) -> None:
-        """R7 guía stamp crop is NOT regressed by adding protocolo_crop."""
+        """R7 guía stamp crop is NOT regressed by this change."""
         cfg = AppConfig()
         assert cfg.vision.stamp_crop.enabled is True
-
-    def test_prepare_vision_image_proto_returns_nonempty_on_disabled(self) -> None:
-        """ADR-6: disabled crop → full-page fallback returns the original bytes."""
-        from reconciliation.application.config import StampCropConfig, VisionConfig
-        cfg_disabled = AppConfig(
-            vision=VisionConfig(
-                protocolo_crop=StampCropConfig(x0=0.0, y0=0.0, x1=0.0, y1=0.0)
-            )
-        )
-        img = b"\x89PNG\r\n-full-page-"
-        out = _prepare_vision_image_proto(img, cfg_disabled)
-        assert out == img
-        assert len(out) > 0

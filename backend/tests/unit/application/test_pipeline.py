@@ -490,54 +490,31 @@ class TestVisionCostCap:
         assert len([g for g in result.guias if g.fecha is not None]) == 1
         assert len([g for g in result.guias if g.fecha is None]) == 2
 
-    def test_declared_stage_shares_guia_cap(self, tmp_path: Path) -> None:
-        """W2-A: ``_stage_extract_declared_date`` continues counting against the
-        SHARED ``max_vision_calls`` cap consumed by the guía stage — it does NOT
-        reset to a fresh budget.
+    def test_declared_date_no_vision_stage(self, tmp_path: Path) -> None:
+        """Domain fix (2026-06-03): declared date vision stage has been removed.
 
-        With cap=2 and the guía stage having ALREADY consumed 2 calls, the
-        declared stage (two Protocolo registros) must issue ZERO vision calls.
-        Conversely with calls_already_made=0 it may issue up to the cap.
+        The ``_stage_extract_declared_date`` method no longer exists.  Registros
+        with ``protocolo_page`` set do NOT trigger any VisionLLMPort call for the
+        declared date — their ``fecha_authoritative`` == ``fecha_declarada`` (digital
+        parse, no vision).  The vision cap is fully reserved for guía reads only.
         """
         vision = _CountingVision()
-        cfg = AppConfig()
-        object.__setattr__(cfg.vision, "max_vision_calls", 2)
         pipeline = ReconciliationPipeline(
             doc_source=FakeDocumentSource(
                 [{"image": b"\x89PNG"}, {"image": b"\x89PNG"}]
             ),
             extractor=FakeExtractor(),
             vision=vision,
-            config=cfg,
+            config=AppConfig(),
         )
-        registros = [
-            _make_registro_with_protocolo("100", protocolo_page=0),
-            _make_registro_with_protocolo("101", protocolo_page=1),
-        ]
-
-        # Cap already exhausted by the guía stage → declared stage issues 0 calls.
-        updated, calls = pipeline._stage_extract_declared_date(
-            registros, calls_already_made=2
+        # The method must not exist — confirmed by TestDeclaredDateVisionStageRemoved.
+        assert not hasattr(pipeline, "_stage_extract_declared_date"), (
+            "_stage_extract_declared_date must be removed (declared date is digital)"
         )
+        # Registros with protocolo_page return fecha_declarada directly — no vision.
+        reg = _make_registro_with_protocolo("100", protocolo_page=0)
+        assert reg.fecha_authoritative == reg.fecha_declarada
         assert vision.calls == 0
-        assert calls == 2
-        assert all(r.fecha_declarada_handwritten is None for r in updated)
-
-        # Fresh budget (0 consumed) → declared stage may issue up to the cap (2).
-        vision2 = _CountingVision()
-        pipeline2 = ReconciliationPipeline(
-            doc_source=FakeDocumentSource(
-                [{"image": b"\x89PNG"}, {"image": b"\x89PNG"}]
-            ),
-            extractor=FakeExtractor(),
-            vision=vision2,
-            config=cfg,
-        )
-        _updated2, calls2 = pipeline2._stage_extract_declared_date(
-            registros, calls_already_made=0
-        )
-        assert vision2.calls == 2
-        assert calls2 == 2
 
     def test_no_guia_pages_no_vision_calls(self, tmp_path: Path) -> None:
         """Pipeline with only DECLARED pages must not call vision at all."""

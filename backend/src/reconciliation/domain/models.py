@@ -148,15 +148,21 @@ class GuiaDeRemision(BaseModel):
 class Registro(BaseModel):
     """A declared-side registry entry sourced from digital text.
 
-    R9.1 (ADR-2): ``protocolo_page`` is the 0-based PDF page index of the source
+    R9.1: ``protocolo_page`` is the 0-based PDF page index of the source
     Protocolo de Recepción (``None`` for detail-page-only registros — they carry
-    no Protocolo "Fecha:" field).  The pipeline's declared-date vision sub-stage
-    needs it to know which PDF page to render and crop.
+    no Protocolo "Fecha:" field).
 
-    R9.2 (ADR-2): the handwritten declared date is read by that sub-stage and
-    stored in ``fecha_declarada_handwritten`` (authoritative per #2709);
-    ``fecha_authoritative`` prefers it over the electronic ``fecha_declarada``
-    (kept for audit and as the rollback fallback).  All new fields default safely.
+    Domain-correctness (2026-06-03): the declared reception date is the DIGITAL
+    ``Fecha:`` printed on the Protocolo de Recepción (parsed deterministically by
+    ``digital_text_extractor.py``, real year, zero vision calls).  Handwritten
+    reception dates exist only on the guías de remisión — never on the Protocolo.
+    The prior "handwritten Protocolo, vision-read" premise (#2709) was a
+    misinterpretation corrected by the domain authority.
+
+    ``fecha_authoritative`` is therefore simply ``fecha_declarada``.  The three
+    former R9.2 fields (``fecha_declarada_handwritten``, ``fecha_declarada_confidence``,
+    ``fecha_declarada_year_inferred``) have been removed; the declared-date
+    vision sub-stage (``_stage_extract_declared_date``) has been deleted.
     """
 
     numero: str
@@ -166,22 +172,17 @@ class Registro(BaseModel):
     # None when the Registro originates from a detail page, not a Protocolo.
     # 0 is a VALID concrete page index — never treat as falsy.
     protocolo_page: int | None = None
-    # R9.2 (ADR-2): handwritten declared date from the Protocolo vision read —
-    # authoritative per decision #2709.  None when not read or low-confidence.
-    fecha_declarada_handwritten: date | None = None
-    fecha_declarada_confidence: float | None = None
-    fecha_declarada_year_inferred: bool = False
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def fecha_authoritative(self) -> date | None:
-        """Handwritten Protocolo date when available; else electronic fallback.
+        """Declared reception date from the DIGITAL Protocolo parse.
 
-        ADR-2: the single read-point that honours the handwritten-first,
-        electronic-fallback priority.  Falling back to ``fecha_declarada`` is the
-        rollback path when the declared vision read is disabled or unavailable.
+        The Protocolo ``Fecha:`` field is printed (digital), not handwritten.
+        Deterministically parsed by ``digital_text_extractor.py`` with the real
+        year — no vision call, no inference needed on the declared side.
         """
-        return self.fecha_declarada_handwritten or self.fecha_declarada
+        return self.fecha_declarada
 
 
 class PageClassification(BaseModel):

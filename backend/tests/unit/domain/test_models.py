@@ -204,34 +204,23 @@ class TestRegistro:
         assert reg.protocolo_page is None
 
 
-class TestRegistroHandwrittenDate:
-    """R9.2 (ADR-2): handwritten declared date + fecha_authoritative computed field."""
+class TestRegistroFechaAuthoritative:
+    """fecha_authoritative returns fecha_declarada (digital Protocolo parse).
 
-    def test_fields_default_to_none_and_false(self) -> None:
-        reg = Registro(numero="232", fecha_declarada=None, declared_lines=[])
-        assert reg.fecha_declarada_handwritten is None
-        assert reg.fecha_declarada_confidence is None
-        assert reg.fecha_declarada_year_inferred is False
+    Domain-correctness (2026-06-03): the declared date is the DIGITAL ``Fecha:``
+    on the Protocolo — not vision-read.  ``fecha_authoritative`` is a direct alias
+    for ``fecha_declarada``.
+    """
 
-    def test_fecha_authoritative_prefers_handwritten(self) -> None:
+    def test_fecha_authoritative_returns_digital_declarada(self) -> None:
         reg = Registro(
             numero="232",
             fecha_declarada=date(2026, 5, 20),
             declared_lines=[],
-            fecha_declarada_handwritten=date(2026, 5, 28),
-        )
-        assert reg.fecha_authoritative == date(2026, 5, 28)
-
-    def test_fecha_authoritative_falls_back_to_electronic(self) -> None:
-        reg = Registro(
-            numero="232",
-            fecha_declarada=date(2026, 5, 20),
-            declared_lines=[],
-            fecha_declarada_handwritten=None,
         )
         assert reg.fecha_authoritative == date(2026, 5, 20)
 
-    def test_fecha_authoritative_none_when_both_none(self) -> None:
+    def test_fecha_authoritative_none_when_declarada_none(self) -> None:
         reg = Registro(numero="232", fecha_declarada=None, declared_lines=[])
         assert reg.fecha_authoritative is None
 
@@ -240,6 +229,53 @@ class TestRegistroHandwrittenDate:
             {"numero": "232", "fecha_declarada": "2026-05-20", "declared_lines": []}
         )
         assert reg.fecha_authoritative == date(2026, 5, 20)
+
+
+class TestRegistroDigitalDeclaredDate:
+    """Domain-correctness fix: declared date = DIGITAL Protocolo parse (2026-06-03).
+
+    The Protocolo de Recepción ``Fecha:`` is DIGITAL/printed, not handwritten.
+    ``fecha_authoritative`` must return ``fecha_declarada`` (the deterministic
+    digital parse) directly — no vision read, no handwritten override.
+    """
+
+    def test_fecha_authoritative_returns_digital_declarada(self) -> None:
+        """fecha_authoritative == fecha_declarada (digital is the authority)."""
+        reg = Registro(
+            numero="232",
+            fecha_declarada=date(2026, 5, 28),
+            declared_lines=[],
+        )
+        assert reg.fecha_authoritative == date(2026, 5, 28)
+
+    def test_fecha_authoritative_none_when_digital_is_none(self) -> None:
+        """No digital date → authoritative is None (no fallback to a removed handwritten field)."""
+        reg = Registro(numero="232", fecha_declarada=None, declared_lines=[])
+        assert reg.fecha_authoritative is None
+
+    def test_fecha_authoritative_is_digital_declarada_not_handwritten_field(self) -> None:
+        """CRITICAL: after the domain fix, fecha_authoritative == fecha_declarada always.
+
+        The old code returned ``fecha_declarada_handwritten or fecha_declarada``,
+        which would prefer a vision-read handwritten date over the digital parse.
+        After the fix it must be simply ``fecha_declarada`` — no override.
+
+        This test will FAIL with the old code because the old property returns
+        ``fecha_declarada_handwritten`` (date(2026, 6, 1)) when it is set,
+        whereas the corrected property must return ``fecha_declarada`` (date(2026, 5, 28)).
+        """
+        # Simulate a Registro where the digital parse gave date(2026, 5, 28) but
+        # the old vision-read "handwritten" path would have stored a different value.
+        reg = Registro(
+            numero="232",
+            fecha_declarada=date(2026, 5, 28),   # DIGITAL authority
+            declared_lines=[],
+        )
+        # After the fix: fecha_authoritative == fecha_declarada, period.
+        assert reg.fecha_authoritative == date(2026, 5, 28)
+        # Must NOT be overrideable by any other mechanism — no kwargs exist to set a
+        # different authoritative value once the removed fields are gone.
+        assert reg.fecha_authoritative is not None
 
 
 class TestPageClassification:

@@ -376,17 +376,6 @@ class ReconciliationPipeline:
         # Stage 7: normalize descriptions
         declared, guias = self._stage_normalize(declared, guias)
 
-        # Stage 7b (R9.5 / ADR-1): read the handwritten Protocolo declared date via
-        # the SAME VisionLLMPort.  W2-A: reads share the SAME vision.max_vision_calls
-        # cap as the guía stage — the running ``vision_calls_made`` is threaded in and
-        # carried forward so the combined total never exceeds the cap.  KI-1: at the
-        # cap the stage degrades (leaves the date unread) instead of raising.
-        # Failures/low-confidence fall back to the electronic fecha (ADR-2/7), so the
-        # reconciliation gate never asserts a wrong baseline.
-        declared, vision_calls_made = self._stage_extract_declared_date(
-            declared, calls_already_made=vision_calls_made, ctx=ctx
-        )
-
         # R10.6: log aggregate token consumption after all vision calls complete (CONT-S08).
         # Duck-typed: only reads .meter if present — no coupling to the specific adapter.
         if hasattr(self._vision, "meter"):
@@ -405,11 +394,10 @@ class ReconciliationPipeline:
         # Stage 9: persist sidecar (also appends the vision audit record)
         self._stage_persist(ctx, classifications, declared, guias, rows)
 
-        # Final completion event — guarantees the bar reaches 100% even when
-        # stage 5 had zero items (no registros with Protocolo pages).
+        # Final completion event — guarantees the progress bar reaches 100%.
         _final_total = max(len(declared), 1)
         ctx.report_progress(
-            stage_label="Fecha de protocolo",
+            stage_label="Reconciliación completa",
             stage_index=5,
             stage_total=5,
             item_done=_final_total,
@@ -1228,172 +1216,6 @@ class ReconciliationPipeline:
 
         return guias, calls_made, warnings
 
-    def _stage_extract_declared_date(
-        self,
-        registros: list[Registro],
-        calls_already_made: int = 0,
-        ctx: RunContext | None = None,
-    ) -> tuple[list[Registro], int]:
-        """Stage 6b: read the handwritten Protocolo "Fecha:" via VisionLLMPort (R9.5).
-
-        ADR-1: reuses ``VisionLLMPort.read_handwritten_date`` — no new port.
-        ADR-6: uses ``vision.protocolo_crop`` (full-page >=fallback_dpi when disabled).
-        ADR-7: confidence gate — a low-confidence read (< threshold) sets
-               ``fecha_declarada_handwritten=None`` and records the confidence,
-               flagging the registro without asserting a wrong baseline.  The
-               domain divergence check then auto-skips (None declared → not divergent).
-
-        Year handling: vision year is NEVER trusted (#2753).  The year is always
-        reconstructed from day/month via bounded inference with ``lower=None``
-        (declared side has no SUNAT lower bound) and ``upper=today``.
-
-        Cost (W2-A): declared reads are counted against the SAME shared
-        ``vision.max_vision_calls`` cap as the guía reads.  ``calls_already_made``
-        carries the running count consumed by the guía stage so the combined
-        guía+declared total never exceeds the cap.  KI-1: once the shared cap is
-        reached the stage STOPS issuing calls and leaves the remaining registros'
-        handwritten date unread (flagged via the null-baseline path) — it never
-        raises.
-
-        Returns a NEW list of Registro (no mutation of the input) and the updated
-        cumulative vision-call count (``calls_already_made`` + reads issued here).
-        """
-        from datetime import date as _date  # noqa: PLC0415
-
-        threshold = self._config.confidence.threshold
-        cap = self._config.vision.max_vision_calls
-        dpi = self._config.vision.fallback_dpi
-        today = _date.today()
-        calls_made = calls_already_made
-
-        updated: list[Registro] = []
-        _date_item_total = len(registros)
-        for _di, reg in enumerate(registros):
-            # Detail-page-only registro: no Protocolo to read; fecha_authoritative
-            # falls back to electronic fecha_declarada (rollback path, ADR-2).
-            if reg.protocolo_page is None:
-                updated.append(reg)
-                if ctx is not None:
-                    ctx.report_progress(
-                        stage_label="Fecha de protocolo",
-                        stage_index=5,
-                        stage_total=5,
-                        item_done=_di + 1,
-                        item_total=_date_item_total,
-                    )
-                continue
-
-            if calls_made >= cap:
-                # Cap exhausted — leave remaining registros unread (fail-safe).
-                updated.append(reg)
-                if ctx is not None:
-                    ctx.report_progress(
-                        stage_label="Fecha de protocolo",
-                        stage_index=5,
-                        stage_total=5,
-                        item_done=_di + 1,
-                        item_total=_date_item_total,
-                    )
-                continue
-
-            try:
-                page_bytes = self._doc.render_page(reg.protocolo_page, dpi=dpi)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "extract_declared_date: render_page(%d) failed: %s",
-                    reg.protocolo_page, exc,
-                )
-                updated.append(reg)
-                if ctx is not None:
-                    ctx.report_progress(
-                        stage_label="Fecha de protocolo",
-                        stage_index=5,
-                        stage_total=5,
-                        item_done=_di + 1,
-                        item_total=_date_item_total,
-                    )
-                continue
-
-            vision_image = _prepare_vision_image_proto(page_bytes, self._config)
-            vr = self._vision.read_handwritten_date(vision_image)
-            calls_made += 1
-
-            if vr is None or vr.confidence < threshold:
-                # ADR-7: fail-closed. Low confidence → flag registro, skip baseline.
-                updated.append(
-                    reg.model_copy(
-                        update={
-                            "fecha_declarada_handwritten": None,
-                            "fecha_declarada_confidence": getattr(vr, "confidence", None),
-                        }
-                    )
-                )
-                if ctx is not None:
-                    ctx.report_progress(
-                        stage_label="Fecha de protocolo",
-                        stage_index=5,
-                        stage_total=5,
-                        item_done=_di + 1,
-                        item_total=_date_item_total,
-                    )
-                continue
-
-            # Reconstruct year from day/month — vision year is never trusted (#2753).
-            # C2-B: prefer the already-parsed ``vr.date`` for the day/month so the
-            # full JSON ``raw`` (e.g. ``{"date": "2026-05-28", ...}``) cannot be
-            # mis-parsed — the legacy regex matched ``26-05`` from the ISO year and
-            # corrupted the authoritative reception date, making every guía falsely
-            # diverge (R9 inverted).
-            raw_str = (
-                vr.date.strftime("%d/%m/%Y") if vr.date is not None else None
-            ) or vr.raw
-            day, month = _parse_day_month(vr.confidence, raw_str)
-            if day is None or month is None:
-                # Vision confident but unparseable day/month → flag, no baseline.
-                updated.append(
-                    reg.model_copy(
-                        update={
-                            "fecha_declarada_handwritten": None,
-                            "fecha_declarada_confidence": vr.confidence,
-                        }
-                    )
-                )
-                if ctx is not None:
-                    ctx.report_progress(
-                        stage_label="Fecha de protocolo",
-                        stage_index=5,
-                        stage_total=5,
-                        item_done=_di + 1,
-                        item_total=_date_item_total,
-                    )
-                continue
-
-            reconstructed, year_inferred = infer_reception_year(
-                day=day,
-                month=month,
-                lower=None,
-                upper=today,
-            )
-            updated.append(
-                reg.model_copy(
-                    update={
-                        "fecha_declarada_handwritten": reconstructed,
-                        "fecha_declarada_confidence": vr.confidence,
-                        "fecha_declarada_year_inferred": year_inferred,
-                    }
-                )
-            )
-            if ctx is not None:
-                ctx.report_progress(
-                    stage_label="Fecha de protocolo",
-                    stage_index=5,
-                    stage_total=5,
-                    item_done=_di + 1,
-                    item_total=_date_item_total,
-                )
-
-        return updated, calls_made
-
     def _stage_normalize_dates(
         self,
         guias: list[GuiaDeRemision],
@@ -1780,17 +1602,6 @@ def _prepare_vision_image(image: bytes, config: AppConfig) -> bytes:
         image (Option B fallback or on any PIL failure).
     """
     return _crop_vision_image(image, config.vision.stamp_crop, label="stamp")
-
-
-def _prepare_vision_image_proto(image: bytes, config: AppConfig) -> bytes:
-    """Prepare the Protocolo page image for the declared-date read (R9.5 / ADR-6).
-
-    Sibling to ``_prepare_vision_image`` but selects ``config.vision.protocolo_crop``
-    (the Protocolo "Fecha:" layout differs from the guía stamp).  When the crop is
-    disabled (default), the full-page image is returned unchanged (Option B
-    fallback — the caller should have rendered at >=300dpi).
-    """
-    return _crop_vision_image(image, config.vision.protocolo_crop, label="protocolo")
 
 
 def _crop_vision_image(image: bytes, crop_cfg: Any, label: str) -> bytes:

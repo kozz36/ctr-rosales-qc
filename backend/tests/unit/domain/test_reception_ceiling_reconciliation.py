@@ -71,13 +71,11 @@ def _registro(
     numero: str,
     *,
     fecha_declarada: date | None = None,
-    fecha_declarada_handwritten: date | None = None,
     lines: list[MaterialLine],
 ) -> Registro:
     return Registro(
         numero=numero,
         fecha_declarada=fecha_declarada,
-        fecha_declarada_handwritten=fecha_declarada_handwritten,
         declared_lines=lines,
     )
 
@@ -114,7 +112,7 @@ class TestReceptionCeilingApplied:
         )
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])
@@ -135,7 +133,7 @@ class TestReceptionCeilingApplied:
         )
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])
@@ -156,7 +154,7 @@ class TestReceptionCeilingApplied:
         )
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])
@@ -172,7 +170,7 @@ class TestReceptionCeilingApplied:
         )
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])
@@ -187,7 +185,7 @@ class TestReceptionCeilingApplied:
         )
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])
@@ -206,7 +204,7 @@ class TestReceptionCeilingApplied:
         )
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])
@@ -229,7 +227,7 @@ class TestReceptionCeilingNotApplied:
         )
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])
@@ -244,7 +242,7 @@ class TestReceptionCeilingNotApplied:
         )
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])
@@ -261,7 +259,7 @@ class TestReceptionCeilingNotApplied:
         )
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])
@@ -276,7 +274,7 @@ class TestReceptionCeilingNotApplied:
         )
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])
@@ -288,11 +286,10 @@ class TestReceptionCeilingNotApplied:
         guia = _guia(
             "T009-0004", "232", _GUIA_DATE_LATER, [_line(_MAT, "TN", "2.000")]
         )
-        # Registro with NO handwritten or electronic fecha (ceiling is None)
+        # Registro with no electronic fecha (ceiling is None)
         reg = _registro(
             "232",
             fecha_declarada=None,
-            fecha_declarada_handwritten=None,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia])

@@ -94,16 +94,13 @@
               </button>
               <span v-else>{{ col.label }}</span>
             </th>
-            <th class="review-grid__th review-grid__th--actions" scope="col">
-              <span class="sr-only">Acciones</span>
-            </th>
           </tr>
         </thead>
         <tbody class="review-grid__tbody">
           <template v-for="group in groupedRows" :key="group.key">
             <!-- Group header: Registro + Fecha -->
             <tr class="review-grid__group-header" :aria-label="`Grupo: Registro ${group.registro}, Fecha ${group.fecha ?? 'sin fecha'}`">
-              <td colspan="12" class="review-grid__group-cell">
+              <td colspan="11" class="review-grid__group-cell">
                 <button
                   class="review-grid__group-toggle"
                   :aria-expanded="!collapsedGroups.has(group.key)"
@@ -532,13 +529,22 @@ function onEdit(rowId: string, guiaId: string, value: string): void {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  min-width: 960px;
+  /* Floor = sum of all fixed columns (1014px) + Material's desired 220px. Below this
+   * the table-wrap scrolls horizontally instead of starving Material. */
+  min-width: 1240px;
 }
 
-/* Column widths */
+/* Column widths.
+ * FIX #23: under table-layout:fixed only `width` participates in column sizing —
+ * `min-width`/`max-width` on cells are IGNORED. So EVERY column except Material is
+ * pinned to an explicit fixed width (including the expand chevron at 44px), leaving
+ * Material as the SOLE width:auto column. It therefore absorbs 100% of the leftover
+ * horizontal slack — the table fills its container (no empty right band) AND Material
+ * keeps the widest allotment instead of splitting slack 3-way with expand/Páginas. */
+.review-grid__th--expand     { width: 44px; }
 .review-grid__th--registro   { width: 90px; }
 .review-grid__th--fecha      { width: 100px; }
-.review-grid__th--material   { width: 220px; }
+.review-grid__th--material   { width: auto; }
 .review-grid__th--unidad     { width: 70px; }
 .review-grid__th--declarado  { width: 100px; }
 .review-grid__th--sumado     { width: 110px; }
@@ -547,7 +553,6 @@ function onEdit(rowId: string, guiaId: string, value: string): void {
 /* FIX #13: widened from 110px to 160px to accommodate up to 4 wrapping badges */
 .review-grid__th--confianza  { width: 160px; }
 .review-grid__th--paginas    { width: 130px; }
-.review-grid__th--actions    { width: 44px; }
 
 .review-grid__thead {
   position: sticky;

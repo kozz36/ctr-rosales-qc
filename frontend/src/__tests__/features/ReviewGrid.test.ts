@@ -68,7 +68,7 @@ function makeRow(overrides: Partial<ReconciliationRowResponse> = {}): Reconcilia
 const EMPTY_MAP = new Map()
 
 describe('ReviewGrid', () => {
-  it('renders 10 column headers + 1 actions column', () => {
+  it('renders 10 data column headers + expand column, NO dead actions column (#23)', () => {
     // Need at least one row so the table (and thead) renders (empty state hides the table)
     const rows = [makeRow()]
     const wrapper = mount(ReviewGrid, {
@@ -79,9 +79,11 @@ describe('ReviewGrid', () => {
         activeFilter: null,
       },
     })
-    // 10 locked columns + actions th
+    // #23: dead "Acciones" column removed. Header now = expand(1) + 10 data columns = 11 th.
     const headers = wrapper.findAll('th')
-    expect(headers.length).toBeGreaterThanOrEqual(10)
+    expect(headers).toHaveLength(11)
+    // The dead actions th must NOT exist anymore.
+    expect(wrapper.find('.review-grid__th--actions').exists()).toBe(false)
     const headerTexts = headers.map((h) => h.text())
     expect(headerTexts.some((t) => t.includes('Registro'))).toBe(true)
     expect(headerTexts.some((t) => t.includes('Fecha'))).toBe(true)
@@ -117,6 +119,17 @@ describe('ReviewGrid', () => {
     expect(groupHeaders).toHaveLength(2)
     expect(groupHeaders[0].text()).toContain('r1')
     expect(groupHeaders[1].text()).toContain('r2')
+  })
+
+  it('group-header cell colspan spans all 11 columns after Acciones removal (#23)', () => {
+    const rows = [makeRow()]
+    const wrapper = mount(ReviewGrid, {
+      props: { rows, runId: 'run-abc', pendingEdits: EMPTY_MAP, activeFilter: null },
+    })
+    // expand(1) + 10 data columns = 11; the group cell must span exactly that.
+    const groupCell = wrapper.find('.review-grid__group-cell')
+    expect(groupCell.exists()).toBe(true)
+    expect(groupCell.attributes('colspan')).toBe('11')
   })
 
   it('displays summary counts from all rows', () => {

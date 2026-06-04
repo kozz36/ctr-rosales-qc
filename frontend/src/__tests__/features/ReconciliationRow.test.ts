@@ -104,6 +104,19 @@ describe('ReconciliationRow', () => {
     expect(wrapper.text()).toContain('KG')
   })
 
+  it('does NOT render the dead Acciones cell (#23)', () => {
+    // The reassign button moved into the guía drill-down; the empty actions <td>
+    // (and its .recon-row__cell--actions rule) is dead and must be removed.
+    const row = makeRow()
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    expect(wrapper.find('.recon-row__cell--actions').exists()).toBe(false)
+    // Main row = expand(1) + 10 data columns = 11 cells, no trailing actions cell.
+    const mainRow = wrapper.find('tr.recon-row')
+    expect(mainRow.findAll('td')).toHaveLength(11)
+  })
+
   it('renders declared_qty read-only (span, not input)', () => {
     const row = makeRow()
     const wrapper = mount(ReconciliationRow, {

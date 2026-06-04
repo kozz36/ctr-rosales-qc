@@ -143,9 +143,11 @@ import ConfidenceBadge from './ConfidenceBadge.vue'
 import YearInferredBadge from './YearInferredBadge.vue'
 import FechaDivergenceBadge from './FechaDivergenceBadge.vue'
 
-// The row spans all aggregate columns (10 data + 1 expand + 1 actions = 12; rev-3 +1 for Fecha = 13).
-// Using a high number is safe — browsers clip at the actual column count.
-const COLSPAN = 13
+// The drill-down row spans the full parent table: 1 expand + 10 data columns = 11.
+// This MUST match the exact column count — an OVER-count colspan does NOT clip; under
+// table-layout:fixed it creates phantom auto columns that steal slack from the auto
+// Material column (#23 regression). Keep in sync with ReviewGrid COLUMNS + expand.
+const COLSPAN = 11
 
 const props = defineProps<{
   /** Contributing guías from the already-fetched ReconciliationRowResponse.guias[] */

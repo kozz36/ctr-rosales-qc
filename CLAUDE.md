@@ -7,7 +7,7 @@
 
 Local-first QC tool for a civil-engineering quality engineer. Ingests a 493-page Autodesk
 Forma PDF (`CTR-PLC01-FR001 Recepción de Materiales en Obra`) and reconciles, per **Registro
-N° + handwritten reception date**, the **declared** materials (digital text: detail Notes +
+N°**, the **declared** materials (digital text: detail Notes +
 Protocolo de Recepción) against the **sum of materials** from scanned **guías de remisión**.
 Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
 

@@ -95,8 +95,9 @@ class ReconciliationService:
         # longer a grouping axis, but the output row still carries it for display.
         declared_index: dict[_GroupKey, Decimal] = {}
         declared_fecha: dict[_GroupKey, object] = {}  # key -> date | None
-        # R9.4 (ADR-2): per-registro authoritative declared date (handwritten-first,
-        # electronic fallback). Single read-point honouring decision #2709.
+        # R9.4 (ADR-2): per-registro declared date = the digital Protocolo
+        # ``fecha_declarada`` (no handwritten override). Single read-point.
+        # (Corrects #2709, which assumed a handwritten-first/electronic-fallback priority.)
         authoritative_fecha: dict[str, object] = {}  # registro numero -> date | None
         for registro in declared:
             authoritative_fecha.setdefault(registro.numero, registro.fecha_authoritative)
@@ -107,7 +108,7 @@ class ReconciliationService:
                     unidad=line.unidad,
                 )
                 declared_index[key] = declared_index.get(key, Decimal(0)) + line.cantidad
-                # ADR-2: display fecha is the authoritative (handwritten-first) date.
+                # ADR-2: display fecha is the digital Protocolo fecha_declarada (no handwritten override).
                 declared_fecha.setdefault(key, registro.fecha_authoritative)
 
         # Build guía index: key -> list of _GuiaEntry (contribution + meta)

@@ -38,8 +38,8 @@ Cost cap policy (locked):
   KI-1: on cap exhaustion the pipeline DEGRADES GRACEFULLY — it stops issuing
   vision calls, leaves the remaining items' ``fecha=None`` (which the null-fecha
   reconciliation rule flags ``requires_review``), and runs to completion.  W2-A:
-  the guía and declared-date stages share the SAME cap (the running call count is
-  threaded between them), so the combined total never exceeds ``max_vision_calls``.
+  the guía vision stage consumes the cap; on exhaustion it degrades gracefully,
+  so the total never exceeds ``max_vision_calls``.
 
 Block grouping invariants (S1.5 / EXT-015):
   - guia_id MUST come from IdentityExtractionPort or OCR-fallback; never f"guia_page_{n}".

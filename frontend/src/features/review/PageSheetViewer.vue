@@ -108,10 +108,15 @@
               :src="imageSrc"
               :alt="`Página de origen ${activePage} (resolución completa)`"
               class="page-viewer__image"
-              :class="{ 'page-viewer__image--zoomed': zoom > 1 }"
+              :class="{
+                'page-viewer__image--pannable': canPan,
+                'page-viewer__image--panning': isPanning,
+              }"
               :style="imageTransform"
+              draggable="false"
               @load="onLoad"
               @error="onError"
+              @mousedown="onPanStart"
             />
           </div>
 
@@ -144,7 +149,7 @@
  * cheap convenience that never fetches outside the row context.
  */
 
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 
 const props = defineProps<{
   /** Controls visibility (v-model). */
@@ -197,11 +202,52 @@ const zoom = ref(MIN_ZOOM)
 /** Rotation in degrees, always normalized to 0/90/180/270. */
 const rotation = ref(0)
 
-// scale() + rotate() in a single transform; identity baseline is scale(1) rotate(0deg)
-// so the reset assertion (and visual reset) is explicit, not an empty string.
+// Pan offset (px), only applied/active while zoomed. The hand tool drags the
+// image; mousedown captures the start, window mousemove updates the offset so
+// the drag continues even if the cursor leaves the image, mouseup ends it.
+const panX = ref(0)
+const panY = ref(0)
+const isPanning = ref(false)
+const canPan = computed(() => zoom.value > 1)
+let dragStartX = 0
+let dragStartY = 0
+let dragOriginX = 0
+let dragOriginY = 0
+
+// translate() first, then scale() + rotate(). Identity baseline is
+// translate(0px, 0px) scale(1) rotate(0deg) so reset is explicit, not empty.
 const imageTransform = computed(() => ({
-  transform: `scale(${zoom.value}) rotate(${rotation.value}deg)`,
+  transform: `translate(${panX.value}px, ${panY.value}px) scale(${zoom.value}) rotate(${rotation.value}deg)`,
 }))
+
+function onPanStart(e: MouseEvent): void {
+  if (!canPan.value) return
+  e.preventDefault()
+  isPanning.value = true
+  dragStartX = e.clientX
+  dragStartY = e.clientY
+  dragOriginX = panX.value
+  dragOriginY = panY.value
+  window.addEventListener('mousemove', onPanMove)
+  window.addEventListener('mouseup', onPanEnd)
+}
+
+function onPanMove(e: MouseEvent): void {
+  if (!isPanning.value) return
+  panX.value = dragOriginX + (e.clientX - dragStartX)
+  panY.value = dragOriginY + (e.clientY - dragStartY)
+}
+
+function onPanEnd(): void {
+  isPanning.value = false
+  window.removeEventListener('mousemove', onPanMove)
+  window.removeEventListener('mouseup', onPanEnd)
+}
+
+function resetPan(): void {
+  panX.value = 0
+  panY.value = 0
+}
 
 function zoomIn(): void {
   zoom.value = Math.min(MAX_ZOOM, Math.round((zoom.value + ZOOM_STEP) * 100) / 100)
@@ -209,6 +255,8 @@ function zoomIn(): void {
 
 function zoomOut(): void {
   zoom.value = Math.max(MIN_ZOOM, Math.round((zoom.value - ZOOM_STEP) * 100) / 100)
+  // Back at 100% there is nothing to pan — recenter so the page is framed.
+  if (zoom.value === 1) resetPan()
 }
 
 function rotateCw(): void {
@@ -218,6 +266,7 @@ function rotateCw(): void {
 function resetTransform(): void {
   zoom.value = MIN_ZOOM
   rotation.value = 0
+  resetPan()
 }
 
 function onLoad(): void {
@@ -257,8 +306,11 @@ function goNext(): void {
 }
 
 function close(): void {
+  onPanEnd() // drop any in-flight drag listeners before the modal unmounts
   emit('update:modelValue', false)
 }
+
+onBeforeUnmount(onPanEnd)
 
 // Sync active page + reset load state, and move focus into the dialog on open.
 watch(
@@ -483,8 +535,16 @@ watch(
   transition: transform var(--transition-fast) ease;
 }
 
-.page-viewer__image--zoomed {
-  cursor: zoom-out;
+/* Hand tool: grab affordance when zoomed, grabbing while dragging. */
+.page-viewer__image--pannable {
+  cursor: grab;
+}
+
+.page-viewer__image--panning {
+  cursor: grabbing;
+  /* No transition while dragging so the image tracks the cursor 1:1. */
+  transition: none;
+  user-select: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

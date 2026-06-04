@@ -97,6 +97,26 @@ describe('SourcePages', () => {
     expect(wrapper.find('.source-pages__number').text()).toBe('1')
   })
 
+  // ---------------------------------------------------------------------------
+  // Issue #27: page-number overlay must be PERSISTENT (legible over the thumbnail)
+  // ---------------------------------------------------------------------------
+
+  it('#27: page number stays visible (not aria-hidden) after the thumbnail loads', async () => {
+    const wrapper = mount(SourcePages, {
+      props: { pages: [42], runId: 'run-abc' },
+    })
+    await wrapper.find('.source-pages__thumb').trigger('load')
+    await wrapper.vm.$nextTick()
+
+    const number = wrapper.find('.source-pages__number')
+    // The number must remain rendered with its text...
+    expect(number.exists()).toBe(true)
+    expect(number.text()).toBe('42')
+    // ...and must NOT be hidden from assistive tech once the thumb is loaded
+    // (it is now a persistent identifier overlay, no longer a fallback).
+    expect(number.attributes('aria-hidden')).not.toBe('true')
+  })
+
   it('renders empty with no chips when pages array is empty', () => {
     const wrapper = mount(SourcePages, {
       props: { pages: [], runId: 'run-abc' },

@@ -357,6 +357,134 @@ and MUST be displayed as "page 0" (or equivalent 1-based display: "page 1").
 
 ---
 
+---
+
+## Delta — session-2026-06-04: thumbnail fallback + row-click discoverability
+
+> The requirements below ADD or MODIFY behaviour relative to REV-001 through REV-C08 above.
+> Source changes: #17 — page thumbnail fallback (merged), #19 — row-click drill-down (merged).
+> Gate: 886 backend unit/targeted tests + 188 frontend vitest passing + Playwright visual validation.
+> Each entry is marked [ADDED] or [MODIFIED: replaces <id>].
+
+### REV-C07 — [MODIFIED: replaces REV-005 thumbnail source] Source page thumbnail MUST be served via deskew-PNG-or-fitz fallback chain
+
+**[MODIFIED: REV-005 required "the post-deskew render" as the only source for the source page
+image. This is incorrect when OCR or vision is disabled — no deskewed PNG is produced in those
+modes, causing the `GET /runs/{id}/pages/{n}` endpoint to 404 for all thumbnails. REV-005 is
+superseded by this fallback chain.]**
+
+The `GET /runs/{id}/pages/{n}` endpoint MUST serve a thumbnail image for any valid page index
+N using the following ordered fallback chain:
+
+| Priority | Source | Condition |
+|----------|--------|-----------|
+| 1 (primary) | `<run_dir>/pages/{n}.png` | File exists on disk (produced by the deskew / OCR stage) |
+| 2 (fallback) | On-demand fitz render | No deskewed PNG on disk; source PDF path is known from the run context |
+
+When the fallback (priority 2) is triggered, the endpoint MUST:
+- Render page N from the run's source PDF using PyMuPDF (fitz) at **120 DPI**.
+- Cache the rendered PNG to `<run_dir>/pages/{n}.png` so subsequent requests for the same
+  page are served from disk (priority 1) without re-rendering.
+- Return the rendered image with an appropriate image MIME type.
+
+The endpoint MUST return **404** only when:
+- The run context does not exist (unknown `run_id`), OR
+- The page index N is out of range for the source PDF.
+
+The endpoint MUST NOT return 404 solely because the deskewed PNG was not produced by the
+OCR or vision stage. This ensures thumbnails are available in all pipeline modes
+(`ocr.enabled=false`, `vision.enabled=false`, or any combination thereof).
+
+The fitz render path is independent of the deskew/OCR pipeline; it MUST NOT require
+PaddleOCR to be installed.
+
+#### Acceptance Scenarios
+
+**Scenario REV-C09 — Deskewed PNG exists: served directly**
+
+Given a completed run where `<run_dir>/pages/47.png` was produced by the OCR stage
+When `GET /runs/{run_id}/pages/47` is called
+Then the response is `200 OK` with the deskewed PNG content
+And fitz is NOT invoked
+
+**Scenario REV-C10 — Deskewed PNG absent (OCR-off mode): fitz fallback renders and caches**
+
+Given a run with `ocr.enabled = false` (NullOcrExtractor — no deskewed PNGs produced)
+And the run's source PDF is accessible from the run context
+When `GET /runs/{run_id}/pages/12` is called
+Then the endpoint renders page 12 from the source PDF via fitz at 120 DPI
+And returns a `200 OK` image response
+And `<run_dir>/pages/12.png` is written to disk (cache)
+When `GET /runs/{run_id}/pages/12` is called a second time
+Then the deskewed-PNG-exists path (priority 1) serves it from disk — fitz is NOT re-invoked
+
+**Scenario REV-C11 — Out-of-range page index: 404**
+
+Given a source PDF with 50 pages (indices 0–49)
+When `GET /runs/{run_id}/pages/99` is called
+Then the response is `404 Not Found`
+
+**Scenario REV-C12 — Unknown run: 404**
+
+Given no run exists with the requested `run_id`
+When `GET /runs/{run_id}/pages/0` is called
+Then the response is `404 Not Found`
+
+---
+
+### REV-C08 — [ADDED] Row-click toggles guía drill-down; aria-expanded a11y
+
+**[CONTEXT: REV-C01 specifies that each row is "expandable" to reveal guía contributions but
+does not mandate the interaction trigger. Previously the drill-down required interaction with a
+dedicated expand control (button or chevron); the row body itself was not clickable. This
+reduced discoverability because the expand target was small. #19 makes the full row body the
+primary expand trigger.]**
+
+Clicking anywhere on an item row (the `<tr>` or equivalent row container) in the
+reconciliation grid MUST toggle the GuiaDrillDown expansion for that row, EXCEPT when the
+click target is an interactive control inside the row (e.g., a button, input, select, anchor,
+or a custom component with `role="button"` or `role="dialog"`). Inner controls MUST remain
+independently activatable without toggling the row expansion.
+
+The row container MUST carry `aria-expanded="true"` when the drill-down is visible and
+`aria-expanded="false"` when collapsed. This attribute MUST be updated on every toggle.
+
+The GuiaDrillDown content toggled by row-click MUST be the same component already used by
+the existing dedicated expand control (REV-C01). No new component is introduced; this
+requirement covers the trigger surface, not the drill-down content.
+
+#### Acceptance Scenarios
+
+**Scenario REV-C13 — Row-click expands drill-down; aria-expanded updates**
+
+Given a reconciliation row in collapsed state (`aria-expanded="false"`)
+When the engineer clicks the row body (not a button or input inside it)
+Then the GuiaDrillDown for that row becomes visible
+And the row container updates to `aria-expanded="true"`
+
+**Scenario REV-C14 — Second row-click collapses drill-down**
+
+Given a reconciliation row in expanded state (`aria-expanded="true"`)
+When the engineer clicks the row body again
+Then the GuiaDrillDown collapses
+And the row container updates to `aria-expanded="false"`
+
+**Scenario REV-C15 — Click on inner control does NOT toggle expansion**
+
+Given a reconciliation row in collapsed state
+And the row contains a "Reassign" button (GuiaReassignDialog trigger)
+When the engineer clicks the "Reassign" button
+Then the GuiaReassignDialog opens (button's default behavior)
+And the row expansion state is NOT changed (drill-down remains collapsed)
+
+---
+
+## Acceptance Scenarios — Delta session-2026-06-04
+
+*(Inline above per requirement — REV-C09 through REV-C15.)*
+
+---
+
 ## Out of scope for this domain
 
 - Pipeline execution (ingestion, extraction, normalization, reconciliation).

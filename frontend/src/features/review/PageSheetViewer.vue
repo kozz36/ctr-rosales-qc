@@ -10,6 +10,10 @@
       @keydown.escape="close"
       @keydown.left="goPrev"
       @keydown.right="goNext"
+      @keydown.r="rotateCw"
+      @keydown.+="zoomIn"
+      @keydown.-="zoomOut"
+      @keydown.0="resetTransform"
     >
       <div ref="dialogRef" class="page-viewer" tabindex="-1">
         <!-- Header -->
@@ -21,15 +25,59 @@
               {{ siblingIndex + 1 }} / {{ siblingPages.length }}
             </span>
           </h2>
-          <button
-            ref="closeRef"
-            type="button"
-            class="page-viewer__close"
-            aria-label="Cerrar visor de página"
-            @click="close"
-          >
-            <span aria-hidden="true">✕</span>
-          </button>
+          <div class="page-viewer__actions">
+            <!-- Zoom + rotate toolbar -->
+            <div class="page-viewer__toolbar" role="group" aria-label="Controles de imagen">
+              <button
+                type="button"
+                class="page-viewer__tool page-viewer__tool--zoom-out"
+                aria-label="Alejar"
+                :disabled="zoom <= MIN_ZOOM"
+                @click="zoomOut"
+              >
+                <span aria-hidden="true">−</span>
+              </button>
+              <span class="page-viewer__zoom-label mono" aria-live="polite">
+                {{ Math.round(zoom * 100) }}%
+              </span>
+              <button
+                type="button"
+                class="page-viewer__tool page-viewer__tool--zoom-in"
+                aria-label="Acercar"
+                :disabled="zoom >= MAX_ZOOM"
+                @click="zoomIn"
+              >
+                <span aria-hidden="true">+</span>
+              </button>
+              <button
+                type="button"
+                class="page-viewer__tool page-viewer__tool--rotate"
+                aria-label="Rotar 90 grados"
+                @click="rotateCw"
+              >
+                <span aria-hidden="true">⟳</span>
+              </button>
+              <button
+                type="button"
+                class="page-viewer__tool page-viewer__tool--reset"
+                aria-label="Restablecer zoom y rotación"
+                :disabled="zoom === 1 && rotation === 0"
+                @click="resetTransform"
+              >
+                <span aria-hidden="true">⤢</span>
+              </button>
+            </div>
+
+            <button
+              ref="closeRef"
+              type="button"
+              class="page-viewer__close"
+              aria-label="Cerrar visor de página"
+              @click="close"
+            >
+              <span aria-hidden="true">✕</span>
+            </button>
+          </div>
         </header>
 
         <!-- Image stage -->
@@ -60,6 +108,8 @@
               :src="imageSrc"
               :alt="`Página de origen ${activePage} (resolución completa)`"
               class="page-viewer__image"
+              :class="{ 'page-viewer__image--zoomed': zoom > 1 }"
+              :style="imageTransform"
               @load="onLoad"
               @error="onError"
             />
@@ -135,6 +185,41 @@ const imageSrc = computed(() => {
   return `${base}/runs/${props.runId}/pages/${activePage.value}/image`
 })
 
+// ---------------------------------------------------------------------------
+// Zoom + rotate (client-side CSS transform — no extra network, no domain touch)
+// ---------------------------------------------------------------------------
+
+const MIN_ZOOM = 1
+const MAX_ZOOM = 4
+const ZOOM_STEP = 0.5
+
+const zoom = ref(MIN_ZOOM)
+/** Rotation in degrees, always normalized to 0/90/180/270. */
+const rotation = ref(0)
+
+// scale() + rotate() in a single transform; identity baseline is scale(1) rotate(0deg)
+// so the reset assertion (and visual reset) is explicit, not an empty string.
+const imageTransform = computed(() => ({
+  transform: `scale(${zoom.value}) rotate(${rotation.value}deg)`,
+}))
+
+function zoomIn(): void {
+  zoom.value = Math.min(MAX_ZOOM, Math.round((zoom.value + ZOOM_STEP) * 100) / 100)
+}
+
+function zoomOut(): void {
+  zoom.value = Math.max(MIN_ZOOM, Math.round((zoom.value - ZOOM_STEP) * 100) / 100)
+}
+
+function rotateCw(): void {
+  rotation.value = (rotation.value + 90) % 360
+}
+
+function resetTransform(): void {
+  zoom.value = MIN_ZOOM
+  rotation.value = 0
+}
+
 function onLoad(): void {
   loading.value = false
   errored.value = false
@@ -148,6 +233,9 @@ function onError(): void {
 function resetLoad(): void {
   loading.value = true
   errored.value = false
+  // A new page starts at the identity transform — stale zoom/rotation would
+  // disorient the operator when navigating across a row's pages.
+  resetTransform()
 }
 
 function goPrev(): void {
@@ -272,6 +360,67 @@ watch(
   font-family: var(--font-mono);
 }
 
+/* Header actions: zoom/rotate toolbar + close */
+.page-viewer__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.page-viewer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--surface-overlay);
+}
+
+.page-viewer__tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.page-viewer__tool:not(:disabled):hover {
+  background-color: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.page-viewer__tool:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.page-viewer__tool:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.page-viewer__zoom-label {
+  min-width: 38px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
 .page-viewer__close {
   display: flex;
   align-items: center;
@@ -319,6 +468,8 @@ watch(
   justify-content: center;
   min-height: 0;
   min-width: 0;
+  /* When zoomed past the frame, let the operator pan via scroll. */
+  overflow: auto;
 }
 
 .page-viewer__image {
@@ -328,6 +479,18 @@ watch(
   border-radius: var(--radius-sm);
   box-shadow: 0 4px 18px 0 rgb(0 0 0 / 0.5);
   background-color: #fff;
+  transform-origin: center center;
+  transition: transform var(--transition-fast) ease;
+}
+
+.page-viewer__image--zoomed {
+  cursor: zoom-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-viewer__image {
+    transition: none;
+  }
 }
 
 .page-viewer__spinner,

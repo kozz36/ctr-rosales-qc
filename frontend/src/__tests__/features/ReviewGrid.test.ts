@@ -230,4 +230,54 @@ describe('ReviewGrid', () => {
     const table = wrapper.find('.review-grid__table')
     expect(table.attributes('aria-rowcount')).toBe('3')
   })
+
+  // ---------------------------------------------------------------------------
+  // FIX #15: group collapse/expand toggle via v-if (not v-show)
+  // ---------------------------------------------------------------------------
+
+  it('FIX#15: group toggle button collapses rows — rows leave the DOM when collapsed (issue 15)', async () => {
+    const rows = [
+      makeRow({ row_id: 'r1|2024-01-15|MAT-A|KG', registro: 'r1', fecha: '2024-01-15', status: 'MATCH' }),
+      makeRow({ row_id: 'r1|2024-01-15|MAT-B|KG', registro: 'r1', fecha: '2024-01-15', material_canonical: 'MAT-B', status: 'MISMATCH' }),
+    ]
+    const wrapper = mount(ReviewGrid, {
+      props: { rows, runId: 'run-abc', pendingEdits: EMPTY_MAP, activeFilter: null },
+    })
+    // Initially expanded: both rows in DOM
+    expect(wrapper.findAll('.stub-row')).toHaveLength(2)
+
+    // Click the group toggle button (collapse)
+    await wrapper.find('.review-grid__group-toggle').trigger('click')
+
+    // After collapse: rows must be REMOVED from the DOM (v-if behaviour)
+    expect(wrapper.findAll('.stub-row')).toHaveLength(0)
+  })
+
+  it('FIX#15: group toggle expand re-adds rows to DOM after collapse', async () => {
+    const rows = [
+      makeRow({ row_id: 'r1|2024-01-15|MAT-A|KG', registro: 'r1', fecha: '2024-01-15', status: 'MATCH' }),
+    ]
+    const wrapper = mount(ReviewGrid, {
+      props: { rows, runId: 'run-abc', pendingEdits: EMPTY_MAP, activeFilter: null },
+    })
+    // Collapse
+    await wrapper.find('.review-grid__group-toggle').trigger('click')
+    expect(wrapper.findAll('.stub-row')).toHaveLength(0)
+    // Expand again
+    await wrapper.find('.review-grid__group-toggle').trigger('click')
+    expect(wrapper.findAll('.stub-row')).toHaveLength(1)
+  })
+
+  it('FIX#15: aria-expanded on group toggle reflects collapsed state correctly', async () => {
+    const rows = [makeRow()]
+    const wrapper = mount(ReviewGrid, {
+      props: { rows, runId: 'run-abc', pendingEdits: EMPTY_MAP, activeFilter: null },
+    })
+    const toggle = wrapper.find('.review-grid__group-toggle')
+    // Initially expanded
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    await toggle.trigger('click')
+    // After collapse
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+  })
 })

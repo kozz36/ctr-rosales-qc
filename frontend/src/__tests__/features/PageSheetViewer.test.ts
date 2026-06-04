@@ -177,4 +177,89 @@ describe('PageSheetViewer', () => {
     })
     expect(document.querySelector('[role="dialog"]')).toBeNull()
   })
+
+  // ---------------------------------------------------------------------------
+  // A11y — focus restore (W1), focus trap (W2), layout-safe shortcuts (S1) — #31
+  // ---------------------------------------------------------------------------
+
+  it('restores focus to the trigger element when closed (W1, WCAG 2.4.3)', async () => {
+    const trigger = document.createElement('button')
+    document.body.appendChild(trigger)
+    trigger.focus()
+    expect(document.activeElement).toBe(trigger)
+
+    const wrapper = mount(PageSheetViewer, {
+      props: { modelValue: false, runId: 'run-abc', page: 5 },
+      attachTo: document.body,
+    })
+    mounted.push(wrapper)
+
+    // Open: focus must leave the trigger and move into the dialog.
+    await wrapper.setProps({ modelValue: true })
+    await wrapper.vm.$nextTick()
+    expect(document.activeElement).not.toBe(trigger)
+
+    // Close: focus must return to the chip that opened the viewer.
+    await wrapper.setProps({ modelValue: false })
+    await wrapper.vm.$nextTick()
+    expect(document.activeElement).toBe(trigger)
+
+    trigger.remove()
+  })
+
+  it('traps Tab focus within the dialog (last wraps to first) (W2)', async () => {
+    const wrapper = mountOpen()
+    await wrapper.vm.$nextTick() // let the open-focus settle before moving it
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement
+    const focusables = Array.from(
+      dialog.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'),
+    )
+    const first = focusables[0]
+    const last = focusables[focusables.length - 1]
+    last.focus()
+    dialog.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }),
+    )
+    await wrapper.vm.$nextTick()
+    expect(document.activeElement).toBe(first)
+  })
+
+  it('traps Shift+Tab focus within the dialog (first wraps to last) (W2)', async () => {
+    const wrapper = mountOpen()
+    await wrapper.vm.$nextTick() // let the open-focus settle before moving it
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement
+    const focusables = Array.from(
+      dialog.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'),
+    )
+    const first = focusables[0]
+    const last = focusables[focusables.length - 1]
+    first.focus()
+    dialog.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }),
+    )
+    await wrapper.vm.$nextTick()
+    expect(document.activeElement).toBe(last)
+  })
+
+  it('zooms in on "=" keydown — layout-safe + shortcut (S1)', async () => {
+    const wrapper = mountOpen()
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: '=', bubbles: true }))
+    await wrapper.vm.$nextTick()
+    const t = (document.querySelector('.page-viewer__image') as HTMLImageElement).style.transform
+    expect(t).toContain('scale(1.5)')
+  })
+
+  it('zooms out on "-" keydown (S1)', async () => {
+    const wrapper = mountOpen()
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement
+    // Two zoom-ins (scale 2), then one zoom-out (scale 1.5).
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: '+', bubbles: true }))
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: '+', bubbles: true }))
+    await wrapper.vm.$nextTick()
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: '-', bubbles: true }))
+    await wrapper.vm.$nextTick()
+    const t = (document.querySelector('.page-viewer__image') as HTMLImageElement).style.transform
+    expect(t).toContain('scale(1.5)')
+  })
 })

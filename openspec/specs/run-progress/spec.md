@@ -230,3 +230,115 @@ And no ETA or elapsed time is shown
 - Per-guía or per-line-item progress granularity beyond the 5 stage/item-count model.
 - Changing MATCH/MISMATCH logic, material grouping, or fecha-divergence behaviour.
 - Export or review domain changes.
+
+---
+
+## Delta — sunat-progress (2026-06-04): dynamic stage_total + "Consulta SUNAT" stage
+
+> The requirements below ADD or MODIFY behaviour relative to RPG-001 through RPG-005 above.
+> Source changes: #21 — SUNAT fetch progress instrumentation (merged to main).
+> Gate: strict-TDD — 886 backend unit/targeted tests + frontend vitest passing.
+> Each entry is marked [ADDED] or [MODIFIED: replaces <id>].
+
+### RPG-006 — [MODIFIED: replaces RPG-001 stage table and RPG-004 stage_total constant] Dynamic stage_total based on sunat.enabled
+
+**[MODIFIED: RPG-001 fixed `stage_total = 5` and listed exactly five slow pipeline stages.
+RPG-004 documented `stage_total: int = 5` as a constant. Both are incorrect when SUNAT is
+enabled — the pipeline gains a sixth tracked stage, "Consulta SUNAT", at stage_index 4.
+`stage_total` is now DYNAMIC and MUST be computed from the runtime config, not hardcoded.]**
+
+`stage_total` MUST be derived from `sunat.enabled` at pipeline-start time:
+
+| `sunat.enabled` | `stage_total` | Tracked stages (in order) |
+|-----------------|---------------|---------------------------|
+| `false` (default) | 5 | decode-identities (1), classify (2), OCR (3), vision (4), declared-date (5) |
+| `true` | 6 | decode-identities (1), classify (2), OCR (3), **Consulta SUNAT (4)**, vision (5), declared-date (6) |
+
+The "Consulta SUNAT" stage (stage_index 4 when present) MUST track the SUNAT GRE batch
+fetch. Its `item_total` MUST be the total number of guía blocks submitted for SUNAT fetch.
+
+The `percent` formula defined in RPG-004 is unchanged; the divisor now uses the dynamic
+`stage_total` value (5 or 6) rather than a constant 5.
+
+The `GET /runs/{id}` response field `stage_total` MUST reflect the dynamic value chosen at
+run start. The value MUST be stable for the lifetime of a run — it MUST NOT switch between
+5 and 6 within a single run.
+
+When `sunat.enabled = false` the run output MUST be byte-identical to the prior baseline
+(`stage_total = 5`, "Consulta SUNAT" stage absent).
+
+#### Acceptance Scenarios
+
+**Scenario RPG-S13 — SUNAT disabled: stage_total=5, no "Consulta SUNAT" stage**
+
+Given `sunat.enabled = false` (default config)
+When the pipeline runs
+Then `stage_total = 5` for all `report_progress` calls
+And no progress event with `stage_label = "Consulta SUNAT"` is emitted
+And `GET /runs/{id}` returns `progress.stage_total = 5`
+
+**Scenario RPG-S14 — SUNAT enabled: stage_total=6, "Consulta SUNAT" at stage_index 4**
+
+Given `sunat.enabled = true`
+And the pipeline identifies N guía blocks for SUNAT fetch
+When the SUNAT fetch stage begins
+Then a `report_progress` call is emitted with `stage_label = "Consulta SUNAT"`,
+  `stage_index = 4`, `stage_total = 6`, `item_done = 0`, `item_total = N`
+And subsequent per-wave calls advance `item_done` from 0 to N
+And the prior OCR stage used `stage_index = 3, stage_total = 6`
+And the vision stage (post-SUNAT) uses `stage_index = 5, stage_total = 6`
+
+**Scenario RPG-S15 — stage_total stable for run lifetime**
+
+Given a run started with `sunat.enabled = true` (`stage_total = 6`)
+When `GET /runs/{id}` is polled at multiple points during execution
+Then every response returns `progress.stage_total = 6` (not 5)
+And `stage_total` NEVER changes value within the same run
+
+---
+
+### RPG-007 — [ADDED] "Consulta SUNAT" stage advances per-wave; immediate 0/N emission at start
+
+When `sunat.enabled = true`, the SUNAT fetch stage MUST emit progress in the following
+pattern:
+
+1. **Immediate 0/N emission**: at the start of the SUNAT stage, before any fetch completes,
+   the pipeline MUST emit `item_done = 0, item_total = N` so the bar is not frozen.
+2. **Per-wave advance**: the `SunatGreFetchPort.fetch_many` Protocol MUST accept an optional
+   `on_progress(done: int, total: int) -> None` callback. The concrete adapter MUST invoke
+   this callback once per completed concurrency wave (batch of concurrent fetches), passing
+   the cumulative completed count as `done` and `total = N`. The pipeline wires the callback
+   to `report_progress` so each wave advances `item_done`.
+3. **Sequential fallback**: when the adapter processes blocks sequentially (single-worker
+   path), `on_progress` MUST be called once per individual block (equivalent to wave size 1).
+
+The `on_progress` callback parameter MUST be optional (default `None`) in the port Protocol
+so callers without progress reporting (CLI, tests) can omit it without a code change.
+
+This mechanism resolves the prior UX regression where the progress bar froze at "OCR de
+guías" during the entire SUNAT fetch phase (typically the longest network-bound stage).
+
+#### Acceptance Scenarios
+
+**Scenario RPG-S16 — Immediate 0/N emission before first wave**
+
+Given `sunat.enabled = true` and N = 10 guía blocks pending SUNAT fetch
+When the "Consulta SUNAT" stage begins (before any fetch completes)
+Then `report_progress("Consulta SUNAT", 4, 6, item_done=0, item_total=10)` is emitted first
+And the UI bar does NOT stay frozen at the OCR stage level
+
+**Scenario RPG-S17 — on_progress advances item_done per wave**
+
+Given 10 guía blocks, concurrency wave size = 3
+When wave 1 (3 blocks) completes
+Then `on_progress(done=3, total=10)` is called
+When wave 2 (3 more blocks) completes
+Then `on_progress(done=6, total=10)` is called
+And so on until all 10 are done
+
+**Scenario RPG-S18 — on_progress=None (CLI / test path): no error**
+
+Given `on_progress = None` is passed to `SunatGreFetchPort.fetch_many`
+When the SUNAT fetch runs to completion
+Then no AttributeError or TypeError is raised
+And the fetch result is byte-identical to the on_progress-wired run

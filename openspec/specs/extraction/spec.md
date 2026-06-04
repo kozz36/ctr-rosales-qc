@@ -953,6 +953,73 @@ Then construction raises `ValueError` (no reception-date source available)
 
 ---
 
+---
+
+## Delta — sunat-progress-port (2026-06-04): on_progress callback on SunatGreFetchPort
+
+> The requirement below ADDS new behaviour relative to EXT-001 through EXT-025 above.
+> Source change: #21 — SUNAT fetch progress instrumentation (merged to main).
+> Full progress semantics are owned by `run-progress/spec.md` (RPG-006/RPG-007).
+> Marked [ADDED].
+
+### EXT-026 — [ADDED] SunatGreFetchPort.fetch_many MUST accept an optional on_progress callback
+
+The `SunatGreFetchPort` Protocol's batch-fetch operation (`fetch_many`) MUST expose an
+optional `on_progress(done: int, total: int) -> None` callback parameter:
+
+```python
+def fetch_many(
+    self,
+    requests: list[SunatFetchRequest],
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[OfficialGre | None]: ...
+```
+
+The concrete adapter MUST invoke `on_progress(done, total)` once per completed concurrency
+wave (or per iteration on the sequential fallback path), passing the cumulative completed
+item count as `done` and the total request count as `total`.
+
+The callback parameter MUST default to `None`. When `None`, the adapter MUST NOT raise;
+it proceeds identically to the pre-#21 baseline (behaviour is observational-only — same
+result regardless of callback presence).
+
+This is a port-level contract change: any future concrete `SunatGreFetchPort` adapter MUST
+honour this signature. The `NullSunatFetchPort` (disabled-SUNAT seam) MUST also accept the
+parameter without error (it performs no fetches and need not call `on_progress`).
+
+No domain value, quantity, MATCH/MISMATCH status, or reconciliation output MUST change
+because of the presence or absence of the `on_progress` callback. This mirrors the
+observational-only contract established by RPG-002.
+
+#### Acceptance Scenarios
+
+**Scenario EXT-S39 — on_progress called per wave; cumulative count advances**
+
+Given `fetch_many` is called with 9 requests and wave size 3
+And `on_progress` is a recording callable
+When the adapter processes wave 1 (3 items done)
+Then `on_progress(3, 9)` is called
+When wave 2 completes (6 done)
+Then `on_progress(6, 9)` is called
+When wave 3 completes (9 done)
+Then `on_progress(9, 9)` is called
+
+**Scenario EXT-S40 — on_progress=None: no error; result identical**
+
+Given `fetch_many` is called with `on_progress = None`
+When the fetch completes
+Then no exception is raised
+And the returned `list[OfficialGre | None]` is byte-identical to the on_progress-wired run
+
+**Scenario EXT-S41 — NullSunatFetchPort accepts on_progress without error**
+
+Given `sunat.enabled = false` (NullSunatFetchPort in use)
+When `fetch_many(requests=[], on_progress=some_callable)` is called
+Then no exception is raised
+And an empty list is returned (no fetches performed)
+
+---
+
 ## Out of scope for this domain
 
 - Summation of extracted quantities (handled by the reconciliation domain).

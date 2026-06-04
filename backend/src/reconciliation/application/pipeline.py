@@ -1276,8 +1276,7 @@ class ReconciliationPipeline:
             # ``guia.fecha_raw`` (e.g. ``{"date": "2026-11-05", ...}``) cannot be
             # mis-parsed — the loose regex grabbed the ISO ``MM-DD`` slice and SWAPPED
             # day/month for any true date with day <= 12, corrupting the guía reception
-            # date and faking R9 divergences on correctly-filed guías (mirrors the
-            # declared-side fix in ``_stage_extract_declared_date``).
+            # date and faking R9 divergences on correctly-filed guías.
             raw_str = (
                 guia.fecha.strftime("%d/%m/%Y") if guia.fecha is not None else None
             ) or guia.fecha_raw

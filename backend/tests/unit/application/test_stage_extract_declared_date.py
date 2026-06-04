@@ -8,15 +8,13 @@ This module retains:
 - ``TestDeclaredDateVisionStageRemoved``: pins the removal of the old stage.
 - ``TestParseDayMonthHardening``: ``_parse_day_month`` is still used by the guía
   date normalization stage (``_stage_normalize_dates``) — not removed.
-- ``TestProtocoloCropConfig``: the ``protocolo_crop`` config block is kept for
-  potential future use and to avoid breaking any config parsing.
+- ``TestStampCropConfig``: the guía ``stamp_crop`` config (still used by the guía
+  vision read) must not regress.
 """
 
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
-from typing import Any
 
 from reconciliation.application.config import AppConfig
 from reconciliation.application.pipeline import (
@@ -54,7 +52,9 @@ class _CountingVision:
     supports_batch: bool = False
 
     def __init__(self, result: VisionResult | None = None) -> None:
-        self._result = result or VisionResult(date=date(2026, 5, 28), confidence=0.95, raw="28/05/26")
+        self._result = result or VisionResult(
+            date=date(2026, 5, 28), confidence=0.95, raw="28/05/26"
+        )
         self.calls = 0
 
     def read_handwritten_date(self, image: bytes, hint: str | None = None) -> VisionResult:
@@ -81,8 +81,8 @@ class TestDeclaredDateVisionStageRemoved:
     The ``_stage_extract_declared_date`` vision sub-stage is REMOVED; the declared
     date authority is the digital ``fecha_declarada`` from ``digital_text_extractor.py``
     (deterministic parse, real year, no vision call). These tests pin the removal:
-    (a) the pipeline method no longer exists; (b) a Registro with ``protocolo_page``
-    set does NOT trigger a vision call for the declared date.
+    the pipeline method no longer exists, and ``fecha_authoritative`` resolves to the
+    digital ``fecha_declarada`` (None when the digital parse failed).
     """
 
     def test_stage_extract_declared_date_method_removed_from_pipeline(self) -> None:
@@ -94,27 +94,6 @@ class TestDeclaredDateVisionStageRemoved:
             "The domain correction requires deleting this vision sub-stage — the declared "
             "date is the DIGITAL Protocolo parse, not vision-read."
         )
-
-    def test_protocolo_page_registro_issues_zero_vision_calls_for_declared(self) -> None:
-        """A Registro with protocolo_page set must not trigger any vision call.
-
-        With the old stage present, a Registro(protocolo_page=7) caused 1 vision call.
-        After removal, declared date resolution never calls VisionLLMPort — zero calls.
-        fecha_authoritative == fecha_declarada (digital parse) directly.
-        """
-        vis = _CountingVision()
-        pipe = _pipeline(vis)
-        reg = Registro(
-            numero="232",
-            fecha_declarada=date(2026, 5, 28),
-            declared_lines=[],
-            protocolo_page=7,
-        )
-        # After removal: the pipeline does not execute any declared-date vision read.
-        # We verify by confirming the method is absent (AttributeError is the signal).
-        # If the method is still present, the previous test already catches it.
-        assert reg.fecha_authoritative == date(2026, 5, 28)
-        assert vis.calls == 0  # No vision calls were made during construction
 
     def test_fecha_authoritative_is_fecha_declarada(self) -> None:
         """fecha_authoritative == fecha_declarada with no vision override possible."""
@@ -166,20 +145,7 @@ class TestParseDayMonthHardening:
         assert _parse_day_month(1.0, "28-05-2026") == (28, 5)
 
 
-class TestProtocoloCropConfig:
-    def test_protocolo_crop_enabled_by_default(self) -> None:
-        """R10.5: protocolo_crop default is (0.60,0.04,1.00,0.22) — non-degenerate (enabled)."""
-        cfg = AppConfig()
-        assert cfg.vision.protocolo_crop.enabled is True
-
-    def test_protocolo_crop_disabled_when_zero_box(self) -> None:
-        """ADR-6: degenerate zero-box still disables crop (full-page fallback path preserved)."""
-        from reconciliation.application.config import StampCropConfig, VisionConfig
-        v = VisionConfig(
-            protocolo_crop=StampCropConfig(x0=0.0, y0=0.0, x1=0.0, y1=0.0)
-        )
-        assert v.protocolo_crop.enabled is False
-
+class TestStampCropConfig:
     def test_stamp_crop_unaffected(self) -> None:
         """R7 guía stamp crop is NOT regressed by this change."""
         cfg = AppConfig()

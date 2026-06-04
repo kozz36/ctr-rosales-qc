@@ -310,15 +310,19 @@ class ReconciliationPipeline:
         # Stage 1: split
         page_count = self._stage_split()
 
+        # Determine stage_total early for decode/classify — these run before SUNAT
+        # but still need the correct total so the bar is consistent end-to-end.
+        _stage_total = 6 if self._config.sunat.enabled else 5
+
         # Stage 1b: decode_identities pre-pass (rev-3 / D1).
         # Renders each page ONCE at QR DPI; caches page → DecodeOutcome.
         # The rendered bytes are reused by extract_ocr and assemble_blocks
         # so total renders stay constant (EXT-019 render-cache invariant).
-        decode_map = self._stage_decode_identities(page_count, ctx=ctx)
+        decode_map = self._stage_decode_identities(page_count, ctx=ctx, stage_total=_stage_total)
 
         # Stage 2: classify — HYBRID OR-gate (rev-3 EXT-019).
         # Passes qr_is_guia + image_dominant booleans from the cached decode map.
-        classifications = self._stage_classify(page_count, decode_map=decode_map, ctx=ctx)
+        classifications = self._stage_classify(page_count, decode_map=decode_map, ctx=ctx, stage_total=_stage_total)
 
         # Stage 3: deskew (orientation correction for GUIA pages; no-op if deskew=None)
         # Note: title-OCR for scanned pages is already wired in _stage_classify above.
@@ -345,17 +349,23 @@ class ReconciliationPipeline:
         # Stage 5: extract OCR tables from guia pages; reuses cached rendered bytes.
         # Returns (raw_guias, ocr_warnings) — ocr_warnings non-empty on graceful degradation.
         raw_guias, ocr_warnings = self._stage_extract_ocr(
-            classifications, decode_map=decode_map, ctx=ctx
+            classifications, decode_map=decode_map, ctx=ctx, stage_total=_stage_total
         )
 
         # Stage 5b: assemble multi-page guía blocks; reuses cached DecodeOutcome map.
         blocks = self._stage_assemble_blocks(raw_guias, classifications, decode_map=decode_map)
 
+        # Determine stage_total dynamically: 6 when SUNAT is enabled (adds "Consulta SUNAT"
+        # as stage 4 between OCR and vision), 5 otherwise (existing numbering unchanged).
+        # This keeps the progress bar monotonic in both sunat-on and sunat-off modes
+        # without any frontend change — stage_total is a pure pipeline signal.
+        _stage_total = 6 if self._config.sunat.enabled else 5
+
         # Stage 5c: SUNAT descargaqr opt-in fetch (rev-3 / EXT-023 / D3).
         # When sunat.enabled=True, fetches official GRE PDFs for blocks that have a
         # hashqr_url; replaces OCR line items with SUNAT-authoritative quantities.
         # sunat_fetch_map maps guia_id → OfficialGre; empty when disabled (air-gap).
-        sunat_fetch_map = self._stage_sunat_fetch(blocks)
+        sunat_fetch_map = self._stage_sunat_fetch(blocks, ctx=ctx, stage_total=_stage_total)
 
         # Stage 6: extract vision dates (handwritten) — one call per block (first page).
         # D4: feeds the stamp-region crop (lower-right quadrant default) or >=300dpi
@@ -365,7 +375,7 @@ class ReconciliationPipeline:
         vision_cap_reached = False
         try:
             guias, vision_calls_made, warnings = self._stage_extract_vision(
-                blocks, sunat_fetch_map=sunat_fetch_map, ctx=ctx
+                blocks, sunat_fetch_map=sunat_fetch_map, ctx=ctx, stage_total=_stage_total
             )
         except Exception:
             vision_cap_reached = True
@@ -406,11 +416,12 @@ class ReconciliationPipeline:
         self._stage_persist(ctx, classifications, declared, guias, rows)
 
         # Final completion event — guarantees the progress bar reaches 100%.
+        # stage_index == stage_total == _stage_total (6 with SUNAT, 5 without).
         _final_total = max(len(declared), 1)
         ctx.report_progress(
             stage_label="Reconciliación completa",
-            stage_index=5,
-            stage_total=5,
+            stage_index=_stage_total,
+            stage_total=_stage_total,
             item_done=_final_total,
             item_total=_final_total,
         )
@@ -436,7 +447,7 @@ class ReconciliationPipeline:
         return count
 
     def _stage_decode_identities(
-        self, page_count: int, ctx: RunContext | None = None
+        self, page_count: int, ctx: RunContext | None = None, stage_total: int = 5
     ) -> dict[int, DecodeOutcome]:
         """Stage 1b (rev-3 / D1): decode QR identities for every page in one pre-pass.
 
@@ -508,7 +519,7 @@ class ReconciliationPipeline:
                 ctx.report_progress(
                     stage_label="Decodificando identidades",
                     stage_index=1,
-                    stage_total=5,
+                    stage_total=stage_total,
                     item_done=idx + 1,
                     item_total=page_count,
                 )
@@ -531,6 +542,7 @@ class ReconciliationPipeline:
         page_count: int,
         decode_map: dict[int, DecodeOutcome] | None = None,
         ctx: RunContext | None = None,
+        stage_total: int = 5,
     ) -> list[PageClassification]:
         """Stage 2: classify each page using the hybrid OR-gate (rev-3 EXT-019).
 
@@ -590,7 +602,7 @@ class ReconciliationPipeline:
                 ctx.report_progress(
                     stage_label="Clasificando páginas",
                     stage_index=2,
-                    stage_total=5,
+                    stage_total=stage_total,
                     item_done=idx + 1,
                     item_total=page_count,
                 )
@@ -740,6 +752,7 @@ class ReconciliationPipeline:
         classifications: list[PageClassification],
         decode_map: dict[int, DecodeOutcome] | None = None,
         ctx: RunContext | None = None,
+        stage_total: int = 5,
     ) -> tuple[list[_RawGuia], list[str]]:
         """Stage 5: OCR material tables from GUIA pages; tag with registro numero.
 
@@ -817,7 +830,7 @@ class ReconciliationPipeline:
                 ctx.report_progress(
                     stage_label="OCR de guías",
                     stage_index=3,
-                    stage_total=5,
+                    stage_total=stage_total,
                     item_done=_ocr_item_done,
                     item_total=_guia_page_count,
                 )
@@ -959,7 +972,10 @@ class ReconciliationPipeline:
         return blocks
 
     def _stage_sunat_fetch(
-        self, blocks: list[_GuiaBlock]
+        self,
+        blocks: list[_GuiaBlock],
+        ctx: RunContext | None = None,
+        stage_total: int = 6,
     ) -> dict[str, Any]:
         """Stage 5c (rev-3 / EXT-023 / D3): OPT-IN SUNAT descargaqr fetch.
 
@@ -1022,16 +1038,26 @@ class ReconciliationPipeline:
         _DOMAIN_UNIT = Literal["KG", "TN", "RD", "Rollo"]
         _VALID_UNITS: frozenset[str] = frozenset({"KG", "TN", "RD", "Rollo"})
 
-        for url, official in raw_results.items():
+        _sunat_item_total = len(urls)
+        for _sunat_idx, (url, official) in enumerate(raw_results.items()):
             block = url_to_block[url]
             if official is None:
                 logger.debug(
                     "_stage_sunat_fetch: fetch returned None for block %r; keeping OCR lines",
                     block.guia_id,
                 )
-                continue
-            self._apply_sunat_result(block, official, _VALID_UNITS, _DOMAIN_UNIT, cast)
-            sunat_map[block.guia_id] = official
+            else:
+                self._apply_sunat_result(block, official, _VALID_UNITS, _DOMAIN_UNIT, cast)
+                sunat_map[block.guia_id] = official
+            # Progress: emit one event per block processed (stage 4 of stage_total).
+            if ctx is not None:
+                ctx.report_progress(
+                    stage_label="Consulta SUNAT",
+                    stage_index=4,
+                    stage_total=stage_total,
+                    item_done=_sunat_idx + 1,
+                    item_total=_sunat_item_total,
+                )
 
         logger.debug(
             "_stage_sunat_fetch: %d/%d blocks enriched from SUNAT",
@@ -1094,6 +1120,7 @@ class ReconciliationPipeline:
         blocks: list[_GuiaBlock],
         sunat_fetch_map: dict[str, Any] | None = None,
         ctx: RunContext | None = None,
+        stage_total: int = 5,
     ) -> tuple[list[GuiaDeRemision], int, list[str]]:
         """Stage 6: attach handwritten dates to guía blocks via VisionLLMPort.
 
@@ -1120,6 +1147,10 @@ class ReconciliationPipeline:
         calls_made = 0
         warnings: list[str] = []
         guias: list[GuiaDeRemision] = []
+        # Vision stage_index: stage_total - 1 (last instrumented before the final event).
+        # When SUNAT is off (stage_total=5): vision = 4.
+        # When SUNAT is on  (stage_total=6): vision = 5 (SUNAT occupies 4).
+        _vision_stage_index = stage_total - 1
 
         if not blocks:
             return guias, calls_made, warnings
@@ -1147,8 +1178,8 @@ class ReconciliationPipeline:
                     if ctx is not None:
                         ctx.report_progress(
                             stage_label="Lectura de visión",
-                            stage_index=4,
-                            stage_total=5,
+                            stage_index=_vision_stage_index,
+                            stage_total=stage_total,
                             item_done=_vi + 1,
                             item_total=_vision_item_total,
                         )
@@ -1158,8 +1189,8 @@ class ReconciliationPipeline:
                 if ctx is not None:
                     ctx.report_progress(
                         stage_label="Lectura de visión",
-                        stage_index=4,
-                        stage_total=5,
+                        stage_index=_vision_stage_index,
+                        stage_total=stage_total,
                         item_done=len(to_process) + _vi2 + 1,
                         item_total=_vision_item_total,
                     )
@@ -1178,8 +1209,8 @@ class ReconciliationPipeline:
                     if ctx is not None:
                         ctx.report_progress(
                             stage_label="Lectura de visión",
-                            stage_index=4,
-                            stage_total=5,
+                            stage_index=_vision_stage_index,
+                            stage_total=stage_total,
                             item_done=_vi + 1,
                             item_total=_vision_item_total,
                         )
@@ -1208,8 +1239,8 @@ class ReconciliationPipeline:
                 if ctx is not None:
                     ctx.report_progress(
                         stage_label="Lectura de visión",
-                        stage_index=4,
-                        stage_total=5,
+                        stage_index=_vision_stage_index,
+                        stage_total=stage_total,
                         item_done=_vi + 1,
                         item_total=_vision_item_total,
                     )

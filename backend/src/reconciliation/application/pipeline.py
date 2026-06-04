@@ -1107,7 +1107,8 @@ class ReconciliationPipeline:
         Rev-3 D4 (EXT-020): the image sent to the vision adapter is the
         stamp-region crop (Option A, upper-right quadrant — R7 fix) rather than
         the full-page-200dpi render.  When stamp_crop is disabled (all zeros), falls back
-        to Option B: a fresh render at ``fallback_dpi`` (≥300 dpi).
+        to Option B: the original full-page 200dpi render from the decode_identities
+        cache (no higher-DPI re-render is wired in — see ``_prepare_vision_image``).
 
         Respects the vision cost cap.  KI-1: when the cap is reached the stage
         DEGRADES GRACEFULLY instead of raising — it stops issuing further vision

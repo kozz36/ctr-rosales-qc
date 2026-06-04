@@ -95,8 +95,6 @@ class VisionConfig(BaseSettings):
     max_vision_calls: int = Field(default=500, gt=0)
     # Rev-3 D4: stamp-crop config — lower-right quadrant default (EXT-020)
     stamp_crop: StampCropConfig = Field(default_factory=StampCropConfig)
-    # Rev-3 D4 Option B: DPI for full-page fallback when stamp_crop is disabled
-    fallback_dpi: int = Field(default=300, gt=0)
     # R10.5: max_tokens for vision calls — env-tunable floor at 512-768 to survive
     # the <think> phase from extended-thinking models (qwen3.5 family).
     # Passed to the adapter constructor in the factory; overrides the adapter's default.

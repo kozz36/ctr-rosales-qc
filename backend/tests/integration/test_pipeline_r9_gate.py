@@ -87,8 +87,6 @@ class TestR9ReconcilerDivergenceGate:
             Registro(
                 numero="232",
                 fecha_declarada=date(2026, 5, 28),
-                fecha_declarada_handwritten=date(2026, 5, 28),
-                fecha_declarada_confidence=0.92,
                 declared_lines=[self._line("4.124")],
             )
         ]
@@ -118,8 +116,6 @@ class TestR9ReconcilerDivergenceGate:
             Registro(
                 numero="232",
                 fecha_declarada=date(2026, 5, 28),
-                fecha_declarada_handwritten=date(2026, 5, 28),
-                fecha_declarada_confidence=0.92,
                 declared_lines=[self._line("2.000")],
             )
         ]
@@ -182,16 +178,19 @@ class TestR9RealPDFGate:
         assert reg_232[0].protocolo_page is not None
         assert isinstance(reg_232[0].protocolo_page, int)
 
-    def test_registro_232_declared_date_read(self, pipeline_result) -> None:
-        """ADR-7: vision stage ran — either a confident handwritten date or a
-        recorded confidence (fail-closed). Both outcomes are valid."""
+    def test_registro_232_declared_date_from_digital_parse(self, pipeline_result) -> None:
+        """Domain-correctness fix (2026-06-03): the declared reception date is the
+        DIGITAL printed ``Fecha:`` on the Protocolo (deterministic parse, NO vision).
+
+        The ``_stage_extract_declared_date`` vision sub-stage was removed, so
+        ``fecha_authoritative`` resolves to the digital ``fecha_declarada``.
+        Registro 232 Protocolo prints ``Fecha: 28-05-26`` → ``date(2026, 5, 28)``.
+        """
         reg_232 = [r for r in pipeline_result.declared if r.numero == "232"][0]
-        if reg_232.fecha_declarada_handwritten is not None:
-            assert reg_232.fecha_declarada_confidence is not None
-            assert reg_232.fecha_declarada_confidence >= 0.85
-        else:
-            # Low-confidence path: confidence recorded, no baseline asserted.
-            assert reg_232.fecha_authoritative == reg_232.fecha_declarada
+        # Authority is the digital parse — never a vision-read handwritten date.
+        assert reg_232.fecha_authoritative == reg_232.fecha_declarada
+        # The digital parse of the printed Protocolo field must resolve concretely.
+        assert reg_232.fecha_authoritative == date(2026, 5, 28)
 
     def test_at_least_one_match_row_regression(self, pipeline_result) -> None:
         """R8 regression guard: matching still resolves at least one MATCH."""

@@ -42,9 +42,6 @@ vision:
     x1: 1.0
     y1: 0.45
 
-  # Rev-3 D4 Option B: DPI for full-page render when stamp_crop is disabled.
-  fallback_dpi: 300
-
 deskew:
   # Locked: guia_only — deskew is applied only to GUIA pages post-classification.
   # Do not change this value without amending the spec (EXT-003).

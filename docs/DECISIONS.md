@@ -17,10 +17,11 @@ Newest context at the bottom of each section.
   sum; `Planilla Resumen`, `Listado de Barras`, photos, cover, contents do **not**.
 - **Declared side is trusted digital text** (Protocolo canonical, detail = cross-check).
   Reconciliation vs declared **is the validation gate** that surfaces OCR errors.
-- **Dates** (§dates, R9): the declared reception date is the **handwritten `Fecha:` on the
-  Protocolo de Recepción** (vision-read, linked to the Registro N°) — NOT the electronic date.
-  Guías should carry that same handwritten date. `fecha` is **not** a grouping axis; a guía whose
-  handwritten date **diverges** (compared by **day-month**; year reconstructed by bounded inference)
+- **Dates** (§dates, R9): the declared reception date is the **DIGITAL printed `Fecha:` on the
+  Protocolo de Recepción** (deterministic parse, linked to the Registro N°, **no vision call**) —
+  handwritten dates exist only on the guías. Guías should carry that same declared date. `fecha`
+  is **not** a grouping axis; a guía whose handwritten date **diverges** (compared by **day-month**;
+  year reconstructed by bounded inference)
   is the **misfiled-guía** signal → non-blocking no-match **WARNING** with page number + red
   highlight (individual/group) → human review + manual reassign. Never auto-corrected.
 
@@ -288,7 +289,7 @@ the grouping key** — it split groups on vision-date noise. See `docs/MATERIAL-
 ### R9 — reception-date authority + fecha-divergence review (own SDD change `r9-fecha-divergence-review`)
 
 Declared reception date = **DIGITAL `Fecha:` on the Protocolo de Recepción** (deterministic parse
-by `digital_text_extractor.py`, real year, no vision call), per Registro N°. This is the ceiling
+by `digital_text_extractor.py`, deterministic 20XX year (2000+YY), no vision call), per Registro N°. This is the ceiling
 and the baseline for divergence checks. Guías carry **handwritten** reception dates (vision-read,
 stamp region), compared **day-month** against the declared baseline; year via bounded inference.
 A guía whose handwritten date diverges → non-blocking **WARNING** that flags `requires_review`

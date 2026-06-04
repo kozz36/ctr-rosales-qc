@@ -7,13 +7,7 @@
       aria-modal="true"
       :aria-labelledby="titleId"
       @click.self="close"
-      @keydown.escape="close"
-      @keydown.left="goPrev"
-      @keydown.right="goNext"
-      @keydown.r="rotateCw"
-      @keydown.+="zoomIn"
-      @keydown.-="zoomOut"
-      @keydown.0="resetTransform"
+      @keydown="onKeydown"
     >
       <div ref="dialogRef" class="page-viewer" tabindex="-1">
         <!-- Header -->
@@ -143,10 +137,13 @@
  * Opens on a SourcePages chip click and renders the full page via
  * GET /runs/{id}/pages/{page}/image (200 DPI, distinct cache from the thumbnail).
  *
- * A11y: role="dialog" + aria-modal, focus moves to the dialog on open, ESC and
- * backdrop click close, a visible close button is provided. Optional prev/next
- * navigation walks the SAME row's source pages (rowPages) when supplied — a
- * cheap convenience that never fetches outside the row context.
+ * A11y: role="dialog" + aria-modal, focus moves to the dialog on open and is
+ * restored to the triggering chip on close (WCAG 2.4.3), Tab/Shift+Tab are
+ * trapped within the dialog, ESC and backdrop click close, a visible close
+ * button is provided. Keyboard shortcuts compare event.key directly so the
+ * +/- zoom keys are layout-independent. Optional prev/next navigation walks the
+ * SAME row's source pages (rowPages) when supplied — a cheap convenience that
+ * never fetches outside the row context.
  */
 
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
@@ -312,15 +309,100 @@ function close(): void {
 
 onBeforeUnmount(onPanEnd)
 
-// Sync active page + reset load state, and move focus into the dialog on open.
+// ---------------------------------------------------------------------------
+// Keyboard + focus management (a11y — #31)
+// ---------------------------------------------------------------------------
+
+/**
+ * Single keydown handler for the dialog. Comparing `event.key` directly (rather
+ * than Vue keystroke modifiers) makes the +/- zoom shortcuts layout-independent:
+ * `=` is the unshifted `+` and `_` the shifted `-` on common layouts (S1).
+ */
+function onKeydown(e: KeyboardEvent): void {
+  switch (e.key) {
+    case 'Escape':
+      close()
+      break
+    case 'ArrowLeft':
+      goPrev()
+      break
+    case 'ArrowRight':
+      goNext()
+      break
+    case 'r':
+    case 'R':
+      rotateCw()
+      break
+    case '+':
+    case '=':
+      zoomIn()
+      break
+    case '-':
+    case '_':
+      zoomOut()
+      break
+    case '0':
+      resetTransform()
+      break
+    case 'Tab':
+      onTab(e)
+      break
+  }
+}
+
+/** Tabbable controls inside the dialog, in DOM order (disabled excluded). */
+function focusableEls(): HTMLElement[] {
+  const root = dialogRef.value
+  if (!root) return []
+  return Array.from(root.querySelectorAll<HTMLElement>('button:not(:disabled)'))
+}
+
+/**
+ * Focus trap (W2): keep Tab/Shift+Tab cycling within the dialog so focus never
+ * lands on the background content behind the modal.
+ */
+function onTab(e: KeyboardEvent): void {
+  const els = focusableEls()
+  if (els.length === 0) {
+    e.preventDefault()
+    dialogRef.value?.focus()
+    return
+  }
+  const first = els[0]
+  const last = els[els.length - 1]
+  const active = document.activeElement
+  if (e.shiftKey) {
+    if (active === first || active === dialogRef.value) {
+      e.preventDefault()
+      last.focus()
+    }
+  } else if (active === last) {
+    e.preventDefault()
+    first.focus()
+  }
+}
+
+// The control that had focus when the viewer opened, restored on close (W1).
+let triggerEl: HTMLElement | null = null
+
+// Sync active page + reset load state, capture/restore focus, and move focus
+// into the dialog on open.
 watch(
   () => [props.modelValue, props.page] as const,
-  async ([open]) => {
+  async ([open], prev) => {
+    const wasOpen = prev?.[0] ?? false
     if (open) {
+      // Capture the trigger only on the open transition — a page change while
+      // already open must not overwrite it with the dialog itself.
+      if (!wasOpen) triggerEl = document.activeElement as HTMLElement | null
       activePage.value = props.page
       resetLoad()
       await nextTick()
       dialogRef.value?.focus()
+    } else if (wasOpen) {
+      // Restore focus to the chip that opened the viewer (WCAG 2.4.3).
+      triggerEl?.focus()
+      triggerEl = null
     }
   },
   { immediate: true },

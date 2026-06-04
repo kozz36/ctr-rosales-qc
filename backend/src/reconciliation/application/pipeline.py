@@ -1033,6 +1033,11 @@ class ReconciliationPipeline:
                     item_total=total,
                 )
 
+        # Emit the stage label IMMEDIATELY (0/N) so the bar switches to "Consulta SUNAT"
+        # the moment the fetch starts — otherwise it appears frozen on the previous stage
+        # for the whole first wave when SUNAT is slow/throttled.
+        _emit(0, _sunat_item_total)
+
         if hasattr(self._sunat, "fetch_many") and asyncio_available():
             import asyncio  # noqa: PLC0415
             try:

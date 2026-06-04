@@ -263,7 +263,10 @@ class TestSunatProgressEnabled:
         assert sunat_events, "Must have SUNAT events"
         done_vals = [e.item_done for e in sunat_events]
         assert done_vals == sorted(done_vals), "item_done must be monotonically non-decreasing"
-        assert done_vals[0] >= 1, "item_done is 1-based"
+        # The stage emits an immediate 0/N so the label switches the moment the fetch
+        # starts (before the first slow wave completes), then advances to N.
+        assert done_vals[0] == 0, "stage starts at 0/N (immediate label switch)"
+        assert done_vals[-1] >= 1, "item_done must advance past the initial 0"
 
     def test_sunat_stage_total_is_6(self, tmp_path: Path) -> None:
         """When SUNAT is enabled, stage_total must be 6 for all SUNAT events."""
@@ -559,7 +562,7 @@ class TestPerWaveProgressFix:
         assert done_vals == sorted(done_vals), (
             f"item_done must be monotonically non-decreasing: {done_vals}"
         )
-        assert done_vals[0] >= 1, "item_done is 1-based"
+        assert done_vals[0] == 0, "stage emits an immediate 0/N before the first wave"
         # Final event must reach item_total
         last = sunat_events[-1]
         assert last.item_done == last.item_total, (
@@ -584,9 +587,9 @@ class TestPerWaveProgressFix:
         assert sunat_events, "Must have 'Consulta SUNAT' events for sequential path"
 
         done_vals = [e.item_done for e in sunat_events]
-        # Must be strictly 1, 2, ... N (one event per URL, interleaved with fetch calls)
-        assert done_vals == list(range(1, len(done_vals) + 1)), (
-            f"Sequential path must emit one event per URL (1-based): got {done_vals}"
+        # Immediate 0/N, then one event per URL: 0, 1, 2, ... N
+        assert done_vals == list(range(0, len(done_vals))), (
+            f"Sequential path must emit 0/N then one event per URL: got {done_vals}"
         )
         # All events share the same item_total = number of URLs
         assert all(e.item_total == sunat_events[-1].item_total for e in sunat_events), (

@@ -62,13 +62,11 @@ def _registro(
     numero: str,
     *,
     fecha_declarada: date | None = None,
-    fecha_declarada_handwritten: date | None = None,
     lines: list[MaterialLine],
 ) -> Registro:
     return Registro(
         numero=numero,
         fecha_declarada=fecha_declarada,
-        fecha_declarada_handwritten=fecha_declarada_handwritten,
         declared_lines=lines,
     )
 
@@ -96,7 +94,7 @@ class TestDeliveryAfterProtocoloCrossedBounds:
         guia = _guia("T009-0001", "232", _GUIA_READ, [_line(_MAT, "TN", "2.000")])
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile(
@@ -112,7 +110,7 @@ class TestDeliveryAfterProtocoloCrossedBounds:
         guia = _guia("T009-0001", "232", _GUIA_READ, [_line(_MAT, "TN", "2.000")])
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile(
@@ -127,7 +125,7 @@ class TestDeliveryAfterProtocoloCrossedBounds:
         guia = _guia("T009-0001", "232", _GUIA_READ, [_line(_MAT, "TN", "2.000")])
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile(
@@ -142,7 +140,7 @@ class TestDeliveryAfterProtocoloCrossedBounds:
         guia = _guia("T009-0001", "232", _GUIA_READ, [_line(_MAT, "TN", "2.000")])
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile(
@@ -155,7 +153,7 @@ class TestDeliveryAfterProtocoloCrossedBounds:
         guia = _guia("T009-0001", "232", _GUIA_READ, [_line(_MAT, "TN", "2.000")])
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile(
@@ -170,7 +168,7 @@ class TestDeliveryAfterProtocoloCrossedBounds:
         guia = _guia("T009-0001", "232", _GUIA_READ, [_line(_MAT, "TN", "2.000")])
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile(
@@ -185,7 +183,7 @@ class TestDeliveryAfterProtocoloCrossedBounds:
         guia = _guia("T009-0001", "232", _GUIA_READ, [_line(_MAT, "TN", "2.000")])
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         # Baseline: no delivery_dates passed.
@@ -207,7 +205,7 @@ class TestNormalCeilingWithDeliveryDates:
         guia = _guia("T009-0001", "232", _GUIA_READ, [_line(_MAT, "TN", "2.000")])
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile(
@@ -227,7 +225,7 @@ class TestDeliveryDatesNoneBackwardCompat:
         guia = _guia("T009-0001", "232", _GUIA_READ, [_line(_MAT, "TN", "2.000")])
         reg = _registro(
             "232",
-            fecha_declarada_handwritten=_PROTOCOLO_DATE,
+            fecha_declarada=_PROTOCOLO_DATE,
             lines=[_line(_MAT, "TN", "2.000")],
         )
         rows = svc.reconcile([reg], [guia], delivery_dates=None)

@@ -2,7 +2,7 @@
 
 Physical invariant: a guía's resolved reception date can NEVER be LATER than
 the authoritative Protocolo de Recepción declared date for the same Registro N°.
-The Protocolo handwritten date is the upper authority (límite máximo).
+The Protocolo declared (digital) date is the upper authority (límite máximo).
 
 When a guía's reception date falls AFTER the Protocolo declared date, clamp it
 to the Protocolo date and flag the guía (``was_clamped=True``) for human review.
@@ -38,8 +38,8 @@ def apply_reception_ceiling(
 
     1. ``ceiling is None`` → no ceiling data available; return
        ``(reception, False)`` unchanged.  Graceful degrade when the Protocolo
-       declared date could not be read (e.g., low vision confidence, SUNAT-only
-       mode, no Protocolo page for this registro).
+       declared date could not be read (e.g., digital parse yielded no date,
+       SUNAT-only mode, no Protocolo page for this registro).
     2. ``reception is None`` → nothing to clamp; return ``(None, False)``
        unchanged.  A None reception is handled elsewhere (null-fecha guard in
        the reconciler flags it ``requires_review``); the ceiling does not apply.

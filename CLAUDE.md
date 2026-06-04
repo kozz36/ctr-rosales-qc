@@ -7,7 +7,7 @@
 
 Local-first QC tool for a civil-engineering quality engineer. Ingests a 493-page Autodesk
 Forma PDF (`CTR-PLC01-FR001 Recepción de Materiales en Obra`) and reconciles, per **Registro
-N° + handwritten reception date**, the **declared** materials (digital text: detail Notes +
+N°**, the **declared** materials (digital text: detail Notes +
 Protocolo de Recepción) against the **sum of materials** from scanned **guías de remisión**.
 Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
 
@@ -34,16 +34,19 @@ Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
 - **MATCH tolerance EXACT (0)**; **confidence auto-flag at 0.85**; MISMATCH always flags.
 - Reconciliation vs the trusted digital declared side **is the OCR validation gate** —
   mismatches are flagged for human review, never auto-corrected.
-- **Reception-date authority** (rev-3 R9): the declared reception date is the **HANDWRITTEN
-  `Fecha:` on the Protocolo de Recepción** (vision-read), linked to the Registro N° — NOT the
-  electronic `fecha_declarada` nor the GRE date. The Protocolo date is the **upper authority
-  (límite máximo)**: every guía in that Registro **should carry that same handwritten date**.
-  A guía whose handwritten date **diverges** — **earlier OR later**, compared by **day-month**;
-  year is vision-unreliable and reconstructed by bounded inference — is an **assembly error**
-  (whoever built the Protocolo misfiled the guía) → non-blocking **WARNING** that flags the guía
-  `requires_review` with its **page number** and a **red highlight** (individual or per-registro
-  group) so the operator can **report it or reassign the guía to the correct Registro**. Never
-  auto-corrected.
+- **Reception-date authority** (rev-3 R9; corrected 2026-06-03): the declared reception date is the
+  **DIGITAL printed `Fecha:` on the Protocolo de Recepción** — deterministically parsed from the PDF
+  text layer (`digital_text_extractor._parse_date_ddmmyy`, real year included, **NO vision**), linked
+  to the Registro N° — NOT the GRE date. **Correction**: the Protocolo `Fecha:` is printed (Forma),
+  **not handwritten**; the prior "handwritten Protocolo, vision-read" premise (#2709) was a
+  misinterpretation — **handwritten dates exist ONLY on the guías** (stamp + signature). The Protocolo
+  date is the **upper authority (límite máximo)**: every guía in that Registro **should carry that same
+  date**. A guía whose **handwritten** (vision-read) date **diverges** — **earlier OR later**, compared
+  by **day-month**; year is vision-unreliable and reconstructed by bounded inference — is an **assembly
+  error** (whoever built the Protocolo misfiled the guía) → non-blocking **WARNING** that flags the guía
+  `requires_review` with its **page number** and a **red highlight** (individual or per-registro group)
+  so the operator can **report it or reassign the guía to the correct Registro**. Never auto-corrected.
+  The divergence review logic is unchanged — only the **declared-side source** is digital, not vision.
 - **Reception-date floor = guía SUNAT delivery date** (rev-3 R9b, MUST): a resolved reception date
   can **NEVER be earlier than that guía's `fecha_entrega`** (SUNAT GRE delivery) — goods cannot be
   received before they are delivered. If the resolved date falls before `fecha_entrega` (or cannot

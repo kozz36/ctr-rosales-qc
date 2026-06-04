@@ -103,9 +103,8 @@ flowchart TD
     G[Stage 5c: _stage_sunat_fetch\nopt-in SUNAT descargaqr — OFF by default air-gap\nbounded concurrency fetch_many] --> H
     H[Stage 6: _stage_extract_vision\nhandwritten guia dates via VisionLLMPort\nper-call wall-clock deadline] --> I
     I[Stage 7a: _stage_normalize_dates\nbounded year inference — day/month trusted\nvision year NEVER trusted directly] --> J
-    J["Stage 7b: _stage_normalize — R8\nMaterialKeyNormalizer: det-regex -> CanonicalKey\nMaterialKeyResolver: det-first, opt-in LLM fallback, cache\nGrouping key: (registro, material_canonical, unidad)\nfecha is NOT a grouping axis"] --> K
+    J["Stage 7b: _stage_normalize — R8\nMaterialKeyNormalizer: det-regex -> CanonicalKey\nMaterialKeyResolver: det-first, opt-in LLM fallback, cache\nGrouping key: (registro, material_canonical, unidad)\nfecha is NOT a grouping axis"] --> L
 
-    K[Stage 7c: _stage_extract_declared_date\nhandwritten Protocolo Fecha via VisionLLMPort\nR9 authority — shared cap with guia stage W2-A] --> L
     L["Stage 8: _stage_reconcile\nper-unit EXACT-0 sum -> MATCH / MISMATCH\nworst-wins match_method: unresolved > llm_inferred > deterministic\ncheck_fecha_divergence: day-month strict, year excluded\ndiverges -> requires_review WARNING + page ref + red highlight"] --> M
 
     M[Stage 9: _stage_persist\nsidecar JSON + vision audit record] --> N
@@ -202,11 +201,11 @@ frontend/src/
 
 ### R9 — Reception-date authority and fecha-divergence
 
-- The **authoritative declared reception date** is the **handwritten `Fecha:` on the
-  Protocolo de Recepcion** page, read via `VisionLLMPort.read_handwritten_date`, linked
-  to the Registro N°.
-- **`_stage_extract_declared_date`** reads this stamp using the same `VisionLLMPort`
-  instance and the same shared cost cap as the guia date stage (W2-A: no double-counting).
+- The **authoritative declared reception date** is the **DIGITAL printed `Fecha:` on the
+  Protocolo de Recepcion** page, parsed deterministically by
+  `digital_text_extractor._parse_date_ddmmyy` (**no vision call**), linked to the Registro N°.
+- **Handwritten dates exist only on guías** (stamp+signature, vision-read via
+  `VisionLLMPort.read_handwritten_date`); the Protocolo declared date is never vision-read.
 - **Year reconstruction**: vision year is never trusted directly. `_stage_normalize_dates`
   always reconstructs the year from day/month via bounded inference (`date_inference.py`).
   Declared and guia sides have different lower bounds, so year comparison is excluded from

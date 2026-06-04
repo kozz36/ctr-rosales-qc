@@ -6,7 +6,6 @@ to inject values where needed.
 
 from __future__ import annotations
 
-import os
 import textwrap
 from pathlib import Path
 
@@ -307,25 +306,8 @@ class TestOcrConfig:
 
 
 # ---------------------------------------------------------------------------
-# R10.5: protocolo_crop default, VisionConfig.max_tokens, SunatConfig.cache_dir
+# R10.5: VisionConfig.max_tokens, SunatConfig.cache_dir
 # ---------------------------------------------------------------------------
-
-
-class TestProtocoloCropDefault:
-    def test_protocolo_crop_default_is_non_zero(self) -> None:
-        """R10.9: protocolo_crop default is calibrated (0.60,0.14,1.00,0.22) — non-degenerate.
-        Calibrated to exclude the printed template revision date row.
-        """
-        cfg = AppConfig()
-        assert cfg.vision.protocolo_crop.x0 == pytest.approx(0.60)
-        assert cfg.vision.protocolo_crop.y0 == pytest.approx(0.14)
-        assert cfg.vision.protocolo_crop.x1 == pytest.approx(1.00)
-        assert cfg.vision.protocolo_crop.y1 == pytest.approx(0.22)
-
-    def test_protocolo_crop_enabled_is_true(self) -> None:
-        """R10.5: default protocolo_crop box is non-degenerate → enabled=True."""
-        cfg = AppConfig()
-        assert cfg.vision.protocolo_crop.enabled is True
 
 
 class TestVisionMaxTokens:

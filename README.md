@@ -26,7 +26,8 @@ fully local-first. Extraction is tiered and deterministic-first:
 2. **OCR** (PaddleOCR, optional) — printed material/quantity tables; disable with
    `ocr.enabled = false` (NullOcrExtractor — zero PaddleOCR dependency).
 3. **Vision** (provider-agnostic: Anthropic | OpenAI-compatible incl. Ollama via `base_url`) —
-   handwritten Protocolo de Recepción date and guía date stamps.
+   handwritten guía date stamps only. The Protocolo de Recepción `Fecha:` is **not** vision-read;
+   it is parsed deterministically from the digital text layer (no vision).
 
 Reconciliation groups by `(Registro N°, material_canonical, unidad)`. The `fecha` field is
 **not** a grouping axis (R8 domain rule). The trusted digital declared side is the validation
@@ -85,7 +86,7 @@ the PaddleOCR dependency entirely (SUNAT-supplied quantities are used instead).
 |---|---|
 | rev-2: QR identity tier, guía-granularity ReviewService, reassign + line-edit, thumbnail, export | ✅ implemented |
 | R8: canonical material matching (declared↔guía MATCH via canonical key; `fecha` removed from grouping key) | ✅ implemented |
-| R9: reception-date authority (handwritten Protocolo date authoritative; per-guía day-month divergence → non-blocking `requires_review` WARNING + page ref + red highlight; bounded year inference) | ✅ implemented |
+| R9: reception-date authority (digital Protocolo `Fecha:` authoritative — deterministic parse, no vision; per-guía day-month divergence → non-blocking `requires_review` WARNING + page ref + red highlight; bounded year inference applies to the guía side) | ✅ implemented |
 | r10: paddle-free containerized verification (`ocr.enabled` escape hatch, provider-agnostic cloud vision, bounded-concurrency SUNAT) | ✅ implemented |
 | Backend unit/targeted tests | ✅ 886 passing |
 | Frontend vitest | ✅ 188 passing |

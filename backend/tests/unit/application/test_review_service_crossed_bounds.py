@@ -69,7 +69,6 @@ def _registro(numero: str = "232") -> Registro:
     return Registro(
         numero=numero,
         fecha_declarada=_PROTOCOLO_DATE,
-        fecha_declarada_handwritten=_PROTOCOLO_DATE,
         declared_lines=[_line()],
     )
 
@@ -166,7 +165,6 @@ class TestCeilingRecomputesAfterCrossRegistroReassign:
         return Registro(
             numero="232",
             fecha_declarada=self._PROTOCOLO_B,
-            fecha_declarada_handwritten=self._PROTOCOLO_B,
             declared_lines=[_line()],
         )
 

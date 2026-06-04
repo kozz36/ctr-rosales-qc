@@ -490,54 +490,31 @@ class TestVisionCostCap:
         assert len([g for g in result.guias if g.fecha is not None]) == 1
         assert len([g for g in result.guias if g.fecha is None]) == 2
 
-    def test_declared_stage_shares_guia_cap(self, tmp_path: Path) -> None:
-        """W2-A: ``_stage_extract_declared_date`` continues counting against the
-        SHARED ``max_vision_calls`` cap consumed by the guía stage — it does NOT
-        reset to a fresh budget.
+    def test_declared_date_no_vision_stage(self, tmp_path: Path) -> None:
+        """Domain fix (2026-06-03): declared date vision stage has been removed.
 
-        With cap=2 and the guía stage having ALREADY consumed 2 calls, the
-        declared stage (two Protocolo registros) must issue ZERO vision calls.
-        Conversely with calls_already_made=0 it may issue up to the cap.
+        The ``_stage_extract_declared_date`` method no longer exists.  Registros
+        with ``protocolo_page`` set do NOT trigger any VisionLLMPort call for the
+        declared date — their ``fecha_authoritative`` == ``fecha_declarada`` (digital
+        parse, no vision).  The vision cap is fully reserved for guía reads only.
         """
         vision = _CountingVision()
-        cfg = AppConfig()
-        object.__setattr__(cfg.vision, "max_vision_calls", 2)
         pipeline = ReconciliationPipeline(
             doc_source=FakeDocumentSource(
                 [{"image": b"\x89PNG"}, {"image": b"\x89PNG"}]
             ),
             extractor=FakeExtractor(),
             vision=vision,
-            config=cfg,
+            config=AppConfig(),
         )
-        registros = [
-            _make_registro_with_protocolo("100", protocolo_page=0),
-            _make_registro_with_protocolo("101", protocolo_page=1),
-        ]
-
-        # Cap already exhausted by the guía stage → declared stage issues 0 calls.
-        updated, calls = pipeline._stage_extract_declared_date(
-            registros, calls_already_made=2
+        # The method must not exist — confirmed by TestDeclaredDateVisionStageRemoved.
+        assert not hasattr(pipeline, "_stage_extract_declared_date"), (
+            "_stage_extract_declared_date must be removed (declared date is digital)"
         )
+        # Registros with protocolo_page return fecha_declarada directly — no vision.
+        reg = _make_registro_with_protocolo("100", protocolo_page=0)
+        assert reg.fecha_authoritative == reg.fecha_declarada
         assert vision.calls == 0
-        assert calls == 2
-        assert all(r.fecha_declarada_handwritten is None for r in updated)
-
-        # Fresh budget (0 consumed) → declared stage may issue up to the cap (2).
-        vision2 = _CountingVision()
-        pipeline2 = ReconciliationPipeline(
-            doc_source=FakeDocumentSource(
-                [{"image": b"\x89PNG"}, {"image": b"\x89PNG"}]
-            ),
-            extractor=FakeExtractor(),
-            vision=vision2,
-            config=cfg,
-        )
-        _updated2, calls2 = pipeline2._stage_extract_declared_date(
-            registros, calls_already_made=0
-        )
-        assert vision2.calls == 2
-        assert calls2 == 2
 
     def test_no_guia_pages_no_vision_calls(self, tmp_path: Path) -> None:
         """Pipeline with only DECLARED pages must not call vision at all."""
@@ -591,6 +568,77 @@ class TestVisionAuditRecord:
         # Both keys must be present
         assert "edits" in sidecar, "edits key lost after vision audit write"
         assert "vision_audit" in sidecar
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: declared-date missing guard (2026-06-03 domain fix)
+# ---------------------------------------------------------------------------
+
+
+class TestDeclaredDateMissingGuard:
+    """When a Registro has protocolo_page set but fecha_declarada is None
+    (digital parse failed), the pipeline MUST emit a WARNING in PipelineResult.warnings.
+    No vision call; no new field; deterministic.
+    """
+
+    def test_registro_with_protocolo_page_and_no_fecha_declarada_emits_warning(
+        self, tmp_path: Path
+    ) -> None:
+        """EXPECTED TO FAIL before guard is implemented.
+
+        A Registro with protocolo_page != None but fecha_declarada == None means
+        the Protocolo page was found but the digital parse yielded no date.
+        The pipeline must surface a human-readable WARNING in result.warnings.
+        """
+        # Use a FakeExtractor that returns a Registro with protocolo_page set
+        # but fecha_declarada=None (simulating a failed digital parse).
+        class _ExtractorWithFailedParse:
+            """Exposes Registro-level API so the rich path is taken in _stage_extract_declared."""
+            _ocr_failed: bool = False
+
+            def extract_declared(self, text: str) -> list:
+                return []
+
+            def extract_printed_table(self, image: bytes) -> list:
+                return []
+
+            def extract_registro_from_proto_page(
+                self, text: str, page: int
+            ) -> Registro | None:
+                # Return a Registro without a fecha (digital parse failed).
+                return Registro(
+                    numero="232",
+                    fecha_declarada=None,
+                    declared_lines=[],
+                    protocolo_page=page,
+                )
+
+            def extract_registro_from_detail_page(
+                self, text: str, page: int
+            ) -> Registro | None:
+                return None
+
+        from reconciliation.application.config import AppConfig
+        from reconciliation.application.pipeline import ReconciliationPipeline
+        from reconciliation.application.run_context import RunContext
+
+        pages = [{"text": "PTR001-TORRE ROSALES\nInforme de detalle del formulario\nPROTOCOLO DE RECEPCION\nRegistro N°:\n232"}]
+        doc = FakeDocumentSource(pages)
+        pipeline = ReconciliationPipeline(
+            doc_source=doc,
+            extractor=_ExtractorWithFailedParse(),
+            vision=FakeVisionSerial(),
+            config=AppConfig(),
+        )
+        ctx = RunContext(pdf_path=tmp_path / "input.pdf", output_base=tmp_path / "runs")
+        result = pipeline.run(ctx)
+
+        # The guard must emit at least one warning mentioning the missing date.
+        matching = [w for w in result.warnings if "232" in w and "fecha" in w.lower()]
+        assert matching, (
+            f"Expected a WARNING for Registro 232 with protocolo_page set but "
+            f"fecha_declarada=None. Got warnings: {result.warnings}"
+        )
 
 
 # ---------------------------------------------------------------------------

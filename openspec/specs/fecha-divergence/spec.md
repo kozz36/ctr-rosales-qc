@@ -11,10 +11,13 @@
 Restore the misfiled-guía detection signal that Slice 1 (`r8-material-matching` / MAT-001)
 left unhandled by removing `fecha` from the grouping key. This spec mandates:
 
-1. The authoritative declared reception date for a Registro N° is the HANDWRITTEN "Fecha:"
-   on the Protocolo de Recepción sheet (vision-read), NOT the electronic `fecha_declarada`.
+1. The authoritative declared reception date for a Registro N° is the **DIGITAL `Fecha:`**
+   on the Protocolo de Recepción sheet (deterministic parse, no vision call).
+   **Domain-correctness correction (2026-06-03)**: the original spec stated "HANDWRITTEN,
+   vision-read" — the domain authority confirmed with real PDF evidence that the Protocolo
+   `Fecha:` is DIGITAL/printed. FDR-001 and FDR-002 are updated accordingly.
 2. A per-guía fecha-divergence check (pure domain) comparing each guía's handwritten date
-   against the registro's handwritten declared date.
+   against the registro's digital declared date (`fecha_declarada`).
 3. Non-blocking WARNING emission on divergence, carrying the guía page number, flagging
    `requires_review`, driving a RED highlight in the frontend.
 
@@ -30,68 +33,71 @@ Requirements below ADD or MODIFY behaviour within that base. Each entry is marke
 
 ## Requirements
 
-### FDR-001 — [ADDED] Declared reception date authority: handwritten Protocolo date
+### FDR-001 — [MODIFIED 2026-06-03] Declared reception date authority: DIGITAL Protocolo date
 
-The authoritative declared reception date for a Registro N° MUST be the HANDWRITTEN
-"Fecha:" field on the **Protocolo de Recepción** sheet, vision-read via the existing
-`VisionLLMPort`.
+**Correction**: the original FDR-001 stated the authority was the HANDWRITTEN "Fecha:"
+vision-read via `VisionLLMPort`. The domain authority confirmed with real PDF evidence
+that the Protocolo `Fecha:` is a **DIGITAL/printed** field from Forma — not handwritten.
 
-The existing electronic `fecha_declarada` field (parsed from digital text) MUST NOT be
-used as the declared date for divergence comparison or for any display that represents the
-authoritative reception event. The electronic value MAY be retained for provenance/audit
-purposes but MUST NOT be the comparison baseline.
+The authoritative declared reception date for a Registro N° MUST be the **DIGITAL `Fecha:`
+field** on the **Protocolo de Recepción** sheet, parsed deterministically by
+`digital_text_extractor.py` (`_PROTO_REG_RE` + `_parse_date_ddmmyy`). This parse yields the
+real year. **No `VisionLLMPort` call is made for the declared date.**
 
-One handwritten declared date MUST be extracted per Registro N°. The existing `VisionLLMPort`
-MUST be reused for this extraction — no new port is introduced. The crop target is the
-"Fecha:" field area on the Protocolo page (stamp/field-crop strategy, with a full-page
-fallback) using the same handwritten-date read operation already applied to guía pages.
+`Registro.fecha_declarada` carries this parsed date.
+`Registro.fecha_authoritative` returns `self.fecha_declarada` directly (no handwritten
+override field exists — `fecha_declarada_handwritten`, `fecha_declarada_confidence`, and
+`fecha_declarada_year_inferred` have been removed).
+
+If `digital_text_extractor.py` yields `None` for `fecha_declarada` on a Registro that has
+a `protocolo_page` set, the pipeline emits a WARNING in `PipelineResult.warnings` so the
+operator can inspect the source PDF. No auto-correction, no vision fallback.
 
 #### Acceptance Scenarios
 
-**Scenario FDR-S01 — Registro 232: Protocolo declared date reads 2026-05-28**
+**Scenario FDR-S01 — Registro 232: Protocolo declared date from digital parse**
 
-Given the Protocolo de Recepción page for Registro 232 contains handwritten text "Fecha: 28-05-26"
-When `VisionLLMPort` is called against that page with the Protocolo field-crop
-Then the extracted raw date is `day=28, month=05, year=26` (or equivalent day/month signal)
-And after bounded year inference the resolved declared date is `2026-05-28`
-And `Registro.fecha_declarada_handwritten` (or equivalent field) is set to `2026-05-28`
-And the electronic `fecha_declarada` is NOT used as the declared baseline
+Given the Protocolo de Recepción page for Registro 232 contains printed text "Fecha: 28-05-26"
+When `digital_text_extractor.py` parses that page
+Then `Registro.fecha_declarada` is set to `date(2026, 5, 28)` (deterministic parse, real year)
+And `Registro.fecha_authoritative == Registro.fecha_declarada == date(2026, 5, 28)`
+And NO `VisionLLMPort` call is made for the declared date
 
-**Scenario FDR-S02 — Declared date source is Protocolo page, not guía pages**
+**Scenario FDR-S02 — Declared date source is digital Protocolo parse, not vision**
 
 Given a Registro N° whose Protocolo page and guía pages are both present in the run
 When the pipeline reads the declared reception date
-Then the declared date originates from the Protocolo page read
-And the guía page reads are NOT used to set the declared date
-And the two extraction paths (declared vs guía) operate independently
+Then the declared date comes from the digital text parse of the Protocolo page
+And the guía vision reads are NOT used to set the declared date
+And the vision budget is reserved entirely for guía stamp-date reads
 
 ---
 
-### FDR-002 — [ADDED] Declared date year inference: same bounds as guías
+### FDR-002 — [MODIFIED 2026-06-03] Declared date year: exact from digital parse; guías use bounded inference
 
-The handwritten year on the Protocolo page MUST be treated as unreliable (see discovery
-#2753: vision year may read as 2016 or 2022 instead of 2026). Day and month from vision
-are the trusted signals.
+**Correction**: the original FDR-002 required year inference for the declared side because
+the vision-read year was unreliable. After the FDR-001 correction, the declared date comes
+from the DIGITAL parse (`_parse_date_ddmmyy`) which extracts the real year directly
+(e.g. `"28-05-26"` → `date(2026, 5, 28)`). No year inference is needed on the declared side.
 
-The declared date MUST be reconstructed via the existing bounded `infer_reception_year`
-function, with the same bounding parameters applied to guía dates. The declared date and
-guía dates MUST go through year inference with consistent bounds so the same physical
-calendar date does not reconstruct to different years on each side.
+Year inference (`infer_reception_year`) applies ONLY to the guía side (vision-read stamp
+dates where the year is unreliable). The declared date year is treated as exact.
 
-If year inference is applied to guía dates using a SUNAT `fecha_entrega` as a lower bound,
-that lower bound MUST NOT be applied exclusively to one side — either it applies to both or
-neither, so the reconstructed years remain comparable.
+The divergence check compares guía day-month (after year inference) against declared day-month
+(from the digital parse year). Since the declared year is exact, a guía with the same
+day-month but a different vision-reconstructed year MUST NOT be flagged as divergent
+(year-only difference is a `year_ambiguity` per FDR-003 — unchanged).
 
 #### Acceptance Scenario
 
-**Scenario FDR-S03 — Declared and guía year inference use the same bounds**
+**Scenario FDR-S03 — Declared year is exact; guía year uses bounded inference; same day-month → no divergence**
 
-Given a Protocolo handwritten date `28-05-26` (day 28, month 05, year 26)
-And a guía handwritten date `28-05-26` on a guía belonging to that Registro
-And no SUNAT lower-bound information is available for either side
-When year inference runs on both
-Then both resolve to `2026-05-28`
-And the divergence check produces no divergence (same reconstructed date)
+Given a Protocolo DIGITAL date parsed as `date(2026, 5, 28)` (exact)
+And a guía handwritten date `28-05-26` (vision-read: day 28, month 05, year 26)
+And no SUNAT lower-bound information is available
+When year inference runs on the guía side (infers `2026-05-28`)
+Then the divergence check compares day=28, month=05 (guía) against day=28, month=05 (declared)
+And divergence = False (day and month match)
 And no false-positive WARNING is emitted for this guía
 
 ---
@@ -197,26 +203,33 @@ And the MATCH status is NOT changed to MISMATCH or any other status due to fecha
 
 ---
 
-### FDR-005 — [ADDED] Null declared date: registro-level review flag, no guía warnings
+### FDR-005 — [MODIFIED 2026-06-03] Null declared date: pipeline WARNING, no guía divergence warnings
 
-When vision extraction of the Protocolo handwritten date returns null (no "Fecha:" field
-found, unreadable, or extraction confidence is zero), `ReconciliationService` MUST:
+**Correction**: the original FDR-005 stated the null case came from vision extraction returning
+null. After the FDR-001 correction, the declared date is the digital parse (`fecha_declarada`).
+A null declared date means the digital parser found no "Fecha:" field on the Protocolo page.
 
-- Flag the **Registro** `requires_review = True` with `review_reason` including
-  `"declared_date_missing"`.
-- MUST NOT emit per-guía fecha-divergence WARNINGs against a null declared baseline.
-  A null baseline means "cannot validate", NOT "all guías diverge".
+When `fecha_declarada` is `None` on a Registro that has a `protocolo_page` set:
+- The pipeline (Stage 4b guard) MUST emit a WARNING in `PipelineResult.warnings` with the
+  Registro numero and page index (operator locates and corrects the source PDF).
+- `ReconciliationService` MUST NOT emit per-guía fecha-divergence WARNINGs against a null
+  declared baseline. A null baseline means "cannot validate", NOT "all guías diverge".
 - The material MATCH/MISMATCH statuses for all groups under that Registro MUST be unaffected.
+
+`requires_review` propagation to individual guías is NOT required by this fix (existing
+model/flow does not support it cleanly); the pipeline-level WARNING is sufficient for operator
+visibility (SA-2: no build-for-the-sake-of-building).
 
 #### Acceptance Scenario
 
-**Scenario FDR-S10 — Null declared date: registro flagged, no guía divergence WARNINGs**
+**Scenario FDR-S10 — Null declared date: pipeline WARNING, no guía divergence WARNINGs**
 
-Given a Registro N° where VisionLLMPort returns no date for the Protocolo page (null)
+Given a Registro N° where `digital_text_extractor.py` yields `fecha_declarada = None`
+And that Registro has `protocolo_page` set (Protocolo page found in the PDF)
 And that Registro has three contributing guías with handwritten dates
-When `ReconciliationService` runs
-Then the Registro is flagged `requires_review = True` with reason `"declared_date_missing"`
-And NO fecha-divergence WARNING is emitted for any of the three guías
+When the pipeline runs
+Then a WARNING appears in `PipelineResult.warnings` identifying the Registro by numero and page
+And `ReconciliationService.reconcile` does NOT emit per-guía fecha-divergence WARNINGs
 And all material MATCH/MISMATCH outcomes for those guías are unaffected
 
 ---
@@ -243,42 +256,37 @@ And no RED highlight from fecha-divergence is shown for this guía in the fronte
 
 ---
 
-### FDR-007 — [ADDED] Low-confidence Protocolo date read: registro review flag
+### FDR-007 — [SUPERSEDED 2026-06-03] Low-confidence Protocolo date read — no longer applicable
 
-When `VisionLLMPort` returns a date for the Protocolo page but with confidence below
-**0.85**, the declared date MUST NOT be used as the authoritative divergence baseline.
-Instead the system MUST:
+**Status**: superseded by FDR-001 correction (2026-06-03).
 
-- Flag the **Registro** `requires_review = True` with `review_reason` including
-  `"declared_date_low_confidence"`.
-- MUST NOT emit per-guía fecha-divergence WARNINGs based on a low-confidence declared date.
-  The low-confidence case is treated identically to the null case (FDR-005) for the purpose
-  of divergence emission.
-- The low-confidence date value MAY be stored as a `fecha_declarada_tentative` field for
-  display in the review UI (read-only, labelled as unconfirmed), but MUST NOT be the
-  comparison baseline.
+The original FDR-007 handled the case where `VisionLLMPort` returned a low-confidence date
+for the Protocolo vision read. Since FDR-001 now mandates a DIGITAL parse (no vision call on
+the declared side), the concept of "low-confidence declared date" no longer applies.
 
-This requirement prevents the "all guías falsely diverge" failure mode where a vision
-misread of the Protocolo date causes every guía to appear misfiled.
+The digital parse (`digital_text_extractor.py`) is deterministic: it either extracts a date
+or returns `None`. The `None` case is handled by FDR-005 (pipeline WARNING).
+
+**Confidence gate on guía dates** (unchanged): the 0.85 confidence threshold still applies to
+the guía-side `VisionLLMPort` calls (`_stage_extract_vision`). A low-confidence guía date read
+results in `fecha = None` on the guía, which is then handled by FDR-006 (null guía date →
+not divergent). This guía-side confidence gate is not modified by this correction.
 
 #### Acceptance Scenarios
 
-**Scenario FDR-S12 — Low-confidence declared date: registro flagged, no guía WARNINGs**
+**Scenario FDR-S12 — Digital declared date: no confidence gate; parse is deterministic**
 
-Given a Registro N° where VisionLLMPort returns a date with confidence = 0.72 (below 0.85)
-And that Registro has two contributing guías with handwritten dates
+Given a Protocolo page with printed "Fecha: 28-05-26"
+When `digital_text_extractor.py` parses the date
+Then `fecha_declarada = date(2026, 5, 28)` with certainty (no confidence score)
+And the divergence check uses `date(2026, 5, 28)` as the declared baseline
+
+**Scenario FDR-S13 — Declared date present; guía date matches: no WARNING**
+
+Given `fecha_declarada = date(2026, 5, 28)` on the Registro
+And a guía with handwritten day=28, month=05
 When `ReconciliationService` runs
-Then the Registro is flagged `requires_review = True` with reason `"declared_date_low_confidence"`
-And NO fecha-divergence WARNING is emitted for either guía
-And all material MATCH/MISMATCH outcomes are unaffected
-
-**Scenario FDR-S13 — High-confidence declared date: divergence check proceeds normally**
-
-Given a Registro N° where VisionLLMPort returns a date with confidence = 0.92 (above 0.85)
-And a guía with day-month matching the declared date
-When `ReconciliationService` runs
-Then no `declared_date_low_confidence` flag is set on the Registro
-And the divergence check runs normally
+Then the divergence check returns False (same day-month)
 And no false WARNING is emitted for the matching guía
 
 ---
@@ -375,14 +383,15 @@ or infrastructure module.
 The divergence check reads from already-extracted date fields on `Registro` and
 `GuiaDeRemision` domain objects — it does not perform any I/O or vision call itself.
 
-No new `Port` (Protocol) is introduced for the divergence check. The existing `VisionLLMPort`
-is the sole new I/O surface (used for Protocolo date extraction only, covered by FDR-001).
+No new `Port` (Protocol) is introduced for the divergence check. After FDR-001 correction
+(2026-06-03), no `VisionLLMPort` call is made for the declared date — `VisionLLMPort` is
+used ONLY for guía stamp dates (`_stage_extract_vision`).
 
 #### Acceptance Scenario
 
 **Scenario FDR-S18 — Divergence check: no I/O, independently unit-testable**
 
-Given `Registro` with `fecha_handwritten = date(2026, 5, 28)` (or day/month equivalent)
+Given `Registro` with `fecha_declarada = date(2026, 5, 28)` (digital parse)
 And three `GuiaDeRemision` objects with dates: matching, diverging, and null
 When the divergence check function is called with these objects directly (no mocks of HTTP/IO)
 Then the function returns: no warning for the matching guía, a WARNING for the diverging guía,
@@ -544,10 +553,10 @@ And divergence check may run against the floored date per the standard FDR-003 p
 
 ### FDR-014 — [ADDED] Reception date ceiling: Protocolo authoritative date as physical upper bound
 
-When a Registro's authoritative declared reception date (`fecha_authoritative`, the
-handwritten Protocolo date, vision-read per FDR-001) is available and meets the confidence
-threshold (FDR-007), each guía's resolved reception date MUST satisfy the physical invariant:
-**reception date <= Protocolo authoritative date**.
+When a Registro's authoritative declared reception date (`fecha_authoritative`, the DIGITAL
+Protocolo date from `fecha_declarada` per FDR-001 as corrected 2026-06-03) is available
+(i.e. `fecha_declarada is not None`), each guía's resolved reception date MUST satisfy the
+physical invariant: **reception date <= Protocolo authoritative date**.
 
 The domain service (`ReconciliationService.reconcile`) MUST apply the ceiling function
 (`domain/date_ceiling.apply_reception_ceiling`) to each guía's resolved date AFTER the
@@ -574,7 +583,7 @@ When `ceiling_applied = True`, the domain service MUST:
 The material MATCH/MISMATCH status for the group MUST NOT change because of the ceiling.
 The ceiling MUST NOT auto-correct quantities, keys, or declared values.
 
-When the Protocolo ceiling is unavailable (null or low-confidence per FDR-005/FDR-007),
+When the Protocolo ceiling is unavailable (`fecha_declarada = None` per FDR-005),
 the ceiling is a provable no-op (Rule 1 passthrough) and the run is byte-identical to the
 R9b baseline.
 
@@ -582,7 +591,7 @@ R9b baseline.
 
 **Scenario FDR-S24 — Protocolo ceiling absent: ceiling is a no-op**
 
-Given the Registro N° has no readable Protocolo date (null or low-confidence)
+Given the Registro N° has `fecha_declarada = None` (digital parse found no date)
 And a guía with resolved reception date `2026-05-28`
 When `apply_reception_ceiling(reception=date(2026,5,28), protocolo_ceiling=None, fecha_entrega=...)` is called
 Then Rule 1 passthrough applies

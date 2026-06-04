@@ -56,13 +56,11 @@ def _registro(
     numero: str,
     fecha: date | None,
     lines: list[MaterialLine],
-    handwritten: date | None = None,
 ) -> Registro:
     return Registro(
         numero=numero,
         fecha_declarada=fecha,
         declared_lines=lines,
-        fecha_declarada_handwritten=handwritten,
     )
 
 
@@ -592,9 +590,9 @@ class TestR9DivergenceWiring:
     def test_match_same_day_month_no_divergence(self, svc: ReconciliationService) -> None:
         """FDR-S08/S09: matching dates → no divergence, status MATCH unchanged."""
         declared = [
-            _registro("232", date(2026, 5, 20), [
+            _registro("232", date(2026, 5, 28), [
                 _line("barra a615 1/2", "KG", "1000.00"),
-            ], handwritten=date(2026, 5, 28))
+            ])
         ]
         guias = [
             _guia("T001-0001", "232", date(2026, 5, 28), [
@@ -607,7 +605,7 @@ class TestR9DivergenceWiring:
         assert row.guias[0].fecha_divergence is False
         assert row.guias[0].divergence_reason is None
         assert row.has_fecha_divergence is False
-        # Display fecha sourced from fecha_authoritative (handwritten wins).
+        # Display fecha sourced from fecha_authoritative (digital declarada).
         assert row.fecha == date(2026, 5, 28)
 
     def test_divergent_day_month_flags_guia_status_unchanged(
@@ -617,7 +615,7 @@ class TestR9DivergenceWiring:
         declared = [
             _registro("232", date(2026, 5, 28), [
                 _line("barra a615 1/2", "KG", "1000.00"),
-            ], handwritten=date(2026, 5, 28))
+            ])
         ]
         guias = [
             _guia("T001-0001", "232", date(2026, 4, 15), [
@@ -637,7 +635,7 @@ class TestR9DivergenceWiring:
         declared = [
             _registro("232", date(2026, 5, 28), [
                 _line("barra a615 1/2", "KG", "1000.00"),
-            ], handwritten=date(2026, 5, 28))
+            ])
         ]
         guias = [
             _guia("T001-0001", "232", date(2026, 4, 15), [
@@ -654,7 +652,7 @@ class TestR9DivergenceWiring:
         declared = [
             _registro("232", None, [
                 _line("barra a615 1/2", "KG", "1000.00"),
-            ], handwritten=None)
+            ])
         ]
         guias = [
             _guia("T001-0001", "232", date(2026, 4, 15), [
@@ -670,7 +668,7 @@ class TestR9DivergenceWiring:
         declared = [
             _registro("232", date(2026, 5, 28), [
                 _line("barra a615 1/2", "KG", "1000.00"),
-            ], handwritten=date(2026, 5, 28))
+            ])
         ]
         guias = [
             _guia("T001-0001", "232", None, [
@@ -685,7 +683,7 @@ class TestR9DivergenceWiring:
         declared = [
             _registro("232", date(2026, 5, 28), [
                 _line("barra a615 1/2", "KG", "1000.00"),
-            ], handwritten=date(2026, 5, 28))
+            ])
         ]
         guias = [
             _guia("T001-0001", "232", date(2025, 5, 28), [
@@ -703,7 +701,7 @@ class TestR9DivergenceWiring:
         declared = [
             _registro("232", date(2026, 5, 28), [
                 _line("barra a615 1/2", "KG", "1000.00"),
-            ], handwritten=date(2026, 5, 28))
+            ])
         ]
         guias = [
             _guia("T001-0001", "232", date(2026, 4, 15), [
@@ -721,7 +719,7 @@ class TestR9DivergenceWiring:
         declared = [
             _registro("232", date(2026, 5, 28), [
                 _line("barra a615 1/2", "KG", "2000.00"),
-            ], handwritten=date(2026, 5, 28))
+            ])
         ]
         guias = [
             _guia("T001-0001", "232", date(2026, 5, 28), [
@@ -738,11 +736,11 @@ class TestR9DivergenceWiring:
         assert rows[0].has_fecha_divergence is True
 
     def test_display_fecha_uses_authoritative(self, svc: ReconciliationService) -> None:
-        """ADR-2: declared-bearing group display fecha is fecha_authoritative."""
+        """Digital declared date is the authoritative reception date."""
         declared = [
-            _registro("232", date(2026, 5, 20), [
+            _registro("232", date(2026, 5, 28), [
                 _line("barra a615 1/2", "KG", "1000.00"),
-            ], handwritten=date(2026, 5, 28))
+            ])
         ]
         guias = [
             _guia("T001-0001", "232", date(2026, 5, 28), [
@@ -750,7 +748,7 @@ class TestR9DivergenceWiring:
             ], pages=[10]),
         ]
         rows = svc.reconcile(declared, guias)
-        # handwritten (28th) wins over electronic (20th)
+        # fecha_authoritative == fecha_declarada (digital parse is the authority).
         assert rows[0].fecha == date(2026, 5, 28)
 
 

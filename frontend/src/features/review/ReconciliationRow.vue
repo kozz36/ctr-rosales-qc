@@ -114,12 +114,6 @@
         @page-click="emit('pageClick', $event)"
       />
     </td>
-
-    <!-- Actions column -->
-    <td class="recon-row__cell recon-row__cell--actions">
-      <!-- Row-level reassign button kept for backward compat with parent; drill-down
-           now also emits per-guía reassign events. -->
-    </td>
   </tr>
 
   <!-- Drill-down row (conditionally rendered when expanded) -->
@@ -363,8 +357,11 @@ const rowClass = computed(() => ({
   padding: var(--space-1) var(--space-2);
 }
 
+/* FIX #23: the Material column now flexes (width:auto) to absorb table slack, so the
+   cell no longer caps at a fixed max-width. It keeps single-line ellipsis truncation
+   for overly long descriptions, but uses the full (wider) column budget first. */
 .recon-row__cell--material {
-  max-width: 240px;
+  max-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -450,12 +447,6 @@ const rowClass = computed(() => ({
 
 .recon-row__status-icon {
   font-size: 0.65rem;
-}
-
-/* Actions column */
-.recon-row__cell--actions {
-  width: 40px;
-  padding: var(--space-1) var(--space-2);
 }
 
 /* Flagging badges (REV-004: icon + label, not color-only) */

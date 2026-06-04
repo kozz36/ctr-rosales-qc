@@ -94,16 +94,13 @@
               </button>
               <span v-else>{{ col.label }}</span>
             </th>
-            <th class="review-grid__th review-grid__th--actions" scope="col">
-              <span class="sr-only">Acciones</span>
-            </th>
           </tr>
         </thead>
         <tbody class="review-grid__tbody">
           <template v-for="group in groupedRows" :key="group.key">
             <!-- Group header: Registro + Fecha -->
             <tr class="review-grid__group-header" :aria-label="`Grupo: Registro ${group.registro}, Fecha ${group.fecha ?? 'sin fecha'}`">
-              <td colspan="12" class="review-grid__group-cell">
+              <td colspan="11" class="review-grid__group-cell">
                 <button
                   class="review-grid__group-toggle"
                   :aria-expanded="!collapsedGroups.has(group.key)"
@@ -535,10 +532,15 @@ function onEdit(rowId: string, guiaId: string, value: string): void {
   min-width: 960px;
 }
 
-/* Column widths */
+/* Column widths.
+ * FIX #23: numeric/compact columns keep fixed widths; the two naturally-wide text
+ * columns (Material, Páginas origen) use width:auto so — under table-layout:fixed —
+ * they absorb all leftover horizontal slack and the table fills 100% of its
+ * container (no empty right band). min-width keeps them from collapsing on narrow
+ * viewports, where the table-wrap still scrolls. */
 .review-grid__th--registro   { width: 90px; }
 .review-grid__th--fecha      { width: 100px; }
-.review-grid__th--material   { width: 220px; }
+.review-grid__th--material   { width: auto; min-width: 220px; }
 .review-grid__th--unidad     { width: 70px; }
 .review-grid__th--declarado  { width: 100px; }
 .review-grid__th--sumado     { width: 110px; }
@@ -546,8 +548,7 @@ function onEdit(rowId: string, guiaId: string, value: string): void {
 .review-grid__th--estado     { width: 120px; }
 /* FIX #13: widened from 110px to 160px to accommodate up to 4 wrapping badges */
 .review-grid__th--confianza  { width: 160px; }
-.review-grid__th--paginas    { width: 130px; }
-.review-grid__th--actions    { width: 44px; }
+.review-grid__th--paginas    { width: auto; min-width: 130px; }
 
 .review-grid__thead {
   position: sticky;

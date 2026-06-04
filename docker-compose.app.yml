@@ -40,7 +40,10 @@ services:
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/runs/',timeout=5).status<500 else 1)"]
+      # TCP liveness — the port accepting connections means uvicorn is up. (An
+      # HTTP probe on a collection route returns 405/redirect and would falsely
+      # read as unhealthy; a dedicated /health endpoint is a deferred follow-up.)
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.create_connection(('localhost',8000),timeout=5); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 3

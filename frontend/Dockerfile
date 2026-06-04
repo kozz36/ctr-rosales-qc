@@ -14,5 +14,7 @@ FROM nginx:alpine AS runtime
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80
+# Use 127.0.0.1, not localhost: BusyBox wget resolves localhost to ::1 (IPv6) but
+# nginx listens on IPv4 only, so the localhost probe would falsely read unhealthy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost/ >/dev/null 2>&1 || exit 1
+  CMD wget -q -O /dev/null http://127.0.0.1/ || exit 1

@@ -124,6 +124,13 @@ class VisionConfig(BaseSettings):
     # phase. Override per-machine with RECONCILIATION__VISION__DISABLE_THINKING=false.
     # Env: RECONCILIATION__VISION__DISABLE_THINKING
     disable_thinking: bool = Field(default=True)
+    # Vision-off / SUNAT-authoritative date mode.
+    # When False, ALL vision LLM calls are suppressed (zero LLM calls).
+    # Guía dates fall back to SUNAT fecha_entrega via the existing R9b Rule-2
+    # delivery floor (apply_delivery_floor(None, fecha_entrega)).
+    # Requires sunat.enabled=True — validated at AppConfig level.
+    # Env: RECONCILIATION__VISION__ENABLED
+    enabled: bool = Field(default=True)
 
     @model_validator(mode="after")
     def _inject_env_api_keys(self) -> VisionConfig:
@@ -282,6 +289,22 @@ class AppConfig(BaseSettings):
 
     # Base directory under which per-run directories are created.
     output_dir: Path = Field(default=Path("runs"))
+
+    @model_validator(mode="after")
+    def _validate_date_source(self) -> AppConfig:
+        """Reject vision-off with SUNAT off: no date source available.
+
+        make-invalid-states-unrepresentable: when vision.enabled=False the only
+        remaining date source is SUNAT fecha_entrega.  If sunat.enabled is also
+        False the pipeline has no way to assign reception dates to guías — this
+        configuration must be rejected at construction time with a clear message.
+        """
+        if not self.vision.enabled and not self.sunat.enabled:
+            raise ValueError(
+                "vision-off mode (vision.enabled=false) requires SUNAT enabled "
+                "(sunat.enabled=true) — otherwise there is no reception-date source."
+            )
+        return self
 
     @classmethod
     def from_yaml(cls, path: Path | str | None = None) -> AppConfig:

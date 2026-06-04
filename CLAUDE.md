@@ -158,9 +158,16 @@ sidesteps them. Three post-merge follow-ups deferred (see HANDOFF §follow-ups):
 perf lever, determinate progress bar UX, date-read variance verify.
 
 `ocr.enabled=false` is a config escape hatch (NullOcrExtractor → ZERO paddle) for machines
-where the paddle runtime is broken; SUNAT then supplies quantities. Vision can run local
-(Ollama) or cloud (Ollama-cloud `qwen3.5:397b-cloud`, openai-compatible base_url) — config
-only, never a vendor binding. Compose Ollama base_url/model are env-configurable (port 11435).
+where the paddle runtime is broken; SUNAT then supplies quantities. `vision.enabled=false`
+(`RECONCILIATION__VISION__ENABLED=false`) is the symmetric vision escape hatch (NullVisionAdapter
+→ ZERO LLM calls): a deterministic **SUNAT-authoritative date mode** where guía reception dates
+resolve to SUNAT `fecha_entrega` via the existing R9b Rule-2 floor (declared date stays the
+digital Protocolo parse). Deterministic (real ETA) + air-gap-friendly. **Fail-fast invariant**:
+`AppConfig` rejects `vision.enabled=false` + `sunat.enabled=false` (no date source). Caveat:
+`fecha_entrega` is delivery = a lower bound used AS reception — safe because divergence is still
+flagged `requires_review`. Vision can run local (Ollama) or cloud (Ollama-cloud
+`qwen3.5:397b-cloud`, openai-compatible base_url) — config only, never a vendor binding. Compose
+Ollama base_url/model are env-configurable (port 11435).
 
 ## Map
 

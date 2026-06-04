@@ -895,6 +895,64 @@ And OCR/text-extraction stages (PaddleOCR, digital text — including the determ
 
 ---
 
+## Delta — vision-off-mode (2026-06-03): SUNAT-authoritative date mode
+
+> The requirement below ADDS new behaviour relative to EXT-001 through EXT-024 above.
+> Source change: `vision-off-sunat-date-mode`.
+> Gate: strict-TDD — vision-off config + NullVisionAdapter + container wiring + R9b-floor pin tests passing.
+> Marked [ADDED].
+
+### EXT-025 — [ADDED] Vision MAY be fully disabled for a deterministic SUNAT-authoritative date mode
+
+`VisionConfig.enabled` MUST default to `True`. When set to `False` (env
+`RECONCILIATION__VISION__ENABLED=false`, Pydantic-settings env_prefix `RECONCILIATION__`,
+nested delimiter `__`), the composition root (`build_pipeline`) MUST inject a
+`NullVisionAdapter` (Null Object pattern implementing `VisionLLMPort`) INSTEAD of the
+provider-agnostic `build_vision_adapter`, so that **ZERO** LLM/vision calls are made — no SDK
+import, no client initialised. This mirrors the existing `ocr.enabled=false → NullOcrExtractor`
+escape hatch.
+
+In this mode every guía's vision-read date is `None`; the EXISTING R9b Rule-2 delivery floor
+(`apply_delivery_floor(None, fecha_entrega)` in `_stage_normalize_dates`) resolves each guía's
+reception date to its SUNAT `fecha_entrega` and sets `delivery_floor_applied=True`. No new date
+logic is introduced. The declared reception date is UNAFFECTED (already the deterministic
+digital Protocolo parse — no vision). The result is deterministic (enables a real ETA) and
+air-gap-friendly when a SUNAT cache exists.
+
+**Caveat (accepted)**: `fecha_entrega` is the SUNAT delivery date = a LOWER bound used AS the
+reception date (reception ≥ delivery). This is an approximation; it is safe because a guía whose
+date diverges from the Protocolo is still flagged `requires_review`, never auto-corrected.
+
+**Fail-fast invariant (make-invalid-states-unrepresentable)**: `AppConfig` MUST reject
+construction when `vision.enabled=false` AND `sunat.enabled=false` — that combination leaves no
+reception-date source. The validator MUST raise a `ValueError` with a clear message.
+
+#### Acceptance Scenarios
+
+**Scenario EXT-S36 — vision.enabled defaults to True**
+
+Given a default `VisionConfig` (no env override)
+When `VisionConfig.enabled` is read
+Then `enabled = True`
+And the container wires the real provider-agnostic vision adapter
+
+**Scenario EXT-S37 — vision-off injects NullVisionAdapter (zero LLM calls)**
+
+Given `RECONCILIATION__VISION__ENABLED=false` and `sunat.enabled=true`
+When `build_pipeline` constructs the pipeline
+Then a `NullVisionAdapter` is injected in place of the real vision adapter
+And no vision SDK/client is imported or initialised
+And every guía vision-read date is `None`, resolving to SUNAT `fecha_entrega` via the R9b Rule-2
+  delivery floor (`delivery_floor_applied=True`)
+
+**Scenario EXT-S38 — vision-off with SUNAT off is rejected at construction**
+
+Given `vision.enabled=false` AND `sunat.enabled=false`
+When `AppConfig` is instantiated
+Then construction raises `ValueError` (no reception-date source available)
+
+---
+
 ## Out of scope for this domain
 
 - Summation of extracted quantities (handled by the reconciliation domain).

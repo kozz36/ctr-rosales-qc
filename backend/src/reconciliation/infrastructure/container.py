@@ -418,9 +418,23 @@ def build_pipeline(
         page_to_registro = {}
 
     # --- Vision adapter (provider-agnostic factory; lazy SDK load) ---
-    from reconciliation.adapters.vision.factory import build_vision_adapter  # noqa: PLC0415
+    # When vision.enabled=False: bypass build_vision_adapter entirely — no SDK import,
+    # no LLM client initialised.  Inject NullVisionAdapter (Null Object pattern, mirrors
+    # the NullOcrExtractor / ocr.enabled=False branch above).  Guía dates resolve to
+    # SUNAT fecha_entrega via the existing R9b Rule-2 delivery floor in _stage_normalize_dates.
+    if not config.vision.enabled:
+        from reconciliation.adapters.vision.null_vision import NullVisionAdapter  # noqa: PLC0415
 
-    vision = build_vision_adapter(config)
+        vision = NullVisionAdapter()
+        logger.info(
+            "build_pipeline: VISION DISABLED (config.vision.enabled=False) — "
+            "NullVisionAdapter injected; no LLM calls will be made for guía dates; "
+            "dates resolve to SUNAT fecha_entrega via R9b Rule-2 delivery floor"
+        )
+    else:
+        from reconciliation.adapters.vision.factory import build_vision_adapter  # noqa: PLC0415
+
+        vision = build_vision_adapter(config)
 
     # --- Deskew adapter (lazy PaddleOCR; None when ML deps absent at import time) ---
     # When ocr.enabled=False, skip DeskewAdapter entirely — no paddle import whatsoever.

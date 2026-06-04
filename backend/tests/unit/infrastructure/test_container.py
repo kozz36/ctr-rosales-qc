@@ -470,7 +470,7 @@ class TestBuildPipelineResolverWiring:
 # OCR wiring — ocr.enabled flag (broken-paddle / SUNAT-quantities use-case)
 # ---------------------------------------------------------------------------
 
-from reconciliation.application.config import OcrConfig
+from reconciliation.application.config import OcrConfig, SunatConfig
 from reconciliation.adapters.ocr.null_extractor import NullOcrExtractor
 
 
@@ -644,3 +644,83 @@ class TestBuildPipelineSunatCacheDir:
         )
         _, cache_dir = self._build_with_sunat(config, tmp_path)
         assert cache_dir is None
+
+
+# ---------------------------------------------------------------------------
+# Vision wiring — vision.enabled flag (vision-off / SUNAT-authoritative date mode)
+# ---------------------------------------------------------------------------
+
+from reconciliation.application.config import VisionConfig
+from reconciliation.adapters.vision.null_vision import NullVisionAdapter
+
+
+class TestBuildPipelineVisionWiring:
+    """build_pipeline wires NullVisionAdapter when vision.enabled=False."""
+
+    def _patched_build_pipeline_vision_disabled(self, config: AppConfig):
+        """Call build_pipeline with vision.enabled=False.
+
+        Does NOT patch build_vision_adapter — that path must be bypassed entirely
+        when vision.enabled=False (NullVisionAdapter injected instead).
+        Patches only PDF source and identity adapters (no SDK deps needed).
+        """
+        from unittest.mock import MagicMock, patch
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        with patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+        return pipeline
+
+    def _patched_build_pipeline_vision_enabled(self, config: AppConfig):
+        """Call build_pipeline with vision.enabled=True (default)."""
+        from unittest.mock import MagicMock, patch
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        with patch(
+            "reconciliation.infrastructure.container.CompositeExtractionAdapter"
+        ) as mock_composite, patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.vision.factory.build_vision_adapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.ocr.paddle_deskew.DeskewAdapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            mock_composite.return_value._declared_adapter = MagicMock()
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+        return pipeline
+
+    def test_vision_disabled_wires_null_vision_adapter(self) -> None:
+        """When vision.enabled=False, pipeline._vision is NullVisionAdapter."""
+        config = AppConfig(
+            vision=VisionConfig(enabled=False),
+            sunat=SunatConfig(enabled=True),
+        )
+        pipeline = self._patched_build_pipeline_vision_disabled(config)
+        assert isinstance(pipeline._vision, NullVisionAdapter)
+
+    def test_vision_enabled_wires_real_adapter(self) -> None:
+        """Default config (vision.enabled=True) does NOT inject NullVisionAdapter."""
+        config = AppConfig()
+        assert config.vision.enabled is True
+        pipeline = self._patched_build_pipeline_vision_enabled(config)
+        assert not isinstance(pipeline._vision, NullVisionAdapter)

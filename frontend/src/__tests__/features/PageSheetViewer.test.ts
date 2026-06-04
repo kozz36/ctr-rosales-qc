@@ -87,6 +87,47 @@ describe('PageSheetViewer', () => {
     expect(wrapper.emitted('update:modelValue')).toBeTruthy()
   })
 
+  // ---------------------------------------------------------------------------
+  // Zoom + rotate controls
+  // ---------------------------------------------------------------------------
+
+  it('renders zoom-in, zoom-out and rotate buttons', () => {
+    mountOpen()
+    expect(document.querySelector('.page-viewer__tool--zoom-in')).not.toBeNull()
+    expect(document.querySelector('.page-viewer__tool--zoom-out')).not.toBeNull()
+    expect(document.querySelector('.page-viewer__tool--rotate')).not.toBeNull()
+  })
+
+  it('zoom-in increases the image scale transform', async () => {
+    const wrapper = mountOpen()
+    const before = (document.querySelector('.page-viewer__image') as HTMLImageElement).style.transform
+    ;(document.querySelector('.page-viewer__tool--zoom-in') as HTMLButtonElement).click()
+    await wrapper.vm.$nextTick()
+    const after = (document.querySelector('.page-viewer__image') as HTMLImageElement).style.transform
+    expect(after).toContain('scale(')
+    expect(after).not.toBe(before)
+  })
+
+  it('rotate applies a rotate() transform in 90deg steps', async () => {
+    const wrapper = mountOpen()
+    ;(document.querySelector('.page-viewer__tool--rotate') as HTMLButtonElement).click()
+    await wrapper.vm.$nextTick()
+    const t = (document.querySelector('.page-viewer__image') as HTMLImageElement).style.transform
+    expect(t).toContain('rotate(90deg)')
+  })
+
+  it('resets zoom and rotation when the page changes', async () => {
+    const wrapper = mountOpen({ page: 4, rowPages: [4, 5, 7] })
+    ;(document.querySelector('.page-viewer__tool--zoom-in') as HTMLButtonElement).click()
+    ;(document.querySelector('.page-viewer__tool--rotate') as HTMLButtonElement).click()
+    await wrapper.vm.$nextTick()
+    ;(document.querySelector('.page-viewer__nav--next') as HTMLButtonElement).click()
+    await wrapper.vm.$nextTick()
+    const t = (document.querySelector('.page-viewer__image') as HTMLImageElement).style.transform
+    expect(t).toContain('rotate(0deg)')
+    expect(t).toContain('scale(1)')
+  })
+
   it('renders nothing when closed', () => {
     mount(PageSheetViewer, {
       props: { modelValue: false, runId: 'run-abc', page: 5 },

@@ -220,6 +220,18 @@ describe('ReconciliationRow', () => {
     expect(noGuias.find('.recon-row').classes()).not.toContain('recon-row--expandable')
   })
 
+  it('#19: expandable row exposes aria-expanded reflecting drill-down state', async () => {
+    const wrapper = mount(ReconciliationRow, { props: { row: makeRow(), runId: 'r' } })
+    expect(wrapper.find('.recon-row').attributes('aria-expanded')).toBe('false')
+    await wrapper.find('.recon-row__cell--material').trigger('click')
+    expect(wrapper.find('.recon-row').attributes('aria-expanded')).toBe('true')
+  })
+
+  it('#19: non-expandable row (no guias) does not advertise aria-expanded', () => {
+    const wrapper = mount(ReconciliationRow, { props: { row: makeRow({ guias: [] }), runId: 'r' } })
+    expect(wrapper.find('.recon-row').attributes('aria-expanded')).toBeUndefined()
+  })
+
   it('GuiaDrillDown reassign event propagated as openReassign with guia_id', async () => {
     const row = makeRow()
     const wrapper = mount(ReconciliationRow, {

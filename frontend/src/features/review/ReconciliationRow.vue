@@ -5,6 +5,7 @@
     :class="rowClass"
     :data-status="row.status"
     :aria-label="`${row.registro} — ${row.material_canonical} — ${statusLabel}`"
+    :aria-expanded="isExpandable ? isExpanded : undefined"
     tabindex="0"
     @click="onRowClick"
     @keydown.enter="onRowKeyToggle"

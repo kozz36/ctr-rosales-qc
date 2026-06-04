@@ -47,7 +47,10 @@ _GRADE_PATTERNS: Final[list[tuple[re.Pattern[str], str]]] = [
 
 _DIAMETER_TABLE: Final[list[tuple[re.Pattern[str], str]]] = [
     # 1 3/8" — compound fraction MUST come before "1\"" and "3/8\""
-    (re.compile(r'1\s*3/8\s*(?:"|pulg(?:ada)?|\'\')?', re.IGNORECASE), '1 3/8"'),
+    # SUNAT GRE (Aceros Arequipa) writes the whole/fraction separator as a DOT
+    # ("1.3/8"), while Forma uses whitespace ("1 3/8"); accept dot/hyphen/none too.
+    # \b anchors the leading "1" so it never false-matches the "1" inside "a615".
+    (re.compile(r'\b1\s*[.\-]?\s*3/8\s*(?:"|pulg(?:ada)?|\'\')?', re.IGNORECASE), '1 3/8"'),
     # 1"
     (re.compile(r'\b1\s*(?:"|pulg(?:ada)?|\'\')', re.IGNORECASE), '1"'),
     # 3/4"

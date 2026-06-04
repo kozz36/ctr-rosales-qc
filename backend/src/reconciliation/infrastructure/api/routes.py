@@ -548,22 +548,33 @@ def export_run(
 
 @router.get(
     "/runs/{run_id}/pages/{page}/thumbnail",
-    summary="Fetch the deskewed page render as a PNG thumbnail.",
+    summary="Fetch a page thumbnail, falling back to on-demand PDF render.",
 )
 def get_page_thumbnail(
     run_id: str,
     page: int,
     registry: RunRegistry,
 ) -> FileResponse:
-    """Return the deskewed PNG render for page *page* (0-based) of run *run_id*.
+    """Return a PNG thumbnail for page *page* (0-based) of run *run_id*.
 
     Spec: REV-005 / S1.8.
 
-    The file is expected at ``run_dir/pages/{page:04d}.png`` — written by the
-    pipeline's DeskewAdapter during processing.  Returns 404 if the page file
-    does not exist (run not yet processed or page index out of range).
+    Fallback chain (fix for issue #17 — OCR-off / vision-off modes):
 
-    No new dependencies — uses the standard ``FileResponse`` from ``fastapi``.
+    1. Deskewed PNG at ``run_dir/pages/{page:04d}.png`` (written by DeskewAdapter
+       in OCR-on mode) — served directly when present.
+    2. On-demand fitz render from the run's source PDF (``ctx.pdf_path``) — covers
+       OCR-off, vision-off, and air-gap modes where DeskewAdapter is skipped and
+       the pages/ directory is never populated.  The rendered PNG is cached at the
+       same ``pages/{page:04d}.png`` path so subsequent requests do not re-render.
+
+    Returns 404 only when:
+    - The run has no context yet (→ 409).
+    - The page index is out of range (>= page_count).
+
+    Fitz is lazy-imported inside this function (never at module top) to keep the
+    import side-effect isolated to infrastructure and allow tests to run without
+    a GPU runtime.  Input PDF is opened read-only; no mutation.
     """
     entry = _require_run(registry, run_id)
     ctx = entry.get("ctx")
@@ -576,17 +587,70 @@ def get_page_thumbnail(
     pages_dir: Path = ctx.run_dir / "pages"
     page_file = pages_dir / f"{page:04d}.png"
 
-    if not page_file.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Page {page} not found for run '{run_id}'. "
-            "The page may not have been rendered or the index is out of range.",
+    # (1) Fast path: deskewed PNG already on disk (OCR-on mode).
+    if page_file.exists():
+        return FileResponse(
+            path=str(page_file),
+            media_type="image/png",
+            filename=f"{run_id[:8]}_page_{page:04d}.png",
         )
 
-    return FileResponse(
-        path=str(page_file),
+    # (2) Fallback: render from source PDF via fitz (PyMuPDF) — lazy import.
+    pdf_path: Path = ctx.pdf_path
+    if not pdf_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Source PDF for run '{run_id}' not found on disk.",
+        )
+
+    try:
+        import fitz  # noqa: PLC0415  — lazy import; never at module top
+
+        doc = fitz.open(str(pdf_path))
+        try:
+            page_count = doc.page_count
+            if page < 0 or page >= page_count:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Page {page} is out of range for run '{run_id}' "
+                        f"(PDF has {page_count} pages, 0-based)."
+                    ),
+                )
+            # Render at ~120 DPI — enough for a thumbnail; fast and small.
+            fitz_page = doc.load_page(page)
+            mat = fitz.Matrix(120 / 72, 120 / 72)  # 120 DPI (72 pt/in baseline)
+            pix = fitz_page.get_pixmap(matrix=mat, alpha=False)
+            png_bytes: bytes = pix.tobytes("png")
+        finally:
+            doc.close()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("get_page_thumbnail: fitz render failed for page %d of run %s: %s", page, run_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to render page {page} from source PDF: {exc}",
+        ) from exc
+
+    # Cache the rendered PNG under pages/ so subsequent requests skip re-rendering.
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        page_file.write_bytes(png_bytes)
+    except OSError as exc:
+        # Non-fatal: cache write failure is logged but the response still succeeds.
+        logger.warning(
+            "get_page_thumbnail: could not cache rendered PNG at %s: %s", page_file, exc
+        )
+
+    from fastapi.responses import Response  # noqa: PLC0415
+
+    return Response(  # type: ignore[return-value]
+        content=png_bytes,
         media_type="image/png",
-        filename=f"{run_id[:8]}_page_{page:04d}.png",
+        headers={
+            "Content-Disposition": f'inline; filename="{run_id[:8]}_page_{page:04d}.png"',
+        },
     )
 
 

@@ -634,7 +634,11 @@ class TestGetThumbnail:
         tmp_path: Path,
         pages: list[int] | None = None,
     ) -> Path:
-        """Seed a run with a fake ctx that has a pages directory."""
+        """Seed a run with a fake ctx that has a pages directory.
+
+        ``ctx.pdf_path`` is set to a non-existent path so the fitz fallback
+        branch returns 404 (not 500) when the deskewed PNG is also absent.
+        """
         run_dir = tmp_path / "runs" / run_id
         pages_dir = run_dir / "pages"
         pages_dir.mkdir(parents=True, exist_ok=True)
@@ -645,6 +649,9 @@ class TestGetThumbnail:
 
         fake_ctx = MagicMock()
         fake_ctx.run_dir = run_dir
+        # Non-existent pdf_path: triggers the pdf_path.exists() → False → 404 branch
+        # when no deskewed PNG exists (i.e. the page index is out of range in this test).
+        fake_ctx.pdf_path = run_dir / f"{run_id}.pdf"
 
         registry = client.app.state.run_registry  # type: ignore[attr-defined]
         registry[run_id] = {

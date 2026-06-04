@@ -110,9 +110,6 @@ logger = logging.getLogger(__name__)
 # to 400-dpi equivalent for the second COLOR decode tier (D2).
 _QR_DPI: int = 200
 
-# DPI used for the Option B full-page fallback when stamp_crop is disabled (D4).
-_VISION_FALLBACK_DPI: int = 300
-
 # ---------------------------------------------------------------------------
 # DecodeOutcome — rev-3 pre-pass result per page (R1.1)
 # ---------------------------------------------------------------------------

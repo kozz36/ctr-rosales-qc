@@ -72,6 +72,7 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Callable
 from datetime import date as datetime_date
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -183,6 +184,7 @@ class SunatDescargaqrAdapter:
         self,
         urls: list[str],
         concurrency: int = 5,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> dict[str, OfficialGre | None]:
         """Bounded-concurrency batch fetch with REAL adaptive back-pressure
         (R10.7 / CONT-S09/S11; KI-2 / KI-3 fix).
@@ -208,6 +210,10 @@ class SunatDescargaqrAdapter:
         Args:
             urls:        List of hashqr URLs to fetch (may be empty).
             concurrency: Maximum parallel in-flight requests for the FIRST wave.
+            on_progress: Optional callback ``(done: int, total: int) -> None``
+                         called once after each wave completes, with cumulative
+                         ``done`` count.  Enables the pipeline to advance the
+                         progress bar DURING the fetch rather than after.
 
         Returns:
             Dict mapping each URL to its ``OfficialGre`` or ``None``.
@@ -255,6 +261,11 @@ class SunatDescargaqrAdapter:
                 results[url] = result
                 if result is None:
                     none_count += 1
+
+            # Per-wave progress: report cumulative done count so the pipeline
+            # can advance the progress bar DURING the fetch (issue #21 fix).
+            if on_progress is not None:
+                on_progress(len(results), len(urls))
 
             # Adaptive back-pressure (W1 / KI-3): sustained failures in this wave
             # genuinely shrink the next wave's in-flight ceiling.

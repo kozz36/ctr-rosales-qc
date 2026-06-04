@@ -7,15 +7,37 @@
 # Requires: backend/.venv activated (or uv run), node/npm for frontend.
 # Both processes share the terminal; Ctrl-C stops both.
 
-.PHONY: dev help build test-container smoke verify
+.PHONY: dev help build test-container smoke verify install app-up app-down app-logs
 
 help:
 	@echo "Available targets:"
+	@echo "  install        — one-command install + launch (Docker, deterministic mode) → ./install.sh"
+	@echo "  app-up         — start the v1.0.0 app (backend + frontend) via docker-compose.app.yml"
+	@echo "  app-down       — stop the v1.0.0 app"
+	@echo "  app-logs       — follow the v1.0.0 app logs"
 	@echo "  dev            — start backend (port 8000) + frontend (port 5173) concurrently"
 	@echo "  build          — build the paddle-free backend Docker image (CONT-001)"
 	@echo "  test-container — run full backend unit test suite inside the container (CONT-S03)"
 	@echo "  smoke          — cloud-vision accuracy smoke: Registro 232 → qwen3.5:397b-cloud (CONT-S07/S08)"
 	@echo "  verify         — faithful in-container full run: R8 MATCH + R9 fecha-divergence gates (CONT-S12/S13)"
+
+# ─── v1.0.0 turnkey app (docker-compose.app.yml) ──────────────────────────────
+
+## One-command install + launch for end users (deterministic vision-off + SUNAT).
+install:
+	./install.sh
+
+## Start the app (backend + frontend) — builds fresh, then runs detached.
+app-up:
+	docker compose -f docker-compose.app.yml up -d --build
+
+## Stop the app.
+app-down:
+	docker compose -f docker-compose.app.yml down
+
+## Follow the app logs.
+app-logs:
+	docker compose -f docker-compose.app.yml logs -f
 
 dev:
 	@echo "Starting backend on :8000 and frontend on :5173"

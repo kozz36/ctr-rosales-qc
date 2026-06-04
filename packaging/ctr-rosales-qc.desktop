@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=CTR Rosales QC
+Comment=Reconciliación de recepción de materiales en obra
+Comment[es]=Reconciliación de recepción de materiales en obra
+# Edit Path= to the repository location on this machine before installing this
+# launcher (copy it to ~/.local/share/applications/ to get a menu entry).
+Path=/data/Projects/ctr-rosales-qc
+Exec=bash -c "cd /data/Projects/ctr-rosales-qc && ./install.sh; read -p 'Enter para cerrar…'"
+Terminal=true
+Icon=utilities-terminal
+Categories=Office;Utility;
+Keywords=reconciliacion;materiales;obra;qc;ctr;

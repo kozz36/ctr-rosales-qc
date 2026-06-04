@@ -57,8 +57,13 @@ RUN /app/.venv/bin/python -c "import paddle; raise RuntimeError('paddle must not
     grep -q "ModuleNotFoundError" && echo "paddle absent — CONT-S02 OK" || \
     (echo "ERROR: paddle is present — remove it from deps" && exit 1)
 
-# Non-root user for container security
-RUN adduser --disabled-password --gecos "" appuser && chown -R appuser:appuser /app
+# Non-root user for container security. Pre-create the data dirs and hand them to
+# appuser BEFORE the USER switch so a FRESH named volume mounted on /data/runs or
+# /data/sunat-cache inherits appuser ownership (Docker seeds an empty volume from
+# the mount point) — otherwise the non-root process cannot write run output.
+RUN adduser --disabled-password --gecos "" appuser && \
+    mkdir -p /data/runs /data/sunat-cache && \
+    chown -R appuser:appuser /app /data
 
 USER appuser
 

@@ -1,0 +1,63 @@
+# docker-compose.app.yml — CTR Rosales QC turnkey app (v1.0.0)
+#
+# This is the END-USER deployment: backend (FastAPI) + frontend (nginx SPA) on a
+# private bridge network. The frontend proxies /api to the backend by service name.
+#
+# Default run mode: DETERMINISTIC vision-off + SUNAT-authoritative.
+#   - Zero LLM calls (no Ollama/Anthropic needed, no API keys).
+#   - Guía reception dates fall back to SUNAT fecha_entrega (R9b floor).
+#   - Material + quantities come from the SUNAT GRE (OCR off).
+#   - Requires SUNAT (e-factura.sunat.gob.pe) reachable; results are cached in the
+#     sunat-cache volume so re-runs are fast and offline-friendly.
+#
+# `name:` pins the compose project so the volumes match the verification harness
+# (docker-compose.yml) — the SUNAT cache is shared across both.
+#
+# NOTE: host networking is intentionally NOT used here. It is only needed for the
+# cloud-vision profile (Ollama on host localhost). In deterministic mode the
+# backend reaches SUNAT over the bridge and needs no host daemon.
+
+name: ctr-rosales-qc
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime          # prod-lean, paddle-free image
+    image: ctr-backend:v1.0.0
+    environment:
+      # Deterministic SUNAT-authoritative mode (no LLM, no OCR).
+      RECONCILIATION__VISION__ENABLED: "false"
+      RECONCILIATION__OCR__ENABLED: "false"
+      RECONCILIATION__SUNAT__ENABLED: "true"
+      RECONCILIATION__SUNAT__CACHE: "true"
+      RECONCILIATION__SUNAT__CACHE_DIR: "/data/sunat-cache"
+      RECONCILIATION__OUTPUT_DIR: "/data/runs"
+    volumes:
+      - run-output:/data/runs
+      - sunat-cache:/data/sunat-cache
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/runs/',timeout=5).status<500 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: ctr-frontend:v1.0.0
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  run-output:
+  sunat-cache:

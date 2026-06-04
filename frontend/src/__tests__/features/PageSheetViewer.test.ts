@@ -128,6 +128,48 @@ describe('PageSheetViewer', () => {
     expect(t).toContain('scale(1)')
   })
 
+  // ---------------------------------------------------------------------------
+  // Pan / hand tool (only meaningful while zoomed)
+  // ---------------------------------------------------------------------------
+
+  it('does not pan when at 100% zoom (hand tool inactive)', async () => {
+    const wrapper = mountOpen()
+    const img = document.querySelector('.page-viewer__image') as HTMLImageElement
+    img.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, clientY: 100, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, bubbles: true }))
+    await wrapper.vm.$nextTick()
+    // Identity transform — no translate while not zoomed.
+    expect(img.style.transform).toContain('translate(0px, 0px)')
+  })
+
+  it('drag-pans the image when zoomed (hand tool)', async () => {
+    const wrapper = mountOpen()
+    ;(document.querySelector('.page-viewer__tool--zoom-in') as HTMLButtonElement).click()
+    await wrapper.vm.$nextTick()
+    const img = document.querySelector('.page-viewer__image') as HTMLImageElement
+    img.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, clientY: 100, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    await wrapper.vm.$nextTick()
+    // Moved +60x, +40y → translate offset reflected in the transform.
+    expect(img.style.transform).toContain('translate(60px, 40px)')
+  })
+
+  it('resets pan offset when the page changes', async () => {
+    const wrapper = mountOpen({ page: 4, rowPages: [4, 5, 7] })
+    ;(document.querySelector('.page-viewer__tool--zoom-in') as HTMLButtonElement).click()
+    await wrapper.vm.$nextTick()
+    const img = document.querySelector('.page-viewer__image') as HTMLImageElement
+    img.dispatchEvent(new MouseEvent('mousedown', { clientX: 0, clientY: 0, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 50, clientY: 50, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    await wrapper.vm.$nextTick()
+    ;(document.querySelector('.page-viewer__nav--next') as HTMLButtonElement).click()
+    await wrapper.vm.$nextTick()
+    const t = (document.querySelector('.page-viewer__image') as HTMLImageElement).style.transform
+    expect(t).toContain('translate(0px, 0px)')
+  })
+
   it('renders nothing when closed', () => {
     mount(PageSheetViewer, {
       props: { modelValue: false, runId: 'run-abc', page: 5 },

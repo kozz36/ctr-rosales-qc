@@ -287,11 +287,25 @@ the grouping key** — it split groups on vision-date noise. See `docs/MATERIAL-
 
 ### R9 — reception-date authority + fecha-divergence review (own SDD change `r9-fecha-divergence-review`)
 
-Declared reception date = **handwritten `Fecha:` on the Protocolo de Recepción** (vision-read,
-per Registro N°), not the electronic date. Guías should carry that handwritten date. A guía whose
-handwritten date diverges (compared **day-month**; year via bounded inference) → non-blocking
-no-match **WARNING** that flags `requires_review` with the guía **page number** + **red highlight**
-(individual / per-registro group) for human review + manual reassign. Never auto-corrected.
+Declared reception date = **DIGITAL `Fecha:` on the Protocolo de Recepción** (deterministic parse
+by `digital_text_extractor.py`, real year, no vision call), per Registro N°. This is the ceiling
+and the baseline for divergence checks. Guías carry **handwritten** reception dates (vision-read,
+stamp region), compared **day-month** against the declared baseline; year via bounded inference.
+A guía whose handwritten date diverges → non-blocking **WARNING** that flags `requires_review`
+with the guía **page number** + **red highlight** (individual / per-registro group) for human
+review + manual reassign. Never auto-corrected.
+
+**Domain-correctness correction (2026-06-03)**: the prior premise recorded in #2709 stated that
+the declared date was the *handwritten* `Fecha:` on the Protocolo, read via vision. The domain
+authority confirmed with real PDF evidence that the Protocolo `Fecha:` is **DIGITAL/printed**
+(from Forma), not handwritten. Handwritten reception dates exist **only on the guías de remisión**
+(stamp+signature). The vision sub-stage `_stage_extract_declared_date` and its supporting fields
+(`fecha_declarada_handwritten`, `fecha_declarada_confidence`, `fecha_declarada_year_inferred`) have
+been removed. `Registro.fecha_authoritative` now returns `fecha_declarada` directly (the digital
+parse). The divergence review logic is **unchanged** — only the declared-date *source* changed.
+The `[floor, ceiling]` bracket (R9b/R9c), the day-month predicate, and the `requires_review`
+flagging are all intact.
+
 Engram: `architecture/reception-date-authority` (#2709).
 
 ---

@@ -571,6 +571,77 @@ class TestVisionAuditRecord:
 
 
 # ---------------------------------------------------------------------------
+# Slice 2: declared-date missing guard (2026-06-03 domain fix)
+# ---------------------------------------------------------------------------
+
+
+class TestDeclaredDateMissingGuard:
+    """When a Registro has protocolo_page set but fecha_declarada is None
+    (digital parse failed), the pipeline MUST emit a WARNING in PipelineResult.warnings.
+    No vision call; no new field; deterministic.
+    """
+
+    def test_registro_with_protocolo_page_and_no_fecha_declarada_emits_warning(
+        self, tmp_path: Path
+    ) -> None:
+        """EXPECTED TO FAIL before guard is implemented.
+
+        A Registro with protocolo_page != None but fecha_declarada == None means
+        the Protocolo page was found but the digital parse yielded no date.
+        The pipeline must surface a human-readable WARNING in result.warnings.
+        """
+        # Use a FakeExtractor that returns a Registro with protocolo_page set
+        # but fecha_declarada=None (simulating a failed digital parse).
+        class _ExtractorWithFailedParse:
+            """Exposes Registro-level API so the rich path is taken in _stage_extract_declared."""
+            _ocr_failed: bool = False
+
+            def extract_declared(self, text: str) -> list:
+                return []
+
+            def extract_printed_table(self, image: bytes) -> list:
+                return []
+
+            def extract_registro_from_proto_page(
+                self, text: str, page: int
+            ) -> Registro | None:
+                # Return a Registro without a fecha (digital parse failed).
+                return Registro(
+                    numero="232",
+                    fecha_declarada=None,
+                    declared_lines=[],
+                    protocolo_page=page,
+                )
+
+            def extract_registro_from_detail_page(
+                self, text: str, page: int
+            ) -> Registro | None:
+                return None
+
+        from reconciliation.application.config import AppConfig
+        from reconciliation.application.pipeline import ReconciliationPipeline
+        from reconciliation.application.run_context import RunContext
+
+        pages = [{"text": "PTR001-TORRE ROSALES\nInforme de detalle del formulario\nPROTOCOLO DE RECEPCION\nRegistro N°:\n232"}]
+        doc = FakeDocumentSource(pages)
+        pipeline = ReconciliationPipeline(
+            doc_source=doc,
+            extractor=_ExtractorWithFailedParse(),
+            vision=FakeVisionSerial(),
+            config=AppConfig(),
+        )
+        ctx = RunContext(pdf_path=tmp_path / "input.pdf", output_base=tmp_path / "runs")
+        result = pipeline.run(ctx)
+
+        # The guard must emit at least one warning mentioning the missing date.
+        matching = [w for w in result.warnings if "232" in w and "fecha" in w.lower()]
+        assert matching, (
+            f"Expected a WARNING for Registro 232 with protocolo_page set but "
+            f"fecha_declarada=None. Got warnings: {result.warnings}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # C-1 + C-2: real Registro parsers + dedup (proto canonical)
 # ---------------------------------------------------------------------------
 

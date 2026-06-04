@@ -331,6 +331,20 @@ class ReconciliationPipeline:
         # Stage 4: extract declared (digital text; real parsers; dedupe proto+detail)
         declared = self._stage_extract_declared(classifications)
 
+        # Stage 4b: guard — Protocolo page found but digital date parse yielded None.
+        # Deterministic, no vision.  Surfaces a WARNING so the operator can inspect
+        # the PDF and correct the Protocolo page or date field manually.
+        declared_date_warnings: list[str] = []
+        for _reg in declared:
+            if _reg.protocolo_page is not None and _reg.fecha_declarada is None:
+                msg = (
+                    f"Registro {_reg.numero!r}: Protocolo page {_reg.protocolo_page} "
+                    "found but digital fecha parse returned no date. "
+                    "Verify the Protocolo 'Fecha:' field is present and legible."
+                )
+                logger.warning("declared_date_missing: %s", msg)
+                declared_date_warnings.append(msg)
+
         # Stage 5: extract OCR tables from guia pages; reuses cached rendered bytes.
         # Returns (raw_guias, ocr_warnings) — ocr_warnings non-empty on graceful degradation.
         raw_guias, ocr_warnings = self._stage_extract_ocr(
@@ -411,7 +425,7 @@ class ReconciliationPipeline:
             guias=guias,
             rows=rows,
             vision_calls_made=vision_calls_made,
-            warnings=ocr_warnings + warnings,
+            warnings=declared_date_warnings + ocr_warnings + warnings,
         )
 
     # ------------------------------------------------------------------

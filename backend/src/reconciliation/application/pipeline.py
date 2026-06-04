@@ -1018,11 +1018,26 @@ class ReconciliationPipeline:
         if not urls:
             return sunat_map
 
+        _DOMAIN_UNIT = Literal["KG", "TN", "RD", "Rollo"]
+        _VALID_UNITS: frozenset[str] = frozenset({"KG", "TN", "RD", "Rollo"})
+        _sunat_item_total = len(urls)
+
+        # Per-wave / per-iteration progress callback — drives the bar DURING the fetch.
+        def _emit(done: int, total: int) -> None:
+            if ctx is not None:
+                ctx.report_progress(
+                    stage_label="Consulta SUNAT",
+                    stage_index=4,
+                    stage_total=stage_total,
+                    item_done=done,
+                    item_total=total,
+                )
+
         if hasattr(self._sunat, "fetch_many") and asyncio_available():
             import asyncio  # noqa: PLC0415
             try:
                 raw_results: dict[str, OfficialGre | None] = asyncio.run(
-                    self._sunat.fetch_many(urls, concurrency=5)  # type: ignore[union-attr]
+                    self._sunat.fetch_many(urls, concurrency=5, on_progress=_emit)  # type: ignore[union-attr]
                 )
             except RuntimeError:
                 # asyncio.run() raises RuntimeError if an event loop is already running
@@ -1031,15 +1046,19 @@ class ReconciliationPipeline:
                     "_stage_sunat_fetch: asyncio.run() unavailable (loop running); "
                     "falling back to sequential fetch"
                 )
-                raw_results = {url: self._sunat.fetch(url) for url in urls}
+                # Sequential fallback: emit progress per-iteration DURING the loop.
+                raw_results = {}
+                for _k, url in enumerate(urls):
+                    raw_results[url] = self._sunat.fetch(url)
+                    _emit(_k + 1, _sunat_item_total)
         else:
-            raw_results = {url: self._sunat.fetch(url) for url in urls}
+            # Sequential path (adapter has no fetch_many): per-iteration progress.
+            raw_results = {}
+            for _k, url in enumerate(urls):
+                raw_results[url] = self._sunat.fetch(url)
+                _emit(_k + 1, _sunat_item_total)
 
-        _DOMAIN_UNIT = Literal["KG", "TN", "RD", "Rollo"]
-        _VALID_UNITS: frozenset[str] = frozenset({"KG", "TN", "RD", "Rollo"})
-
-        _sunat_item_total = len(urls)
-        for _sunat_idx, (url, official) in enumerate(raw_results.items()):
+        for url, official in raw_results.items():
             block = url_to_block[url]
             if official is None:
                 logger.debug(
@@ -1049,15 +1068,6 @@ class ReconciliationPipeline:
             else:
                 self._apply_sunat_result(block, official, _VALID_UNITS, _DOMAIN_UNIT, cast)
                 sunat_map[block.guia_id] = official
-            # Progress: emit one event per block processed (stage 4 of stage_total).
-            if ctx is not None:
-                ctx.report_progress(
-                    stage_label="Consulta SUNAT",
-                    stage_index=4,
-                    stage_total=stage_total,
-                    item_done=_sunat_idx + 1,
-                    item_total=_sunat_item_total,
-                )
 
         logger.debug(
             "_stage_sunat_fetch: %d/%d blocks enriched from SUNAT",

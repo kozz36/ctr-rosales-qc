@@ -8,6 +8,7 @@ All Protocols are runtime-checkable (isinstance checks work in tests).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
@@ -184,7 +185,10 @@ class SunatGreFetchPort(Protocol):
         ...
 
     def fetch_many(
-        self, urls: list[str], concurrency: int = 5
+        self,
+        urls: list[str],
+        concurrency: int = 5,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> dict[str, OfficialGre | None]:
         """Optional batch fetch with bounded concurrency.
 
@@ -193,8 +197,22 @@ class SunatGreFetchPort(Protocol):
         MAY override this with an async-semaphore implementation for parallel fetching
         (R10.7 / CONT-S09).
 
+        Args:
+            urls:        URLs to fetch.
+            concurrency: Maximum parallel in-flight requests.
+            on_progress: Optional callback ``(done: int, total: int) -> None``
+                         called after each wave (or per-URL in the sequential
+                         fallback) with cumulative ``done`` count so callers can
+                         drive a progress bar DURING the fetch.  ``None`` means
+                         no reporting (backward-compatible default).
+
         Returns a dict mapping each URL to its ``OfficialGre`` or ``None``.
         The graceful-None contract is preserved: any URL whose fetch failed
         appears in the result as ``None``.
         """
-        return {url: self.fetch(url) for url in urls}
+        results: dict[str, OfficialGre | None] = {}
+        for k, url in enumerate(urls):
+            results[url] = self.fetch(url)
+            if on_progress is not None:
+                on_progress(k + 1, len(urls))
+        return results

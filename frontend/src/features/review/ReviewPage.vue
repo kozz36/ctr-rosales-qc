@@ -68,6 +68,14 @@
       :api-error="reassignError"
       @submit="onReassignSubmit"
     />
+
+    <!-- Page-sheet viewer (issue #27): full-res scanned page lightbox -->
+    <PageSheetViewer
+      v-model="showPageViewer"
+      :run-id="id"
+      :page="viewerPage"
+      :row-pages="viewerRowPages"
+    />
   </section>
 </template>
 
@@ -99,6 +107,7 @@ import ReviewGrid from './ReviewGrid.vue'
 import GuiaReassignDialog from './GuiaReassignDialog.vue'
 import ExportButton from './ExportButton.vue'
 import UnresolvedGuiasPanel from './UnresolvedGuiasPanel.vue'
+import PageSheetViewer from './PageSheetViewer.vue'
 
 const props = defineProps<{
   /** run_id from router prop */
@@ -221,12 +230,20 @@ async function onExport(fmt: ExportFormat): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Page click (source page drill-down — future lightbox)
+// Page click (source page drill-down → full-res lightbox, issue #27)
 // ---------------------------------------------------------------------------
 
+const showPageViewer = ref(false)
+const viewerPage = ref<number>(0)
+const viewerRowPages = ref<number[]>([])
+
 function onPageClick(page: number): void {
-  // TODO: open source page thumbnail lightbox (future enhancement)
-  console.info(`Source page ${page} clicked — lightbox not yet implemented`)
+  // Derive the clicked page's row context so the viewer can offer prev/next
+  // navigation across that row's source pages only (cheap nice-to-have).
+  const owningRow = rows.value.find((r) => r.source_pages?.includes(page))
+  viewerRowPages.value = owningRow?.source_pages ?? [page]
+  viewerPage.value = page
+  showPageViewer.value = true
 }
 </script>
 

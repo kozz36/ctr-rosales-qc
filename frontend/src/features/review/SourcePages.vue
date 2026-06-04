@@ -29,8 +29,11 @@
         @load="onThumbLoad(page)"
         @error="onThumbError(page)"
       />
-      <!-- Fallback: page number chip (shown when thumbnail not loaded or errored) -->
-      <span class="source-pages__number" :aria-hidden="thumbnailsLoaded.has(page)">
+      <!-- Persistent page-number badge (issue #27): always-visible legible overlay.
+           Pre-thumbnail it is the chip's centered label; once the thumb loads it
+           becomes a high-contrast corner pill (dark scrim) so the page stays a
+           clear identifier over any (mostly-white) scanned thumbnail. -->
+      <span class="source-pages__number">
         {{ page }}
       </span>
     </button>
@@ -174,16 +177,34 @@ function onChipClick(page: number): void {
 
 .source-pages__number {
   line-height: 1;
+  pointer-events: none;
 }
 
-/* When chip has thumb, position number as overlay */
+/* Persistent overlay badge once the thumbnail is loaded (issue #27).
+   A small bottom-right pill with a dark scrim + high-contrast text keeps the
+   page number legible over the mostly-white scanned thumbnail. */
 .source-pages__chip--has-thumb .source-pages__number {
   position: absolute;
-  bottom: 2px;
-  right: 3px;
-  font-size: 0.5rem;
-  color: white;
-  text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+  bottom: 1px;
+  right: 1px;
+  min-width: 12px;
+  padding: 0 3px;
+  border-radius: var(--radius-sm);
+  background-color: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-size: 0.5625rem;
+  font-weight: 600;
+  line-height: 1.45;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+
+/* Divergent chips: tint the badge so the page id reads against the red ring too. */
+.source-pages__chip--divergent.source-pages__chip--has-thumb .source-pages__number {
+  background-color: rgba(0, 0, 0, 0.82);
+  color: #fff;
+  box-shadow: 0 0 0 1px var(--status-mismatch-fg);
 }
 
 /* FIX #14 (R9 fecha-divergence): red ring/glow on chips whose page belongs to a

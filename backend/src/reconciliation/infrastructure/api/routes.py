@@ -660,6 +660,121 @@ def get_page_thumbnail(
 
 
 @router.get(
+    "/runs/{run_id}/pages/{page}/image",
+    summary="Fetch a full-resolution page image, falling back to on-demand PDF render.",
+)
+def get_page_image(
+    run_id: str,
+    page: int,
+    registry: RunRegistry,
+) -> FileResponse:
+    """Return a high-resolution PNG for page *page* (0-based) of run *run_id*.
+
+    Issue #27 — page-sheet viewer. Sibling of ``get_page_thumbnail`` but renders
+    at ~200 DPI (vs 120) so a full scanned sheet is legible in a lightbox. The
+    render is cached to a DISTINCT path (``run_dir/pages/full/{page:04d}.png``) so
+    it NEVER clobbers the 120-DPI thumbnail cache (``run_dir/pages/{page:04d}.png``).
+
+    Fallback chain:
+
+    1. A PNG already present at ``run_dir/pages/full/{page:04d}.png`` — served directly
+       (the on-demand render cache written by step 2 on a prior request).
+    2. On-demand fitz render from the run's source PDF (``ctx.pdf_path``) at 200 DPI —
+       covers OCR-off / vision-off / air-gap modes. The rendered PNG is cached at the
+       full-res path so subsequent requests skip re-rendering.
+
+    Returns:
+    - 409 when the run has no context yet.
+    - 404 when the page index is out of range, the run is unknown, or the source PDF
+      is missing.
+
+    Fitz is lazy-imported inside this function (never at module top) to keep the heavy
+    import isolated to infrastructure and let the suite run without a render runtime.
+    Input PDF is opened read-only; renders write only under the run's own output dir.
+    """
+    entry = _require_run(registry, run_id)
+    ctx = entry.get("ctx")
+    if ctx is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run '{run_id}' has no processed context yet (status: {entry.get('status')}).",
+        )
+
+    # Distinct full-res cache dir — never the 120-DPI thumbnail path (pages/{page:04d}.png).
+    full_dir: Path = ctx.run_dir / "pages" / "full"
+    page_file = full_dir / f"{page:04d}.png"
+
+    # (1) Fast path: full-res PNG already cached.
+    if page_file.exists():
+        return FileResponse(
+            path=str(page_file),
+            media_type="image/png",
+            filename=f"{run_id[:8]}_page_{page:04d}_full.png",
+        )
+
+    # (2) Fallback: render from source PDF via fitz (PyMuPDF) — lazy import.
+    pdf_path: Path = ctx.pdf_path
+    if not pdf_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Source PDF for run '{run_id}' not found on disk.",
+        )
+
+    try:
+        import fitz  # noqa: PLC0415  — lazy import; never at module top
+
+        doc = fitz.open(str(pdf_path))
+        try:
+            page_count = doc.page_count
+            if page < 0 or page >= page_count:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Page {page} is out of range for run '{run_id}' "
+                        f"(PDF has {page_count} pages, 0-based)."
+                    ),
+                )
+            # Render at ~200 DPI — full-res, legible scanned sheet for the lightbox.
+            fitz_page = doc.load_page(page)
+            mat = fitz.Matrix(200 / 72, 200 / 72)  # 200 DPI (72 pt/in baseline)
+            pix = fitz_page.get_pixmap(matrix=mat, alpha=False)
+            png_bytes: bytes = pix.tobytes("png")
+        finally:
+            doc.close()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "get_page_image: fitz render failed for page %d of run %s: %s",
+            page,
+            run_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to render page {page} from source PDF: {exc}",
+        ) from exc
+
+    # Cache the rendered PNG under pages/full/ so subsequent requests skip re-rendering.
+    full_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        page_file.write_bytes(png_bytes)
+    except OSError as exc:
+        # Non-fatal: cache write failure is logged but the response still succeeds.
+        logger.warning("get_page_image: could not cache rendered PNG at %s: %s", page_file, exc)
+
+    from fastapi.responses import Response  # noqa: PLC0415
+
+    return Response(  # type: ignore[return-value]
+        content=png_bytes,
+        media_type="image/png",
+        headers={
+            "Content-Disposition": f'inline; filename="{run_id[:8]}_page_{page:04d}_full.png"',
+        },
+    )
+
+
+@router.get(
     "/runs/{run_id}/audit",
     response_model=AuditTrailResponse,
     summary="Retrieve the audit trail for a run.",

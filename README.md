@@ -7,6 +7,10 @@ page + Protocolo de Recepción) against the **sum of materials** extracted from 
 **guías de remisión** (SUNAT GRE). It flags mismatches, lets a quality engineer reassign
 misfiled guías, and exports the reconciled table to xlsx/csv.
 
+> **Operator guide:** see **[`docs/USAGE.md`](docs/USAGE.md)** for how to run and use the
+> tool (run commands, operating modes, the upload → review → reassign → export flow, and how to
+> read the review table).
+>
 > Built with Spec-Driven Development. See **[`docs/HANDOFF.md`](docs/HANDOFF.md)** for
 > current state, known issues, and next steps.
 

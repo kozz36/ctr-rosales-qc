@@ -322,7 +322,9 @@ class ReconciliationPipeline:
 
         # Stage 2: classify — HYBRID OR-gate (rev-3 EXT-019).
         # Passes qr_is_guia + image_dominant booleans from the cached decode map.
-        classifications = self._stage_classify(page_count, decode_map=decode_map, ctx=ctx, stage_total=_stage_total)
+        classifications = self._stage_classify(
+            page_count, decode_map=decode_map, ctx=ctx, stage_total=_stage_total
+        )
 
         # Stage 3: deskew (orientation correction for GUIA pages; no-op if deskew=None)
         # Note: title-OCR for scanned pages is already wired in _stage_classify above.

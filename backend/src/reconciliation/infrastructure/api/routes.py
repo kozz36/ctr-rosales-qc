@@ -561,12 +561,12 @@ def get_page_thumbnail(
 
     Fallback chain (fix for issue #17 — OCR-off / vision-off modes):
 
-    1. Deskewed PNG at ``run_dir/pages/{page:04d}.png`` (written by DeskewAdapter
-       in OCR-on mode) — served directly when present.
+    1. A PNG already present at ``run_dir/pages/{page:04d}.png`` — served directly.
+       (This is the on-demand render cache written by step 2 on a prior request.)
     2. On-demand fitz render from the run's source PDF (``ctx.pdf_path``) — covers
-       OCR-off, vision-off, and air-gap modes where DeskewAdapter is skipped and
-       the pages/ directory is never populated.  The rendered PNG is cached at the
-       same ``pages/{page:04d}.png`` path so subsequent requests do not re-render.
+       OCR-off, vision-off, and air-gap modes where no page render was produced
+       during processing.  The rendered PNG is cached at the same
+       ``pages/{page:04d}.png`` path so subsequent requests do not re-render.
 
     Returns 404 only when:
     - The run has no context yet (→ 409).
@@ -627,7 +627,12 @@ def get_page_thumbnail(
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.warning("get_page_thumbnail: fitz render failed for page %d of run %s: %s", page, run_id, exc)
+        logger.warning(
+            "get_page_thumbnail: fitz render failed for page %d of run %s: %s",
+            page,
+            run_id,
+            exc,
+        )
         raise HTTPException(
             status_code=500,
             detail=f"Failed to render page {page} from source PDF: {exc}",

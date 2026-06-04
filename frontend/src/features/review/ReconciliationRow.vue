@@ -108,6 +108,7 @@
       <SourcePages
         :pages="row.source_pages"
         :run-id="runId"
+        :divergent-pages="divergentPages"
         @page-click="emit('pageClick', $event)"
       />
     </td>
@@ -247,6 +248,22 @@ const deltaClass = computed(() => ({
   'recon-row__delta--negative': deltaSign.value === 'negative',
   'recon-row__delta--zero': deltaSign.value === 'zero',
 }))
+
+// ---------------------------------------------------------------------------
+// FIX #14: divergent page set (R9 — fecha_divergence red highlight)
+// Derived from guias[*].fecha_divergence — purely additive display side-channel.
+// Never touches group key, MATCH logic, or quantity math.
+// ---------------------------------------------------------------------------
+
+const divergentPages = computed((): Set<number> => {
+  const guias = props.row.guias
+  if (!guias || guias.length === 0) return new Set()
+  return new Set(
+    guias
+      .filter((g) => g.fecha_divergence)
+      .flatMap((g) => g.source_pages),
+  )
+})
 
 // ---------------------------------------------------------------------------
 // Row class
@@ -427,5 +444,16 @@ const rowClass = computed(() => ({
 
 .recon-row__flag-label {
   font-size: var(--text-xs);
+}
+
+/* FIX #13: confidence cell carries up to 4 inline badges — override the inherited
+   white-space:nowrap and switch to flex-wrap so they wrap within the column budget
+   instead of overflowing into PÁGINAS ORIGEN. */
+.recon-row__cell--confidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  align-items: center;
+  white-space: normal;
 }
 </style>

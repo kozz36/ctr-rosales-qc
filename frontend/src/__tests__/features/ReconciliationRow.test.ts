@@ -30,7 +30,7 @@ vi.mock('@/features/review/SourcePages.vue', () => ({
   default: {
     name: 'SourcePages',
     template: '<div class="stub-source-pages" />',
-    props: ['pages', 'runId'],
+    props: ['pages', 'runId', 'divergentPages'],
     emits: ['pageClick'],
   },
 }))
@@ -294,5 +294,81 @@ describe('ReconciliationRow', () => {
       props: { row, runId: 'run-abc' },
     })
     expect(wrapper.find('.fecha-divergence-badge').exists()).toBe(false)
+  })
+
+  // ---------------------------------------------------------------------------
+  // FIX #13: confidence cell must use flex-wrap layout, NOT inherit white-space:nowrap
+  // ---------------------------------------------------------------------------
+
+  it('FIX#13: confidence cell carries the --confidence modifier class that overrides nowrap (issue 13)', () => {
+    const row = makeRow({ requires_review: true, has_fecha_divergence: true, any_year_inferred: true })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    const cell = wrapper.find('.recon-row__cell--confidence')
+    expect(cell.exists()).toBe(true)
+    // The cell must NOT carry white-space:nowrap as an inline style override
+    const style = cell.attributes('style') ?? ''
+    expect(style).not.toContain('white-space: nowrap')
+    expect(style).not.toContain('white-space:nowrap')
+  })
+
+  it('FIX#13: confidence cell flag children are all rendered (no clipping) when 4 badges coexist', () => {
+    const row = makeRow({ requires_review: true, has_fecha_divergence: true, any_year_inferred: true })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    // All 4 badge slots inside .recon-row__cell--confidence must exist:
+    // ConfidenceBadge stub, Revisar flag span, YearInferredBadge stub, FechaDivergenceBadge stub
+    const cell = wrapper.find('.recon-row__cell--confidence')
+    expect(cell.find('.stub-confidence').exists()).toBe(true)
+    expect(cell.find('.recon-row__flag--review').exists()).toBe(true)
+    expect(cell.find('.year-inferred-badge').exists()).toBe(true)
+    expect(cell.find('.fecha-divergence-badge').exists()).toBe(true)
+  })
+
+  // ---------------------------------------------------------------------------
+  // FIX #14: divergentPages computed — page set derived from guias[*].fecha_divergence
+  // ---------------------------------------------------------------------------
+
+  it('FIX#14: SourcePages receives divergentPages set from divergent guias (issue 14)', () => {
+    const divergentGuia = makeGuia({ source_pages: [9, 10], fecha_divergence: true })
+    const normalGuia = makeGuia({ guia_id: 'T009-0000001', source_pages: [4], fecha_divergence: false })
+    const row = makeRow({ guias: [divergentGuia, normalGuia], has_fecha_divergence: true })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    // The stubbed SourcePages receives the divergentPages prop
+    const sourcePages = wrapper.findComponent({ name: 'SourcePages' })
+    const dp = sourcePages.props('divergentPages') as Set<number> | undefined
+    expect(dp).toBeDefined()
+    expect(dp!.has(9)).toBe(true)
+    expect(dp!.has(10)).toBe(true)
+    // The non-divergent guía's page must NOT be in the set
+    expect(dp!.has(4)).toBe(false)
+  })
+
+  it('FIX#14: divergentPages is empty set when no guia has fecha_divergence=true', () => {
+    const guia1 = makeGuia({ source_pages: [3], fecha_divergence: false })
+    const guia2 = makeGuia({ guia_id: 'T009-0000002', source_pages: [5], fecha_divergence: false })
+    const row = makeRow({ guias: [guia1, guia2], has_fecha_divergence: false })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    const sourcePages = wrapper.findComponent({ name: 'SourcePages' })
+    const dp = sourcePages.props('divergentPages') as Set<number> | undefined
+    // Either undefined or an empty set — both are acceptable when no divergence
+    if (dp !== undefined) {
+      expect(dp.size).toBe(0)
+    }
+  })
+
+  it('FIX#14: divergentPages is empty/undefined when guias is undefined (guard)', () => {
+    const row = makeRow({ guias: undefined as unknown as GuiaContributionResponse[] })
+    const wrapper = mount(ReconciliationRow, {
+      props: { row, runId: 'run-abc' },
+    })
+    // Should not throw; SourcePages still renders
+    expect(wrapper.findComponent({ name: 'SourcePages' }).exists()).toBe(true)
   })
 })

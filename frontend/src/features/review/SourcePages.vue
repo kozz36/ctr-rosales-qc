@@ -4,9 +4,14 @@
       v-for="page in pages"
       :key="page"
       class="source-pages__chip"
-      :class="{ 'source-pages__chip--has-thumb': thumbnailsLoaded.has(page) }"
-      :title="`Página ${page}${thumbnailsLoaded.has(page) ? '' : thumbnailsErrored.has(page) ? ' (miniatura no disponible)' : ' (cargando...)'}`"
-      :aria-label="`Ver página ${page}`"
+      :class="{
+        'source-pages__chip--has-thumb': thumbnailsLoaded.has(page),
+        'source-pages__chip--divergent': resolvedDivergentPages.has(page),
+      }"
+      :title="resolvedDivergentPages.has(page)
+        ? `Página ${page} — Revisar guía: fecha divergente`
+        : `Página ${page}${thumbnailsLoaded.has(page) ? '' : thumbnailsErrored.has(page) ? ' (miniatura no disponible)' : ' (cargando...)'}`"
+      :aria-label="resolvedDivergentPages.has(page) ? `Ver página ${page} — fecha divergente, requiere revisión` : `Ver página ${page}`"
       tabindex="0"
       @click="onChipClick(page)"
       @keydown.enter="onChipClick(page)"
@@ -45,7 +50,7 @@
  *   This replaces the old imperative `new Image()` probe approach (S2.5 cleanup).
  */
 
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 const props = defineProps<{
   /** Source page numbers (1-based, as returned by the backend). */
@@ -54,7 +59,17 @@ const props = defineProps<{
   runId: string
   /** Base API URL (proxied in dev, VITE_API_BASE_URL in prod). */
   apiBase?: string
+  /**
+   * FIX #14 (R9 fecha-divergence red highlight): set of page numbers whose guía
+   * has fecha_divergence=true. Chips for these pages receive the --divergent class
+   * and an accessible title hint. Purely additive display side-channel — never
+   * affects reconciliation logic, group key, or MATCH status.
+   */
+  divergentPages?: Set<number>
 }>()
+
+// Resolved divergent set — defaults to empty so the template never needs a null check.
+const resolvedDivergentPages = computed(() => props.divergentPages ?? new Set<number>())
 
 const emit = defineEmits<{
   /** Emitted when a chip is clicked — parent can open a lightbox/modal. */
@@ -169,5 +184,20 @@ function onChipClick(page: number): void {
   font-size: 0.5rem;
   color: white;
   text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+}
+
+/* FIX #14 (R9 fecha-divergence): red ring/glow on chips whose page belongs to a
+   divergent guía. Uses the same mismatch/danger design tokens as FechaDivergenceBadge.
+   Purely additive display — never affects reconciliation logic. */
+.source-pages__chip--divergent {
+  border-color: var(--status-mismatch-glow);
+  color: var(--status-mismatch-fg);
+  box-shadow: 0 0 0 2px var(--status-mismatch-glow);
+}
+
+.source-pages__chip--divergent:hover,
+.source-pages__chip--divergent:focus-visible {
+  border-color: var(--status-mismatch-fg);
+  background-color: var(--status-mismatch-bg);
 }
 </style>

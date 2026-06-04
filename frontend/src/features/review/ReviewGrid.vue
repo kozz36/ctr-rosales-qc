@@ -121,7 +121,7 @@
             <!-- Group rows -->
             <ReconciliationRow
               v-for="row in group.rows"
-              v-show="!collapsedGroups.has(group.key)"
+              v-if="!collapsedGroups.has(group.key)"
               :key="row.row_id"
               :row="row"
               :run-id="runId"
@@ -544,7 +544,8 @@ function onEdit(rowId: string, guiaId: string, value: string): void {
 .review-grid__th--sumado     { width: 110px; }
 .review-grid__th--delta      { width: 90px; }
 .review-grid__th--estado     { width: 120px; }
-.review-grid__th--confianza  { width: 110px; }
+/* FIX #13: widened from 110px to 160px to accommodate up to 4 wrapping badges */
+.review-grid__th--confianza  { width: 160px; }
 .review-grid__th--paginas    { width: 130px; }
 .review-grid__th--actions    { width: 44px; }
 

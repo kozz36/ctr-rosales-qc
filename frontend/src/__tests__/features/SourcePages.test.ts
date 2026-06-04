@@ -103,4 +103,52 @@ describe('SourcePages', () => {
     })
     expect(wrapper.findAll('.source-pages__chip')).toHaveLength(0)
   })
+
+  // ---------------------------------------------------------------------------
+  // FIX #14: divergentPages prop — RED glow class on chips for divergent pages
+  // ---------------------------------------------------------------------------
+
+  it('FIX#14: chip for a divergent page gets the --divergent class (issue 14)', () => {
+    const wrapper = mount(SourcePages, {
+      props: { pages: [9, 10, 11], runId: 'run-abc', divergentPages: new Set([9]) },
+    })
+    const chips = wrapper.findAll('.source-pages__chip')
+    // page 9 (index 0) must have the divergent class
+    expect(chips[0].classes()).toContain('source-pages__chip--divergent')
+    // page 10 (index 1) must NOT
+    expect(chips[1].classes()).not.toContain('source-pages__chip--divergent')
+    // page 11 (index 2) must NOT
+    expect(chips[2].classes()).not.toContain('source-pages__chip--divergent')
+  })
+
+  it('FIX#14: divergent chip has aria/title hint for accessibility (issue 14)', () => {
+    const wrapper = mount(SourcePages, {
+      props: { pages: [9], runId: 'run-abc', divergentPages: new Set([9]) },
+    })
+    const chip = wrapper.find('.source-pages__chip')
+    const title = chip.attributes('title') ?? ''
+    // Must contain "divergente" or "Revisar" (accessible hint)
+    expect(title.toLowerCase()).toMatch(/divergente|revisar/i)
+  })
+
+  it('FIX#14: non-divergent chip title does NOT contain divergence hint', () => {
+    const wrapper = mount(SourcePages, {
+      props: { pages: [4], runId: 'run-abc', divergentPages: new Set<number>() },
+    })
+    const chip = wrapper.find('.source-pages__chip')
+    const title = chip.attributes('title') ?? ''
+    expect(title.toLowerCase()).not.toMatch(/divergente/i)
+  })
+
+  it('FIX#14: divergentPages defaults gracefully when not provided (no crash)', () => {
+    // The prop is optional; omitting it must not throw
+    const wrapper = mount(SourcePages, {
+      props: { pages: [1, 2], runId: 'run-abc' },
+    })
+    const chips = wrapper.findAll('.source-pages__chip')
+    expect(chips).toHaveLength(2)
+    chips.forEach((chip) => {
+      expect(chip.classes()).not.toContain('source-pages__chip--divergent')
+    })
+  })
 })

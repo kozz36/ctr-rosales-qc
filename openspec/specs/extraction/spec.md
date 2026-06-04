@@ -861,10 +861,10 @@ behaviour.
 `<think>` phase adds ~12 s per call on qwen3.5:397b-class models with no measurable accuracy
 benefit. The default fast path reduces median vision latency without a quality regression.
 
-The `disable_thinking` flag MUST be applied to both guía date-extraction calls
-(`VisionLLMPort.read_handwritten_date` for guía pages) and Protocolo date-extraction calls
-(`_stage_extract_declared_date` — R9, FDR-001). It MUST NOT be applied to non-vision
-pipeline stages.
+The `disable_thinking` flag MUST be applied to the guía date-extraction calls
+(`VisionLLMPort.read_handwritten_date` for guía pages). It MUST NOT be applied to non-vision
+pipeline stages. (The Protocolo declared date is parsed deterministically from the digital
+text layer — no vision call — so `disable_thinking` does not apply to it.)
 
 #### Acceptance Scenarios
 
@@ -884,13 +884,14 @@ When `VisionConfig` is instantiated
 Then `disable_thinking = False`
 And the vision adapter omits the `/no_think` prefix (thinking enabled)
 
-**Scenario EXT-S35 — disable_thinking applies to both guía and Protocolo vision calls**
+**Scenario EXT-S35 — disable_thinking applies to the guía vision date path**
 
 Given `disable_thinking = True` (default)
-And a run that processes guía pages (handwritten date) and Protocolo pages (declared date)
-When both vision call paths execute
-Then both include the `/no_think` prefix
-And OCR/text-extraction stages (PaddleOCR, digital text) are unaffected
+And a run that processes guía pages (handwritten date) via `VisionLLMPort.read_handwritten_date`
+When the guía vision call path executes
+Then the call includes the `/no_think` prefix
+And OCR/text-extraction stages (PaddleOCR, digital text — including the deterministic Protocolo
+  declared-date parse) are unaffected
 
 ---
 

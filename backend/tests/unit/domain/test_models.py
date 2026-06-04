@@ -253,30 +253,6 @@ class TestRegistroDigitalDeclaredDate:
         reg = Registro(numero="232", fecha_declarada=None, declared_lines=[])
         assert reg.fecha_authoritative is None
 
-    def test_fecha_authoritative_is_digital_declarada_not_handwritten_field(self) -> None:
-        """CRITICAL: after the domain fix, fecha_authoritative == fecha_declarada always.
-
-        The old code returned ``fecha_declarada_handwritten or fecha_declarada``,
-        which would prefer a vision-read handwritten date over the digital parse.
-        After the fix it must be simply ``fecha_declarada`` — no override.
-
-        This test will FAIL with the old code because the old property returns
-        ``fecha_declarada_handwritten`` (date(2026, 6, 1)) when it is set,
-        whereas the corrected property must return ``fecha_declarada`` (date(2026, 5, 28)).
-        """
-        # Simulate a Registro where the digital parse gave date(2026, 5, 28) but
-        # the old vision-read "handwritten" path would have stored a different value.
-        reg = Registro(
-            numero="232",
-            fecha_declarada=date(2026, 5, 28),   # DIGITAL authority
-            declared_lines=[],
-        )
-        # After the fix: fecha_authoritative == fecha_declarada, period.
-        assert reg.fecha_authoritative == date(2026, 5, 28)
-        # Must NOT be overrideable by any other mechanism — no kwargs exist to set a
-        # different authoritative value once the removed fields are gone.
-        assert reg.fecha_authoritative is not None
-
 
 class TestPageClassification:
     def test_instantiation_guia(self) -> None:

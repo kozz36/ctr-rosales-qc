@@ -104,8 +104,8 @@ extractor at any point in the run.
 
 ### CONT-005 — Vision calls use ROI crops; consumption is observable
 
-Each vision call MUST send only the relevant region-of-interest (guía date-stamp crop
-OR Protocolo "Fecha:" region), not the full page image.
+Each vision call MUST send only the relevant region-of-interest (guía date-stamp crop),
+not the full page image.
 
 The container run MUST log or surface token consumption per vision call and the aggregate
 total for the run so it is observable without post-processing.
@@ -114,7 +114,7 @@ total for the run so it is observable without post-processing.
 
 - GIVEN a guía page requiring a date read
 - WHEN the vision adapter constructs the request
-- THEN the image payload is the configured crop region (stamp or protocolo_crop)
+- THEN the image payload is the configured crop region (`stamp_crop`)
 - AND `max_tokens` is set to the configured tight value
 - AND the full-page image is NOT transmitted to the cloud endpoint
 

@@ -49,7 +49,8 @@ Given a pipeline run on a PDF with 100 pages, 30 guía pages, 20 guía blocks, 5
 When the pipeline executes
 Then `report_progress` is called with `stage_total=5` for each of the 5 slow stages
 And `item_total` in each call matches the actual count for that stage
-(100 for decode-identities, 100 for classify, 30 for OCR, 20 for vision, 5 for declared-date)
+(100 for decode-identities, 100 for classify, 30 for OCR, 20 for vision, 5 for the
+declared-count feeding reconcile completion)
 And `stage_index` increments from 1 to 5 across the stages
 
 **Scenario RPG-S02 — item_total uses real counts, not constants**

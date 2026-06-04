@@ -1619,7 +1619,7 @@ def _prepare_vision_image(image: bytes, config: AppConfig) -> bytes:
 
 
 def _crop_vision_image(image: bytes, crop_cfg: Any, label: str) -> bytes:
-    """Shared crop core for the guía-stamp and Protocolo vision images.
+    """Shared crop core for the guía-stamp vision images.
 
     Returns the cropped region when ``crop_cfg`` is enabled, else the original
     bytes (Option B full-page fallback).  Any PIL failure falls back to original.

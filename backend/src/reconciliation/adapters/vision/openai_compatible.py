@@ -169,7 +169,7 @@ def _parse_table_json_oai(raw: str) -> list[MaterialLine]:
             cantidad = float(entry.get("cantidad", 0))
         except (TypeError, ValueError):
             continue
-        # Normalize long-form unit labels ("TONELADAS"→"TN", "UND"→"RD") BEFORE the
+        # Normalize long-form unit labels ("TONELADAS"→"TN", "VARILLA"→"RD") BEFORE the
         # Literal coercion so a long-form unit does not silently drop the line
         # (FIX #3 — parity with the SUNAT path; shared domain map, no conversion).
         raw_unidad = str(entry.get("unidad") or "").strip()

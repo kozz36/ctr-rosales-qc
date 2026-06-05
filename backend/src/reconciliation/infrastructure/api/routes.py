@@ -390,7 +390,23 @@ def get_table(run_id: str, registry: RunRegistry) -> ReconciliationTableResponse
         if g.registro is None
     ]
 
-    return ReconciliationTableResponse(run_id=run_id, rows=rows, unresolved_guias=unresolved_guias)
+    # Populate errored_guias: guías that resolved to 0 material lines (REV-E04).
+    # Additive side-channel — never appears in rows, never affects reconciliation.
+    errored_guias = [
+        ErroredGuiaResponse(
+            registro=eg.registro,
+            guia_id=eg.guia_id,
+            source_pages=eg.source_pages,
+        )
+        for eg in review_service.errored_guias
+    ]
+
+    return ReconciliationTableResponse(
+        run_id=run_id,
+        rows=rows,
+        unresolved_guias=unresolved_guias,
+        errored_guias=errored_guias,
+    )
 
 
 @router.patch(

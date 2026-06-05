@@ -292,6 +292,10 @@ class ReconciliationTableResponse(BaseModel):
 
     Rev-2: ``unresolved_guias`` carries guías that could not be assigned to a
     registro (REC-C05 / REV-C04).  They are NEVER included in ``rows``.
+
+    Rev-3 (REV-E04): ``errored_guias`` surfaces guías that resolved to 0
+    material lines during extraction (additive side-channel — NEVER appears
+    in ``rows``, NEVER affects reconciliation logic).
     """
 
     run_id: str
@@ -299,6 +303,13 @@ class ReconciliationTableResponse(BaseModel):
     unresolved_guias: list[UnresolvedGuiaResponse] = Field(
         default_factory=list,
         description="Guías whose registro could not be determined (REV-C04).",
+    )
+    errored_guias: list[ErroredGuiaResponse] = Field(
+        default_factory=list,
+        description=(
+            "Guías that resolved to 0 material lines during extraction (REV-E04). "
+            "Additive read-only side-channel — never in rows, never affects MATCH/MISMATCH."
+        ),
     )
 
 

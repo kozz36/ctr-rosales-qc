@@ -1,5 +1,29 @@
 # Design: Guía Classification Keystone (backend, change #2)
 
+> **rev-5 (2026-06-05): Decision-1 case 3 GUARDED + SUNAT review-flag preserved.**
+> Two surgical fixes:
+> 1. **QR-evidence guard on case 3 (FIX 1).** The rev-4 condition
+>    `is_ocr_fallback_material = identity is None and len(raw.lines) > 0` is TOO
+>    BROAD: a sheet with NO QR at all that carries a NON-materials table (OCR emits
+>    spurious "lines") would wrongly open a phantom `ocr_fallback` guía with bogus
+>    material. A page is treated as an `ocr_fallback` guía ONLY with **positive QR
+>    evidence**: the URL-variant `hashqr=` QR (`page_hashqr_url is not None`),
+>    captured even when the compact identity QR fails (adapter EXT-012). New
+>    condition adds `and page_hashqr_url is not None`. A no-QR page with a spurious
+>    table now falls to the else-branch and is dropped. Residual accepted edge: a
+>    real guía where BOTH QRs fail is ignored (rare other-provider / manual-entry,
+>    out of scope).
+> 2. **SUNAT preserves `requires_review` on `ocr_fallback` blocks (FIX 2,
+>    JD round-4 WARNING).** `_apply_sunat_result` rebuilt block lines from the
+>    OfficialGre with the default `requires_review=False`, ERASING the C1
+>    uncertain-identity flag when SUNAT enriched an `ocr_fallback` block (compact
+>    QR failed but URL QR decoded → SUNAT fetch succeeded). Fix: SUNAT lines for an
+>    `ocr_fallback` block carry `requires_review=True`; QR blocks stay `False`.
+>    Default app mode is SUNAT-enabled + OCR-on, so this is a production path.
+>
+> See **Decision-1 (rev-5)** below. rev-4 case-3 own-block behavior holds WITH QR
+> evidence. Decision-2 (`errored_guias`) is unchanged — do NOT redo it.
+>
 > **rev-4 (2026-06-05): Decision-1 AMENDED (C1 fix).** The rev-3 gate
 > `absorb = identity is not None` silently dropped a non-QR page that *carries OCR
 > material* (the EXT-S24 `ocr_fallback` path: QR-decode failed but OCR read lines)
@@ -147,6 +171,54 @@ Implementation (`_stage_assemble_blocks`, pipeline.py ~935-993):
 0 lines → condition (d) NOT triggered → still dropped (case 2). reg228 still
 collapses to `source_pages=[98]`, 140/140 material retained. Confirmed by unit
 `test_zero_line_photo_still_dropped`.
+
+### Decision-1 (rev-5): case 3 requires QR evidence + SUNAT preserves the review flag
+
+**FIX 1 — QR-evidence guard.** Case 3 (rev-4) opened a block for ANY non-QR page
+with `len(raw.lines) > 0`. Domain authority: a page is a guía ONLY with positive
+QR evidence; OCR "lines" on a non-guía sheet (a non-materials table) are spurious.
+The implementable QR-evidence proxy is the URL-variant `hashqr=` QR
+(`page_hashqr_url`), a SUNAT GRE URL by definition, captured in the identity-None
+branch even when the compact identity QR fails (adapter EXT-012; pipeline.py sets
+`page_hashqr_url = page_hashqr_url_candidate`). The system CANNOT detect "compact
+QR present-but-unreadable" when there is also no URL QR, so `page_hashqr_url is not
+None` is the proxy.
+
+Corrected condition (`_stage_assemble_blocks`, pipeline.py ~935-960):
+```python
+is_ocr_fallback_material = (
+    identity is None
+    and len(raw.lines) > 0
+    and page_hashqr_url is not None
+)
+```
+| Case | Condition | Action |
+|------|-----------|--------|
+| 1 | `identity is not None` (QR page) | extends/opens block |
+| 2 | `identity is None` AND `len(raw.lines) == 0` (FHH photo) | dropped |
+| 2b (rev-5) | `identity is None` AND `len > 0` AND `page_hashqr_url is None` (no QR evidence; spurious table) | **dropped** (falls to else-branch, `absorb = identity is not None` = False) |
+| 3 | `identity is None` AND `len > 0` AND `page_hashqr_url is not None` (`ocr_fallback` material WITH QR evidence) | starts its OWN block, `requires_review` |
+
+**Residual accepted edge.** A real guía where BOTH the compact QR and the URL QR
+fail to decode is ignored (no QR evidence). Rare — other-provider / manual-entry
+territory — and out of scope; the validation gate still never silently drops a
+page that carries QR evidence.
+
+**FIX 2 — SUNAT preserves `requires_review` on `ocr_fallback` blocks.**
+`_apply_sunat_result` (pipeline.py ~1138-1185) replaces `block.lines` with fresh
+`MaterialLine`s built from the OfficialGre items, which default to
+`requires_review=False`. For an `ocr_fallback` block (compact QR failed but the URL
+QR decoded → SUNAT fetch by `hashqr_url` succeeded), this erased the C1
+uncertain-identity flag even though the material was enriched. Fix:
+`preserve_review = block.identity_source == "ocr_fallback"`; each SUNAT line is
+built with `requires_review=preserve_review`. QR-identified blocks keep `False`.
+The material side-channel (key/status/delta/qty) is untouched — only the additive
+review flag is carried.
+
+**Real-data invariant preserved (rev-5).** The 68 FHH photos (run `67e4e7a1`) have
+0 lines → not case 3 (and mostly no QR) → still dropped. reg228 still collapses to
+`source_pages=[98]`, 140/140 retained. Confirmed by `test_zero_line_photo_still_dropped`
+and `TestEXTS19bRealDataReg228PhotosNotAbsorbed`.
 
 ### Decision-2 (UNCHANGED — validated): additive `PipelineResult.errored_guias`
 

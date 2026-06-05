@@ -1,8 +1,26 @@
 # Delta for Extraction Domain
 **Change**: guia-classification-keystone
-**Phase**: spec (revision 4 — QR-only absorb gate + ocr_fallback material page → own reviewable block)
+**Phase**: spec (revision 5 — case 3 requires QR evidence + SUNAT preserves requires_review on ocr_fallback)
 **Date**: 2026-06-05
 
+> **rev-5 amendment (FIX 1 + FIX 2)**:
+> 1. **Case 3 requires positive QR evidence (FIX 1).** The rev-4 case-3 condition
+>    `is_ocr_fallback_material = identity is None and len(raw.lines) > 0` is too
+>    broad: a sheet with NO QR at all that carries a NON-materials table (OCR emits
+>    spurious "lines") would wrongly open a phantom `ocr_fallback` guía with bogus
+>    material. A page MUST be treated as an `ocr_fallback` guía ONLY with positive
+>    QR evidence — the URL-variant `hashqr=` QR (`page_hashqr_url is not None`),
+>    captured even when the compact identity QR fails (EXT-012). New condition:
+>    `... and page_hashqr_url is not None`. A no-QR page with a spurious table is
+>    dropped (case 2b). Residual accepted edge: a real guía where BOTH QRs fail is
+>    ignored (rare other-provider / manual-entry, out of scope).
+> 2. **SUNAT preserves `requires_review` on `ocr_fallback` blocks (FIX 2,
+>    JD round-4 WARNING).** When SUNAT enriches an `ocr_fallback` block (compact QR
+>    failed but URL QR decoded → SUNAT fetch succeeded), the SUNAT-built replacement
+>    `MaterialLine`s MUST carry `requires_review=True` so the C1 uncertain-identity
+>    flag is not erased. QR-identified blocks keep `requires_review=False`.
+> REQ2 (reconciliation errored_guias) is unchanged — do NOT redo it.
+>
 > **rev-4 amendment (C1)**: REQ1 keeps the rev-3 `absorb = identity is not None`
 > else-branch gate, but adds **case 3**: a non-QR page that *carries OCR material*
 > (`identity is None`, `len(raw.lines) > 0` — the EXT-S24 `ocr_fallback` path) MUST
@@ -52,19 +70,45 @@ material (rev-4, three cases):
 2. **Non-QR page with 0 material lines** (`identity is None`, `len(raw.lines) == 0` —
    `FORMA_HEADER_HEURISTIC` photo / annex): **DROPPED** — not appended to any block,
    not creating a block, not inflating any `source_pages` (rev-3, unchanged).
-3. **Non-QR page WITH material** (`identity is None`, `len(raw.lines) > 0` — the
-   EXT-S24 `ocr_fallback` path, QR-decode failed but OCR read lines): the page MUST
-   **start its OWN block** (`page_guia_id = "ocr_{source_page}"`,
-   `identity_source = "ocr_fallback"`), be counted in the registro total, and be
-   flagged **`requires_review` on its `MaterialLine`s** (uncertain identity). It MUST
-   NOT be silently dropped. This uses the existing `MaterialLine.requires_review` field;
-   the domain propagation (`domain/reconciliation.py`: any contributing-guía line
-   `requires_review` → `row_requires_review`) surfaces it. No parallel flagging system.
+3. **Non-QR page WITH material AND QR evidence** (`identity is None`,
+   `len(raw.lines) > 0`, AND `page_hashqr_url is not None` — the EXT-S24
+   `ocr_fallback` path, compact QR-decode failed but the URL `hashqr=` QR decoded
+   and OCR read lines): the page MUST **start its OWN block**
+   (`page_guia_id = "ocr_{source_page}"`, `identity_source = "ocr_fallback"`), be
+   counted in the registro total, and be flagged **`requires_review` on its
+   `MaterialLine`s** (uncertain identity). It MUST NOT be silently dropped. This
+   uses the existing `MaterialLine.requires_review` field; the domain propagation
+   (`domain/reconciliation.py`: any contributing-guía line `requires_review` →
+   `row_requires_review`) surfaces it. No parallel flagging system.
+4. **(rev-5, case 2b) Non-QR page WITH material but NO QR evidence**
+   (`identity is None`, `len(raw.lines) > 0`, AND `page_hashqr_url is None`): the
+   page is NOT a guía — its OCR "lines" are a spurious non-materials table. It MUST
+   be **DROPPED** (falls to the else-branch where `absorb = identity is not None` is
+   False). It MUST NOT open a phantom `ocr_fallback` guía with bogus material.
 
-Case 3 is implemented as start-new-block **condition (d)**
-(`is_ocr_fallback_material = identity is None and len(raw.lines) > 0`); after it, a
-material non-QR page never reaches the else-branch, so the else-branch sees only a
-same-`guia_id` 2nd QR page (absorbed) or a 0-line photo (dropped).
+Case 3 is implemented as start-new-block **condition (d)**:
+```
+is_ocr_fallback_material = (
+    identity is None
+    and len(raw.lines) > 0
+    and page_hashqr_url is not None
+)
+```
+After it, a material non-QR page WITH QR evidence never reaches the else-branch; the
+else-branch sees only a same-`guia_id` 2nd QR page (absorbed), a 0-line photo
+(dropped), or a no-QR-evidence material page (dropped, case 2b). `page_hashqr_url`
+is the URL `hashqr=` QR captured in the identity-None branch even when the compact
+identity QR fails (EXT-012) — the implementable QR-evidence proxy (the system cannot
+detect "compact QR present-but-unreadable" when there is also no URL QR).
+
+**SUNAT enrichment preserves the review flag (rev-5, FIX 2).** When SUNAT is enabled
+and replaces an `ocr_fallback` block's OCR lines with SUNAT-authoritative line items
+(`_apply_sunat_result`), the replacement `MaterialLine`s MUST carry
+`requires_review=True` (the block's `identity_source == "ocr_fallback"` uncertain-identity
+signal is preserved, not erased by the default `requires_review=False`). QR-identified
+blocks keep `requires_review=False`. Default app mode is SUNAT-enabled + OCR-on, so
+this is a production path; only the additive review side-channel is touched, never
+qty/unit/key/status.
 
 The classifier verdict for Condition-B pages MUST remain `GUIA` / `FORMA_HEADER_HEURISTIC`
 (page-local; no QR context available at classification time). The drop/own-block decision
@@ -76,10 +120,15 @@ lives exclusively in assembly.
   qr-anchored`) in assembly (wrong premise — FHH continuation class does not exist).
 - rev-3: Condition B stays `GUIA`; gate simplified to `absorb = identity is not None`;
   ALL non-QR pages dropped. Backed by real data + domain authority.
-- **rev-4 (this):** else-branch gate kept; **case 3** added — a non-QR page WITH OCR
+- rev-4: else-branch gate kept; **case 3** added — a non-QR page WITH OCR
   material opens its own `ocr_fallback` block + `requires_review` instead of being
   dropped (C1 fix; restores the never-silently-drop validation-gate invariant). Only
   0-line non-QR photos are dropped.
+- **rev-5 (this):** case 3 GUARDED by positive QR evidence
+  (`page_hashqr_url is not None`) — a no-QR page with a spurious table is dropped
+  (case 2b), NOT opened as a phantom guía. SUNAT enrichment of an `ocr_fallback`
+  block preserves `requires_review` (FIX 2). Real-data invariant holds (reg228
+  photos 0-line → still dropped).
 
 #### Scenario EXT-S19a — Non-guía image page (no open block) is NOT absorbed (unchanged, still passes)
 
@@ -157,21 +206,47 @@ The inverted scenario is:
 - THEN the open block for registro 228 is closed
 - AND a new block is opened for registro 229
 
-#### Scenario EXT-S19h — Non-QR page WITH OCR material → own ocr_fallback block + requires_review (rev-4, C1)
+#### Scenario EXT-S19h — Non-QR page WITH OCR material AND QR evidence → own ocr_fallback block + requires_review (rev-4 case 3, rev-5 guarded)
 
-**Case 3. RED against the rev-3 gate (where this page is dropped); GREEN after condition (d).**
+**Case 3. GREEN after condition (d); rev-5 requires the URL QR evidence to be present.**
 
 - GIVEN page A: Condition A (QR `T112-0001`, registro `232`) with material lines
-- AND page B: Condition B (`FORMA_HEADER_HEURISTIC`, registro `232`) whose QR FAILED to
-  decode (`identity is None`) but whose OCR read material lines (`len(raw.lines) > 0`)
+- AND page B: Condition B (`FORMA_HEADER_HEURISTIC`, registro `232`) whose compact QR
+  FAILED to decode (`identity is None`) but whose URL `hashqr=` QR decoded
+  (`page_hashqr_url is not None`) and whose OCR read material lines (`len(raw.lines) > 0`)
 - AND page C: Condition A (QR `T112-0003`, registro `232`) with material lines
 - WHEN `_stage_assemble_blocks` processes [A, B, C]
 - THEN B is NOT dropped and is NOT absorbed into A's block
 - AND B starts its OWN block with `guia_id = "ocr_1"`, `identity_source = "ocr_fallback"`,
-  `source_pages = [B]`
+  `source_pages = [B]`, `gre_hashqr_url` = B's URL QR
 - AND every `MaterialLine` on B's block has `requires_review = True`
 - AND THREE blocks are produced (A, B, C) and the registro total includes A + B + C material
   (B's quantity is NOT lost)
+
+#### Scenario EXT-S19j — Non-QR page WITH material but NO QR evidence → DROPPED (rev-5, case 2b, FIX 1)
+
+**RED against the rev-4 condition (which opened a phantom block); GREEN after the
+`page_hashqr_url is not None` guard.**
+
+- GIVEN page A: Condition A (QR `T112-0001`, registro `232`) with material lines
+- AND page B: Condition B (`FORMA_HEADER_HEURISTIC`, registro `232`) with `identity is None`,
+  `len(raw.lines) > 0` (a spurious non-materials table), AND `page_hashqr_url is None`
+  (no compact QR, no URL QR — NO QR evidence)
+- WHEN `_stage_assemble_blocks` processes [A, B]
+- THEN B is DROPPED — it does NOT open an `ocr_fallback` block and is NOT absorbed
+- AND only ONE block (A) is produced with `source_pages = [0]`
+
+#### Scenario EXT-S19k — SUNAT enrichment preserves requires_review on an ocr_fallback block (rev-5, FIX 2)
+
+**RED against the pre-fix `_apply_sunat_result` (which built fresh lines with the
+default `requires_review=False`, erasing the C1 flag); GREEN after.**
+
+- GIVEN an `ocr_fallback` block (`identity_source == "ocr_fallback"`, `gre_hashqr_url`
+  present) whose OCR lines are flagged `requires_review = True`
+- AND SUNAT is enabled and returns an `OfficialGre` with line items for that block's URL
+- WHEN `_apply_sunat_result` replaces the block's OCR lines with SUNAT line items
+- THEN every resulting `MaterialLine` still has `requires_review = True`
+- AND a QR-identified block enriched the same way keeps `requires_review = False`
 
 #### Scenario EXT-S19i — Non-QR page with 0 material lines (FHH photo) still dropped (case 2, rev-3 unchanged)
 
@@ -194,9 +269,15 @@ gate — treated identically to a photo page. Per domain authority this case is 
 the current PDF corpus and is explicitly OUT OF SCOPE. Recovery: the #3 reprocess flow / a
 future MANUAL-ENTRY feature.
 
-**rev-4 narrows this:** a non-QR page that DOES carry OCR material is no longer dropped — it
-opens its own `ocr_fallback` block flagged `requires_review` (case 3 / EXT-S19h). The
-remaining limitation applies only to non-QR pages with **no extractable material**.
+**rev-4 narrowed this:** a non-QR page that DOES carry OCR material opened its own
+`ocr_fallback` block flagged `requires_review` (case 3 / EXT-S19h).
+
+**rev-5 re-bounds it:** case 3 now requires positive QR evidence
+(`page_hashqr_url is not None`). A non-QR page with material but NO QR evidence is
+dropped as a spurious table (case 2b / EXT-S19j). The accepted residual: a real guía
+where BOTH the compact QR and the URL `hashqr=` QR fail to decode is ignored (no QR
+evidence) — rare other-provider / manual-entry territory, OUT OF SCOPE. Recovery:
+the #3 reprocess flow / a future MANUAL-ENTRY feature.
 
 This replaces the rev-2 framing of "first-page pure-heuristic guía opening its registro".
 

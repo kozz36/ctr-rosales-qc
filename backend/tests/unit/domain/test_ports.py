@@ -149,6 +149,9 @@ class _StubIdentityExtraction:
             confidence=1.0,
         )
 
+    def decode_hashqr_url(self, image: bytes, page_idx: int | None = None) -> str | None:
+        return None
+
 
 class _StubSunatGreFetch:
     def fetch(self, hashqr_url: str) -> None:
@@ -174,9 +177,54 @@ class TestIdentityExtractionPort:
             def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
                 return None
 
+            def decode_hashqr_url(self, image: bytes, page_idx: int | None = None) -> str | None:
+                return None
+
         stub = _NoneStub()
         assert isinstance(stub, IdentityExtractionPort)
         assert stub.decode_identity(b"img") is None
+
+    # T-1 (REV-R01): decode_hashqr_url must be a formal Protocol method.
+    def test_decode_hashqr_url_required_in_protocol(self) -> None:
+        """A stub missing decode_hashqr_url does NOT satisfy IdentityExtractionPort.
+
+        This test is the RED gate: it will fail until decode_hashqr_url is added
+        to the IdentityExtractionPort Protocol definition.
+        """
+        class _MissingHashqr:
+            # Only decode_identity — no decode_hashqr_url
+            def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
+                return None
+
+        stub = _MissingHashqr()
+        # After T-1 promotion, isinstance MUST be False for this stub.
+        assert not isinstance(stub, IdentityExtractionPort)
+
+    def test_decode_hashqr_url_full_stub_satisfies_protocol(self) -> None:
+        """A stub with both methods fully satisfies IdentityExtractionPort (GREEN gate)."""
+        class _FullStub:
+            def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
+                return None
+
+            def decode_hashqr_url(self, image: bytes, page_idx: int | None = None) -> str | None:
+                return "https://e-factura.sunat.gob.pe/v1/gre?hashqr=TOKEN"
+
+        stub = _FullStub()
+        assert isinstance(stub, IdentityExtractionPort)
+        assert stub.decode_hashqr_url(b"image") is not None
+
+    def test_decode_hashqr_url_can_return_none(self) -> None:
+        """decode_hashqr_url returns None when no URL-variant QR is found."""
+        class _NoneStub:
+            def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
+                return None
+
+            def decode_hashqr_url(self, image: bytes, page_idx: int | None = None) -> str | None:
+                return None
+
+        stub = _NoneStub()
+        assert isinstance(stub, IdentityExtractionPort)
+        assert stub.decode_hashqr_url(b"img") is None
 
 
 class TestSunatGreFetchPort:

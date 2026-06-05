@@ -506,9 +506,10 @@ class ReconciliationPipeline:
                     decoded = identity is not None
                     # Even if identity gate failed, check for URL-variant QR.
                     # QrBarcodeExtractionAdapter returns None when only URL-QR found;
-                    # we still want the hashqr_url.  Attempt via duck-type helper.
-                    if not decoded and hasattr(self._identity, "decode_hashqr_url"):
-                        _url = self._identity.decode_hashqr_url(  # noqa: E501
+                    # we still want the hashqr_url.  decode_hashqr_url is now a
+                    # first-class Protocol method (T-1 / REV-R01) — no hasattr guard.
+                    if not decoded:
+                        _url = self._identity.decode_hashqr_url(
                             rendered, page_idx=idx
                         )
                         if _url:

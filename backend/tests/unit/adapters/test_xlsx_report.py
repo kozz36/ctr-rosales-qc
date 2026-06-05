@@ -19,8 +19,12 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from reconciliation.adapters.report.xlsx_report import ExcelReportAdapter, _COLUMNS
-from reconciliation.domain.models import ReconciliationRow
+from reconciliation.adapters.report.xlsx_report import (
+    ExcelReportAdapter,
+    _COLUMNS,
+    _GUIA_ITEMS_COLUMNS,
+)
+from reconciliation.domain.models import GuiaContribution, ReconciliationRow
 from reconciliation.domain.ports import ReportPort
 
 
@@ -558,3 +562,205 @@ class TestErrorHandling:
     ) -> None:
         with pytest.raises(ValueError, match="Unsupported format"):
             adapter.export([], [], tmp_path / "out", "pdf")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# "Items por Guía" sheet — per-guía line items (additive sheet, EXT-XXX)
+# ---------------------------------------------------------------------------
+
+def _make_row_with_guias(
+    registro: str,
+    material: str,
+    unidad: str,
+    guia_contributions: list[tuple[str, list[int], str]],  # (guia_id, pages, cantidad_str)
+) -> ReconciliationRow:
+    """Build a ReconciliationRow with explicit GuiaContribution objects."""
+    contributions = [
+        GuiaContribution(
+            guia_id=guia_id,
+            source_pages=pages,
+            cantidad=Decimal(cantidad_str),
+            unidad=unidad,
+            confidence=0.95,
+            identity_source="qr",
+        )
+        for guia_id, pages, cantidad_str in guia_contributions
+    ]
+    return ReconciliationRow(
+        registro=registro,
+        fecha=date(2026, 5, 28),
+        material_canonical=material,
+        unidad=unidad,
+        declared_qty=Decimal("2.00"),
+        delta=Decimal("0"),
+        status="MATCH",
+        source_pages=[p for _, pages, _ in guia_contributions for p in pages],
+        guias=contributions,
+    )
+
+
+class TestItemsPorGuiaSheet:
+    """Sheet 4: 'Items por Guía' — one row per (guia_id, material, unidad) line item."""
+
+    _SHEET_NAME = "Items por Guía"
+    _EXPECTED_HEADERS = ["Registro", "Guía", "Página(s)", "Material", "Cantidad", "Unidad"]
+
+    def _rows_with_guias(self) -> list[ReconciliationRow]:
+        """Two reconciliation rows covering two guías across two registros."""
+        return [
+            _make_row_with_guias(
+                registro="232",
+                material="BARRA A615 G60 1/2\" 9M",
+                unidad="TN",
+                guia_contributions=[
+                    ("T009-0741770", [3, 4], "2.062"),
+                    ("T009-0741771", [5], "2.062"),
+                ],
+            ),
+            _make_row_with_guias(
+                registro="232",
+                material="BARRA A615 G60 3/8\" 9M",
+                unidad="TN",
+                guia_contributions=[
+                    ("T009-0741770", [3, 4], "1.500"),
+                ],
+            ),
+            _make_row_with_guias(
+                registro="231",
+                material="BARRA A615 G60 8MM 9M",
+                unidad="KG",
+                guia_contributions=[
+                    ("T073-0001234", [10], "850.00"),
+                ],
+            ),
+        ]
+
+    def test_sheet_exists(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        """'Items por Guía' sheet must be present in the xlsx workbook."""
+        rows = self._rows_with_guias()
+        out = adapter.export(rows, [], tmp_path / "r.xlsx", "xlsx")
+        wb = openpyxl.load_workbook(str(out))
+        assert self._SHEET_NAME in wb.sheetnames
+
+    def test_sheet_headers(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        """Headers must match the 6-column spec exactly."""
+        rows = self._rows_with_guias()
+        out = adapter.export(rows, [], tmp_path / "r.xlsx", "xlsx")
+        wb = openpyxl.load_workbook(str(out))
+        ws = wb[self._SHEET_NAME]
+        headers = [ws.cell(1, c).value for c in range(1, len(self._EXPECTED_HEADERS) + 1)]
+        assert headers == self._EXPECTED_HEADERS
+
+    def test_row_count_one_per_guia_line(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        """Each GuiaContribution emits one data row (header excluded).
+
+        Row distribution:
+          T009-0741770: 2 materials (1/2" and 3/8") → 2 rows
+          T009-0741771: 1 material (1/2")           → 1 row
+          T073-0001234: 1 material (8mm)            → 1 row
+        Total data rows = 4.
+        """
+        rows = self._rows_with_guias()
+        out = adapter.export(rows, [], tmp_path / "r.xlsx", "xlsx")
+        wb = openpyxl.load_workbook(str(out))
+        ws = wb[self._SHEET_NAME]
+        assert ws.max_row == 1 + 4  # header + 4 data rows
+
+    def test_guia_id_in_column(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        """'Guía' column (col 2) must contain actual guia_id values."""
+        rows = self._rows_with_guias()
+        out = adapter.export(rows, [], tmp_path / "r.xlsx", "xlsx")
+        wb = openpyxl.load_workbook(str(out))
+        ws = wb[self._SHEET_NAME]
+        guia_col_values = {ws.cell(r, 2).value for r in range(2, ws.max_row + 1)}
+        assert "T009-0741770" in guia_col_values
+        assert "T009-0741771" in guia_col_values
+        assert "T073-0001234" in guia_col_values
+
+    def test_pages_comma_separated(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        """'Página(s)' (col 3) must render source_pages as comma-separated sorted ints."""
+        rows = [
+            _make_row_with_guias(
+                registro="232",
+                material="BARRA A615 G60 1/2\" 9M",
+                unidad="TN",
+                guia_contributions=[("T009-0001", [10, 3, 7], "1.00")],
+            )
+        ]
+        out = adapter.export(rows, [], tmp_path / "r.xlsx", "xlsx")
+        wb = openpyxl.load_workbook(str(out))
+        ws = wb[self._SHEET_NAME]
+        pages_val = ws.cell(2, 3).value
+        assert pages_val == "3, 7, 10"
+
+    def test_material_in_column(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        """'Material' column (col 4) must match the ReconciliationRow material_canonical."""
+        rows = [
+            _make_row_with_guias(
+                registro="232",
+                material="BARRA A615 G60 1/2\" 9M",
+                unidad="TN",
+                guia_contributions=[("T009-0001", [3], "2.00")],
+            )
+        ]
+        out = adapter.export(rows, [], tmp_path / "r.xlsx", "xlsx")
+        wb = openpyxl.load_workbook(str(out))
+        ws = wb[self._SHEET_NAME]
+        assert ws.cell(2, 4).value == "BARRA A615 G60 1/2\" 9M"
+
+    def test_cantidad_as_string(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        """'Cantidad' (col 5) must be the contribution cantidad as a string."""
+        rows = [
+            _make_row_with_guias(
+                registro="232",
+                material="BARRA A615 G60 1/2\" 9M",
+                unidad="TN",
+                guia_contributions=[("T009-0001", [3], "4.124")],
+            )
+        ]
+        out = adapter.export(rows, [], tmp_path / "r.xlsx", "xlsx")
+        wb = openpyxl.load_workbook(str(out))
+        ws = wb[self._SHEET_NAME]
+        assert ws.cell(2, 5).value == "4.124"
+
+    def test_unidad_in_column(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        """'Unidad' (col 6) must match the contribution unidad."""
+        rows = [
+            _make_row_with_guias(
+                registro="232",
+                material="MAT",
+                unidad="KG",
+                guia_contributions=[("T009-0001", [1], "100")],
+            )
+        ]
+        out = adapter.export(rows, [], tmp_path / "r.xlsx", "xlsx")
+        wb = openpyxl.load_workbook(str(out))
+        ws = wb[self._SHEET_NAME]
+        assert ws.cell(2, 6).value == "KG"
+
+    def test_registro_in_column(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        """'Registro' (col 1) must match the row registro."""
+        rows = [
+            _make_row_with_guias(
+                registro="999",
+                material="MAT",
+                unidad="TN",
+                guia_contributions=[("T009-0001", [1], "1.00")],
+            )
+        ]
+        out = adapter.export(rows, [], tmp_path / "r.xlsx", "xlsx")
+        wb = openpyxl.load_workbook(str(out))
+        ws = wb[self._SHEET_NAME]
+        assert ws.cell(2, 1).value == "999"
+
+    def test_no_guias_produces_header_only(self, adapter: ExcelReportAdapter, tmp_path: Path) -> None:
+        """When all rows have empty guias list, only the header row is emitted."""
+        rows = [_make_row(registro="232")]  # no guias
+        out = adapter.export(rows, [], tmp_path / "r.xlsx", "xlsx")
+        wb = openpyxl.load_workbook(str(out))
+        ws = wb[self._SHEET_NAME]
+        assert ws.max_row == 1  # header only
+
+    def test_column_constant_exported(self) -> None:
+        """_GUIA_ITEMS_COLUMNS constant must match the 6-column spec."""
+        assert _GUIA_ITEMS_COLUMNS == self._EXPECTED_HEADERS

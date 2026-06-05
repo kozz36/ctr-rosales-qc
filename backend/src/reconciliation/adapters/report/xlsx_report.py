@@ -4,10 +4,11 @@ Locked 13-column set (MAT-008 +Revisión; R8.11 +Método; was 11 in rev-3, 10 in
     Registro | Fecha | Material | Unidad | Declarado | Sumado(guías) | Delta |
     Estado | Confianza mín | Páginas origen | Año inferido | Método | Revisión
 
-xlsx output contains three sheets:
-    1. Reconciliacion — the main 13-column reconciliation table
+xlsx output contains four sheets:
+    1. Reconciliacion  — the main 13-column reconciliation table
     2. Resumen         — per-registro summary (count, totals, status breakdown)
     3. Audit Trail     — the raw audit trail events (optional; omitted if empty)
+    4. Items por Guía  — one row per (guia_id, material, unidad) contribution
 
 csv output writes two UTF-8 files:
     <dst>.csv           — reconciliation table (same 13 columns)
@@ -53,6 +54,19 @@ _COLUMNS: Final[list[str]] = [
     "Método",
     # MAT-008 / verify W2: requires_review flag surfaced for the engineer.
     "Revisión",
+]
+
+# ---------------------------------------------------------------------------
+# Column specification — "Items por Guía" sheet (additive, one row per guía line)
+# ---------------------------------------------------------------------------
+
+_GUIA_ITEMS_COLUMNS: Final[list[str]] = [
+    "Registro",
+    "Guía",
+    "Página(s)",
+    "Material",
+    "Cantidad",
+    "Unidad",
 ]
 
 # Status → fill colour (ARGB)
@@ -161,6 +175,41 @@ def _auto_width(ws: openpyxl.worksheet.worksheet.Worksheet) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Guía items builder
+# ---------------------------------------------------------------------------
+
+
+def _build_guia_items(rows: list[ReconciliationRow]) -> list[list[object]]:
+    """Build one row per (guia_id, material_canonical, unidad) contribution.
+
+    Iterates every ReconciliationRow's ``guias`` list (GuiaContribution objects)
+    and emits one result row per contribution.  A guía that contributed to N
+    material groups produces N rows.  A guía with zero lines (not present in any
+    contribution) does not appear here — the adapter receives only
+    ``ReconciliationRow`` objects and has no access to unresolved raw guías.
+
+    Columns: Registro | Guía | Página(s) | Material | Cantidad | Unidad
+    """
+    result: list[list[object]] = []
+    for row in rows:
+        for contrib in row.guias:
+            pages_str = (
+                ", ".join(str(p) for p in sorted(contrib.source_pages))
+                if contrib.source_pages
+                else ""
+            )
+            result.append([
+                row.registro,
+                contrib.guia_id,
+                pages_str,
+                row.material_canonical,
+                str(contrib.cantidad),
+                contrib.unidad,
+            ])
+    return result
+
+
+# ---------------------------------------------------------------------------
 # xlsx writer
 # ---------------------------------------------------------------------------
 
@@ -219,6 +268,15 @@ def _write_xlsx(
             for event in audit_trail:
                 ws_audit.append([str(v) for v in event.values()])
             _auto_width(ws_audit)
+
+    # --- Sheet 4: Items por Guía ---
+    ws_guia = wb.create_sheet("Items por Guía")
+    ws_guia.append(_GUIA_ITEMS_COLUMNS)
+    _apply_header_style(ws_guia, len(_GUIA_ITEMS_COLUMNS))
+    for guia_row in _build_guia_items(rows):
+        ws_guia.append(guia_row)
+    _auto_width(ws_guia)
+    ws_guia.freeze_panes = "A2"
 
     # Ensure parent directory exists
     dst.parent.mkdir(parents=True, exist_ok=True)

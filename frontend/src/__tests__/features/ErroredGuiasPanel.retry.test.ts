@@ -12,7 +12,7 @@
  * - Success: TanStack query invalidation (via emit or callback)
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ErroredGuiasPanel from '@/features/review/ErroredGuiasPanel.vue'
 import type { ErroredGuiaResponse } from '@/api/types'

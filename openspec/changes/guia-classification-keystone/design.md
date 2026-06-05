@@ -1,78 +1,102 @@
 # Design: Guía Classification Keystone (backend, change #2)
 
+> **rev-3 (2026-06-05): Decision-1 REVISED.** The positional/adjacency gate was
+> built on a premise the real-data e2e gate (run `67e4e7a1`) proved FALSE. See
+> **Decision-1 (REVISED)** below. Decision-2 (`errored_guias`) is unchanged and
+> validated — do NOT redo it.
+
 ## Technical Approach
 
-Two additive, layer-respecting fixes. Bug 1 (over-classification + continuation
-absorption) is solved by moving the absorb-vs-ignore decision from the **page-local
-classifier** (which cannot see context) to the **`_stage_assemble_blocks`** stage
-(which sees the preceding block). Bug 2 (silent 0-line guías) is solved with an
-additive `PipelineResult.errored_guias` side-channel populated after `_stage_sunat_fetch`,
-mirroring the existing `warnings` precedent. Q1 RESOLVED: expose only
-`(registro, guia_id, source_pages)`; transient/systematic probe deferred to #3.
+Two additive, layer-respecting fixes. Bug 1 (continuation absorption): the
+absorb-vs-drop decision lives in `_stage_assemble_blocks` (the only stage with
+preceding-block context); rev-3 simplifies the predicate to **QR-identity-only
+extension**. Bug 2 (silent 0-line guías): additive
+`PipelineResult.errored_guias` side-channel populated after `_stage_sunat_fetch`,
+mirroring `warnings`. Q1 RESOLVED: expose only `(registro, guia_id, source_pages)`;
+probe deferred to #3.
 
-## The crux (Bug 1) — why the discriminator is positional, not page-local
+## The crux (Bug 1) — REVISED by real data
 
-A Condition-B page (cleaned body `<= 200` chars, `image_dominant`, no QR, no title)
-is **signal-identical** whether it is a genuine continuation of a real guía
-(T112-0065421 p152) or a non-guía photo/annex page. Real-code proof: test
-`EXT-S24` (`test_hybrid_classifier.py:231`) asserts a real scanned guía with
-`image_dominant=True, qr_is_guia=False` MUST classify as GUIA via
-`FORMA_HEADER_HEURISTIC`. So Condition B legitimately fires for BOTH a genuine
-guía page and a non-guía image page. **No page-local predicate can separate them.**
+The original design assumed a Condition-B page (`image_dominant`, no QR, no title,
+classified `FORMA_HEADER_HEURISTIC` = "FHH") could be EITHER a genuine no-QR
+continuation of a real guía OR a non-guía photo, and that adjacency to a
+QR-anchored block disambiguated them. **The real data refutes the first horn:**
 
-The only signal that separates them is **adjacency to an identified guía block**:
-a Condition-B page is a genuine continuation **iff** it is contiguous with, and
-shares the `registro` of, an immediately-preceding block whose identity came from
-a strong signal (QR `Condition A`, or `GUIA DE REMISION` text `Condition C`).
-That context exists only in `_stage_assemble_blocks`, never in the pure classifier.
+Hard evidence — run `67e4e7a1` / `/tmp/cache_67e4e7a1.json` (165 classifications,
+83 guías, 140 material lines):
+- 83 pages are `QR_IDENTITY` (real guías); 68 pages are FHH and **all 68 are photos/annexes**.
+- **Material provenance: 140/140 lines on QR pages, 0 on FHH pages.**
+- Guías opened by an FHH page: **0**. All 83 `identity_source == "qr"`.
+- Every "multipage" block = ONE QR page + a tail of FHH photos: reg228 QR p98 + 39
+  photos pp99-137; reg229 QR p56 + 25; reg231 QR p32 + 3; reg227 QR p151 + 1
+  (T112-0065421, which has **0 lines** — it is a photo, not a continuation).
+
+So the design's load-bearing example (preserve "genuine FHH continuation p152")
+was wrong: p152 is an FHH photo and its guía has zero lines. **No genuine
+multi-page guía has a QR-less continuation in the data.** The original gate
+(`absorb = not is_heuristic_only or (identity_source=="qr" and same registro)`,
+pipeline.py:981-984) KEEPS every same-registro FHH photo — the opposite of the fix.
+
+**Domain authority (the engineer, ground-truth):** every SUNAT guía de remisión
+carries a QR on EACH page (the page also prints "GUIA DE REMISION" in its
+orientation). A non-QR page inside a registro section is a photo/annex.
+Other-provider guías without QR are unseen/rare → a future one-off MANUAL-ENTRY
+feature, **OUT OF SCOPE here**. Therefore: assume every guía page has a QR; a
+multi-page guía is held together by **QR identity** (same `guia_id` on each page),
+not by adjacency.
 
 ## Architecture Decisions
 
-### Decision: Keep Condition B = GUIA in the classifier; gate absorption in assembly
+### Decision-1 (REVISED, rev-3): QR identity is the ONLY block-extender
+
+**Choice**: In the `_stage_assemble_blocks` continuation else-branch
+(pipeline.py:967-991), a continuation candidate is absorbed **iff it carries a QR
+identity**. Replace the positional predicate with:
+
+```python
+absorb = identity is not None
+```
+
+(Equivalently: drop the `not is_heuristic_only or (...)` clause entirely.) A
+non-QR page (`identity is None` — FHH photo, or any text-title-no-QR page) is
+**dropped** (no append, no new block). A QR page is absorbed.
+
+**Alternatives considered**:
 | Option | Tradeoff | Decision |
 |--------|----------|----------|
-| Classifier Condition B → `IGNORED` (proposal literal) | Breaks EXT-S24: kills genuine no-QR guía first-pages AND continuations; they never enter `raw_guias`. Page-local layer lacks context. | Rejected |
-| Classifier keeps GUIA + `title_matched="FORMA_HEADER_HEURISTIC"`; assembly demotes orphan heuristic pages | Heuristic pages still reach `assemble_blocks` (already filtered only by `kind=="GUIA"` at :789); assembly has the preceding-block context to decide absorb vs. drop. Domain stays pure. | **Chosen** |
+| Original positional gate (`not is_heuristic_only or (qr anchor and same registro)`) | Built on a false premise; KEEPS all same-registro FHH photos (reg228 → pp98-137 inflation). Refuted by 140/140 lines on QR pages. | **Rejected (was rev-2)** |
+| `absorb = identity is not None` (QR-only extension) | Drops every non-QR page (all photos); a same-`guia_id` 2nd QR page (true multi-QR-page guía) is still absorbed by the existing start-new-block logic + this branch. Loses zero material (0 lines on FHH). | **Chosen (rev-3)** |
+| Classifier emits FHH→IGNORED | Breaks EXT-S24 (classifier is page-local, pure); still cannot see QR context. | Rejected |
 
-**Rationale**: The classifier is page-local and pure; it cannot and should not make
-a context-dependent call. `title_matched` already uniquely tags Condition-B pages
-(no new enum value needed). The decision belongs where the context lives.
+**Control-flow verification (against pipeline.py:935-991):** the else-branch is
+reached only when `start_new_block == False`, which (lines 936-947) requires
+`current_block is not None` AND `raw.registro == current_block.registro` AND NOT
+(`identity is not None` AND `page_guia_id != current_block.guia_id`). So inside the
+else-branch the registro already matches and `identity` is either `None` **or** a
+QR with the **same `guia_id`**. Under `absorb = identity is not None`:
+- `identity is None` (FHH photo, or a hypothetical text-title-no-QR page) → **dropped**. It does not append and does not start a block, so it CANNOT become a phantom 0-line guía. ✓
+- `identity is not None` (same-`guia_id` 2nd QR page = a true multi-QR-page guía) → **absorbed** into the open block. ✓ This is exactly the desired multi-page-guía behaviour, now driven by QR identity, not adjacency.
 
-### Decision: Absorption predicate in `_stage_assemble_blocks` (pipeline.py:952-959)
-A heuristic page (`identity is None` AND its classification `title_matched ==
-"FORMA_HEADER_HEURISTIC"`) is absorbed as a **continuation** ONLY when a
-`current_block` exists, shares its `registro`, AND that block was opened by a
-**strong identity** (`identity_source == "qr"` OR `title_matched` of its first page
-was a `GUIA DE REMISION` text match). Otherwise the heuristic page is **dropped**
-(not appended, no new block) and recorded for the side-channel.
+**Rationale**: QR identity is the authoritative, deterministic guía boundary
+(domain ruling). Adjacency was a proxy for a continuation class that does not
+exist in the data. Removing it eliminates photo inflation (reg228 source_pages
+collapses to `[98]`) with zero material loss, and remains correct for the only
+real multi-page case (repeated QR identity).
 
-```
-absorb = (
-    current_block is not None
-    and identity is None
-    and raw.registro == current_block.registro
-    and current_block.identity_source == "qr"      # strong-signal anchor
-)
-```
-- Genuine continuation (p152 after a QR p151, same registro) → absorbed (unchanged behaviour).
-- Non-guía image page with no preceding strong block, or registro mismatch → dropped.
-- A heuristic page that DOES carry its own QR is `Condition A`, not Condition B → unaffected.
+**Known limitation + recovery path**: a real guía page that is a text-title
+"GUIA DE REMISION" page WITHOUT a QR is dropped by this gate (treated like any
+non-QR page). Per domain authority this is unseen/rare and explicitly OUT OF
+SCOPE. Recovery: the #3 reprocess flow / a future MANUAL-ENTRY feature. Documented,
+not silently handled.
 
-**Distinguishing condition stated precisely**: "continuation of a real guía" =
-no-QR Condition-B page contiguous-and-same-registro to a QR-anchored open block;
-"non-guía image page" = a Condition-B page failing that adjacency test.
+### Decision-2 (UNCHANGED — validated): additive `PipelineResult.errored_guias`
 
-`_stage_assemble_blocks` must therefore receive the per-page `title_matched`
-(via the `classifications` list it already takes, indexed by page) so it can tell
-a heuristic page from a real no-QR first page. No new dependency.
-
-### Decision: Bug 2 side-channel as additive `PipelineResult.errored_guias`
 | Option | Tradeoff | Decision |
 |--------|----------|----------|
-| New field on `ReconciliationRow` | Violates "never touch row key/status/delta/qty"; 0-line guías are an input gap, not a row. | Rejected |
-| New `PipelineResult.errored_guias` field (mirrors `warnings`) | Purely additive; consumers ignoring it are unaffected; report port reads it optionally. | **Chosen** |
+| New field on `ReconciliationRow` | Violates "never touch row key/status/delta/qty"; a 0-line guía is an input gap, not a row. | Rejected |
+| New `PipelineResult.errored_guias` (mirrors `warnings`) | Purely additive; consumers ignoring it are unaffected; report port reads it optionally. | **Chosen** |
 
-Entry type lives in `domain/models.py` (pure pydantic):
+Pure pydantic entry in `domain/models.py`:
 ```python
 class ErroredGuia(BaseModel):
     registro: str | None
@@ -80,28 +104,23 @@ class ErroredGuia(BaseModel):
     source_pages: list[int]
 ```
 `PipelineResult` gains `errored_guias: list[ErroredGuia] = field(default_factory=list)`
-(dataclass default, mirrors `warnings`, pipeline.py:227).
-
-### Decision: 0-line detection point — after SUNAT fetch, before reconcile
-Detected in `run()` immediately after `_stage_sunat_fetch` (:370) by scanning
-`blocks` whose `lines == []` (OCR returned nothing AND SUNAT did not enrich).
-Built into `errored_guias` from `(block.registro, block.guia_id, block.source_pages)`.
-This NEVER touches group key / status / delta / qty — the 0-line guía still flows
-through reconcile and surfaces as a flagged row exactly as today; the side-channel
-only *exposes* the gap for #3's UI.
+(mirrors `warnings`, pipeline.py:227). Detected in `run()` right after
+`_stage_sunat_fetch` (:370) by scanning `blocks` with `lines == []`. Never touches
+key/status/delta/qty; the 0-line guía still flows through reconcile and surfaces
+flagged as today.
 
 ## Layer Placement (hexagonal — verified)
-- `domain/classifier.py`: unchanged verdict (stays pure booleans-in / value-out).
+- `domain/classifier.py`: verdict UNCHANGED (pure).
 - `domain/models.py`: add pure `ErroredGuia` (no IO).
-- `application/pipeline.py`: assembly gating + side-channel population — ports/config only, zero concrete-adapter imports.
-- Report port (`ReportPort`): consumes `errored_guias` only if #3 needs export; out of scope here.
+- `application/pipeline.py`: simplified absorb predicate + side-channel populate — ports/config only, zero concrete-adapter imports.
+- `ReportPort`: consumes `errored_guias` only if #3 needs export; out of scope here.
 
 ## Data Flow
 ```
 classify (Cond B → GUIA, title=FORMA_HEADER_HEURISTIC)
    → raw_guias (kind=="GUIA", :789)
-       → assemble_blocks  ── adjacency gate ──> absorb genuine continuation
-            │                                   drop non-guía image page
+       → assemble_blocks ── absorb = identity is not None ──> QR page extends block
+            │                                                non-QR page DROPPED (photo)
             └─> blocks ─> sunat_fetch ─> [0-line scan] ─> errored_guias
                                   └─> vision ─> normalize ─> reconcile ─> rows
 PipelineResult(rows=..., warnings=..., errored_guias=...)   # all additive
@@ -110,27 +129,36 @@ PipelineResult(rows=..., warnings=..., errored_guias=...)   # all additive
 ## File Changes
 | File | Action | Description |
 |------|--------|-------------|
-| `application/pipeline.py` | Modify | Adjacency gate in `_stage_assemble_blocks` (:952-959); 0-line scan after `_stage_sunat_fetch` (:370); add `errored_guias` to `PipelineResult` (:227) and `run()` return (:431) |
-| `domain/models.py` | Modify | Add pure `ErroredGuia` model |
+| `application/pipeline.py` | Modify | Replace absorb predicate in `_stage_assemble_blocks` else-branch (:967-991) with `absorb = identity is not None` (drop `is_heuristic_only` computation/clause); keep 0-line scan after `_stage_sunat_fetch` (:370); `errored_guias` on `PipelineResult` (:227) + `run()` return (:431) — unchanged from rev-2 |
+| `domain/models.py` | Modify | Add pure `ErroredGuia` (unchanged from rev-2) |
 
 ## Testing Strategy (strict-TDD ACTIVE — `cd backend && uv run pytest`)
-| Layer | Failing-first test | Proves |
-|-------|--------------------|--------|
-| Unit (assembly) | Non-guía Condition-B image page with NO preceding QR block (or registro mismatch) → NOT absorbed, NOT a block, recorded errored/dropped | Bug 1 fix |
-| Unit (assembly REGRESSION GUARD) | QR guía p151 + no-QR Condition-B p152 same registro → ONE block, `source_pages==[151,152]` | Continuation preserved (must FAIL if gate over-drops) |
-| Unit (classifier) | EXT-S24 still GUIA via heuristic | Classifier verdict unchanged |
-| Unit (side-channel) | Block with `lines==[]` post-fetch → one `ErroredGuia(registro,guia_id,source_pages)`; block with lines → none | Bug 2 detection |
-| Unit (additive invariant) | Run with errored guías present → every correctly-processed row keeps identical key/status/delta/qty vs. baseline | Side-channel additive-only |
-| Integration / real-data | Run `67e4e7a1` subset: reg228 `source_pages` matches real range (no pp98-137 inflation); 0-line guías appear in `errored_guias` | End-to-end gate |
+
+Test changes required for apply (Decision-1 rev-3):
+
+| Test | Action | Why |
+|------|--------|-----|
+| `TestEXTS19cGenuineContinuationRegression` (EXT-S19c, test_positional_gate.py:328) | **REMOVE/INVERT** | Guards a non-existent case (QR p151 + no-QR FHH p152 → one block). Real data: p152 is a photo with 0 lines and must NOT be absorbed. Invert to assert source_pages==[151] only. |
+| `TestConditionCContinuationAbsorbed` (test_positional_gate.py:210) | **REMOVE/INVERT** | Fix-agent added; pins `absorb=True` for a text-title non-QR continuation. Now WRONG — non-QR pages are never absorbed. Invert to assert the text-title-no-QR page is dropped (block source_pages==[0]). |
+| **NEW real-data-shaped test** | **ADD** | Model reg228: a QR guía page followed by FHH photo page(s) of the SAME registro → photos NOT absorbed; assert `block.source_pages == [<QR page>]` only. RED-first against the current gate. |
+| `TestEXTS19aConditionBNoQrBlockNotAbsorbed` (EXT-S19a) | KEEP | Still correct: non-QR FHH page not absorbed. Passes under `absorb = identity is not None`. |
+| `TestEXTS19eRegistroMismatchNotAbsorbed` (EXT-S19e) | KEEP | Registro mismatch → start_new_block; unaffected. |
+| `TestEXTS19dClassifierVerdictUnchanged` (EXT-S19d) | KEEP | Classifier verdict untouched. |
+| True multi-QR-page guía (same `guia_id` 2nd QR page) | ADD/KEEP if represented | Assert two QR pages with the same `guia_id`/registro assemble into ONE block (absorbed via `identity is not None`). |
+| `errored_guias` tests (test_errored_guias.py) | KEEP (Decision-2 unchanged) | Validated. |
+
+| Layer | What to test | Approach |
+|-------|--------------|----------|
+| Unit (assembly) | non-QR FHH page in same registro → dropped (`source_pages` excludes it) | direct `_stage_assemble_blocks` call, injected classifications/decode_map |
+| Unit (assembly) | same-`guia_id` 2nd QR page → absorbed into one block | direct call, two `_decode_qr` with same identity |
+| Unit (side-channel) | block `lines==[]` post-fetch → one `ErroredGuia`; with lines → none | direct call (Decision-2) |
+| Integration / real-data | run `67e4e7a1` subset: reg228 `source_pages==[98]` (no pp98-137 inflation); 0-line guías in `errored_guias` | subset e2e gate |
 
 ## Migration / Rollout
-No migration. Both changes additive. Rollback: revert assembly gate + drop
-`errored_guias`/`ErroredGuia`.
+No migration. Both changes additive. Rollback: restore the previous absorb
+predicate + drop `errored_guias`/`ErroredGuia`.
 
 ## Open Questions
-- None blocking. Q1 resolved (defer probe to #3). Assembly must read per-page
-  `title_matched`; if a real guía first-page legitimately has NO QR AND NO text
-  title (pure heuristic) AND is the FIRST page of its registro, the gate drops it —
-  acceptable per scope (such a guía has no strong identity anchor and is
-  indistinguishable from an image page; #3's retry flow covers recovery). Flagged
-  as the single residual edge.
+- None blocking. Single documented limitation: a non-QR text-title "GUIA DE
+  REMISION" page is dropped (out of scope; recovery via #3 reprocess / future
+  MANUAL-ENTRY). Per domain authority this case is unseen/rare.

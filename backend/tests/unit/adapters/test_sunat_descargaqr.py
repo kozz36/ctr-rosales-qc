@@ -208,6 +208,38 @@ class TestParsers:
         assert isinstance(key, str)
         assert len(key) > 0
 
+    # ---- SSRF guard (_is_allowed_sunat_url) ------------------------------
+    def test_ssrf_guard_allows_official_sunat_https(self) -> None:
+        from reconciliation.adapters.sunat.descargaqr import _is_allowed_sunat_url
+
+        assert _is_allowed_sunat_url(
+            "https://e-factura.sunat.gob.pe/v1/contribuyente/gre/comprobantes/descargaqr?hashqr=X"
+        )
+        # case/trailing-dot insensitive on host
+        assert _is_allowed_sunat_url("https://E-Factura.SUNAT.gob.pe./v1/x?hashqr=Y")
+
+    def test_ssrf_guard_rejects_internal_and_non_https(self) -> None:
+        from reconciliation.adapters.sunat.descargaqr import _is_allowed_sunat_url
+
+        assert not _is_allowed_sunat_url("http://e-factura.sunat.gob.pe/x")  # not https
+        assert not _is_allowed_sunat_url("https://169.254.169.254/latest/meta-data")
+        assert not _is_allowed_sunat_url("https://127.0.0.1:8000/internal")
+        assert not _is_allowed_sunat_url("https://evil.example.com/x?hashqr=Z")
+        assert not _is_allowed_sunat_url("https://e-factura.sunat.gob.pe.evil.com/x")  # suffix trick
+        assert not _is_allowed_sunat_url("file:///etc/passwd")
+
+    def test_fetch_rejects_ssrf_url_without_network(self) -> None:
+        """A malicious hashqr_url must return None WITHOUT any download attempt."""
+        from reconciliation.adapters.sunat.descargaqr import SunatDescargaqrAdapter
+
+        adapter = SunatDescargaqrAdapter()  # cache_dir=None → no cache
+        with patch.object(
+            SunatDescargaqrAdapter, "_download", side_effect=AssertionError("network attempted")
+        ) as dl:
+            result = adapter.fetch("https://169.254.169.254/latest/meta-data")
+        assert result is None
+        dl.assert_not_called()
+
     def test_parse_gre_number_standard_format(self) -> None:
         from reconciliation.adapters.sunat.descargaqr import _parse_gre_number
 
@@ -330,7 +362,7 @@ class TestAdapterGracefulFallback:
         adapter = SunatDescargaqrAdapter(timeout_s=5.0, cache_dir=None)
 
         with patch.object(adapter, "_download", return_value=None):
-            result = adapter.fetch("https://example.com/descargaqr?hashqr=TEST")
+            result = adapter.fetch("https://e-factura.sunat.gob.pe/descargaqr?hashqr=TEST")
 
         assert result is None
 
@@ -342,7 +374,7 @@ class TestAdapterGracefulFallback:
 
         # Simulate _download returning None (Content-Type validation happened inside)
         with patch.object(adapter, "_download", return_value=None):
-            result = adapter.fetch("https://example.com/descargaqr?hashqr=BADTYPE")
+            result = adapter.fetch("https://e-factura.sunat.gob.pe/descargaqr?hashqr=BADTYPE")
 
         assert result is None
 
@@ -354,7 +386,7 @@ class TestAdapterGracefulFallback:
 
         # Return bad bytes that PyMuPDF will fail to open
         with patch.object(adapter, "_download", return_value=b"not-a-pdf"):
-            result = adapter.fetch("https://example.com/descargaqr?hashqr=BADPDF")
+            result = adapter.fetch("https://e-factura.sunat.gob.pe/descargaqr?hashqr=BADPDF")
 
         assert result is None
 
@@ -367,7 +399,7 @@ class TestAdapterGracefulFallback:
         with patch.object(
             adapter, "_fetch_internal", side_effect=RuntimeError("unexpected!")
         ):
-            result = adapter.fetch("https://example.com/descargaqr?hashqr=ERR")
+            result = adapter.fetch("https://e-factura.sunat.gob.pe/descargaqr?hashqr=ERR")
 
         assert result is None
 
@@ -422,7 +454,7 @@ class TestAdapterCache:
         from reconciliation.adapters.sunat.descargaqr import SunatDescargaqrAdapter
 
         adapter = SunatDescargaqrAdapter(timeout_s=5.0, cache_dir=None)
-        url = "https://example.com/descargaqr?hashqr=NOCACHE"
+        url = "https://e-factura.sunat.gob.pe/descargaqr?hashqr=NOCACHE"
 
         with patch.object(adapter, "_download", return_value=None):
             result = adapter.fetch(url)
@@ -539,7 +571,7 @@ class TestAdapterParsedResult:
                  "reconciliation.adapters.sunat.descargaqr._extract_pdf_text",
                  return_value=sample_text,
              ):
-            result = adapter.fetch("https://example.com/descargaqr?hashqr=TEST123")
+            result = adapter.fetch("https://e-factura.sunat.gob.pe/descargaqr?hashqr=TEST123")
 
         assert result is not None
         assert result.serie == "T073"

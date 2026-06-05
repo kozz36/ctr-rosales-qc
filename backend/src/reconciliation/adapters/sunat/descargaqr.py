@@ -310,6 +310,15 @@ class SunatDescargaqrAdapter:
 
         from reconciliation.domain.models import GreLineItem, OfficialGre  # noqa: PLC0415
 
+        # SSRF guard (defense at the IO sink): reject any URL that is not the
+        # official SUNAT host over https BEFORE any network call. The hashqr_url
+        # originates from a QR on the untrusted scanned PDF.
+        if not _is_allowed_sunat_url(hashqr_url):
+            logger.warning(
+                "SunatDescargaqrAdapter: rejected non-SUNAT/non-https URL (SSRF guard)"
+            )
+            return None
+
         # Derive guia_id from the Content-Disposition or use the URL hash as key.
         # We will refine after the actual download.
         cache_key = _url_to_cache_key(hashqr_url)
@@ -515,6 +524,26 @@ class SunatDescargaqrAdapter:
 # ---------------------------------------------------------------------------
 # Pure parsing helpers (no IO — used in tests directly)
 # ---------------------------------------------------------------------------
+
+
+# SSRF guard: the hashqr_url is decoded from a QR printed on the (untrusted)
+# scanned PDF, then fetched server-side. Restrict the fetch to the official SUNAT
+# host over https so a malicious/garbled QR cannot redirect the GET at an internal
+# service (e.g. cloud metadata, RFC-1918). A single-host allowlist is strictly
+# stronger than an IP-range blocklist. Protects BOTH the pipeline SUNAT stage and
+# the REINTENTAR reprocess path, which share this adapter.
+_ALLOWED_SUNAT_HOSTS: frozenset[str] = frozenset({"e-factura.sunat.gob.pe"})
+
+
+def _is_allowed_sunat_url(url: str) -> bool:
+    """True only for an https URL whose host is the official SUNAT GRE host."""
+    import urllib.parse  # noqa: PLC0415
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").rstrip(".").lower()
+    return host in _ALLOWED_SUNAT_HOSTS
 
 
 def _url_to_cache_key(url: str) -> str:

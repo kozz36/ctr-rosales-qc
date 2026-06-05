@@ -403,3 +403,4 @@ class ErroredGuia(BaseModel):
     registro: str | None
     guia_id: str
     source_pages: list[int]
+    retry_attempted: bool = False

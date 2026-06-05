@@ -137,6 +137,7 @@ def _seed_run(
     review_service: MagicMock | None = None,
     error: str | None = None,
     ctx: Any = None,
+    errored_guias: list[Any] | None = None,
 ) -> None:
     """Directly inject a run entry into the registry (bypasses pipeline)."""
     registry = client.app.state.run_registry  # type: ignore[attr-defined]
@@ -147,6 +148,7 @@ def _seed_run(
         "result": None,
         "vision_calls_made": 3,
         "warnings": [],
+        "errored_guias": errored_guias if errored_guias is not None else [],
         "error": error,
     }
 
@@ -248,6 +250,39 @@ class TestGetRunStatus:
         body = resp.json()
         assert body["status"] == "error"
         assert "fitz exploded" in body["error"]
+
+    def test_status_exposes_errored_guias(self, client: TestClient) -> None:
+        """GET /runs/{id} must surface the errored_guias side-channel (REC-EG-001).
+
+        RED before RunStatusResponse carries errored_guias: an API consumer can
+        never see the 0-line guías the pipeline collected.
+        """
+        from reconciliation.domain.models import ErroredGuia  # noqa: PLC0415
+
+        run_id = str(uuid.uuid4())
+        svc = _make_review_service()
+        eg = ErroredGuia(registro="232", guia_id="T112-0065422", source_pages=[45])
+        _seed_run(client, run_id, review_service=svc, errored_guias=[eg])
+
+        resp = client.get(f"/api/v1/runs/{run_id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "errored_guias" in body, (
+            "RunStatusResponse must expose errored_guias to API consumers (REC-EG-001)"
+        )
+        assert len(body["errored_guias"]) == 1
+        entry = body["errored_guias"][0]
+        assert entry["registro"] == "232"
+        assert entry["guia_id"] == "T112-0065422"
+        assert entry["source_pages"] == [45]
+
+    def test_status_errored_guias_defaults_empty(self, client: TestClient) -> None:
+        """errored_guias must default to [] (never null) when none collected."""
+        run_id = str(uuid.uuid4())
+        svc = _make_review_service()
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.get(f"/api/v1/runs/{run_id}")
+        assert resp.json()["errored_guias"] == []
 
 
 # ---------------------------------------------------------------------------

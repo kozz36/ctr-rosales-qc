@@ -28,6 +28,7 @@ from reconciliation.domain.models import ReconciliationRow
 from reconciliation.infrastructure.api.schemas import (
     AuditEventResponse,
     AuditTrailResponse,
+    ErroredGuiaResponse,
     ErrorResponse,  # noqa: F401 — imported for openapi docs
     ExportRequest,
     GuiaContributionResponse,
@@ -215,6 +216,7 @@ def _run_pipeline_background(
                 "page_to_registro": page_to_registro,
                 "vision_calls_made": result.vision_calls_made,
                 "warnings": result.warnings,
+                "errored_guias": result.errored_guias,
             }
         )
         logger.info("pipeline run %s completed; %d rows", run_id, len(result.rows))
@@ -300,6 +302,7 @@ async def create_run(
         "result": None,
         "vision_calls_made": 0,
         "warnings": [],
+        "errored_guias": [],
         "error": None,
     }
 
@@ -332,11 +335,23 @@ def get_run_status(run_id: str, registry: RunRegistry) -> RunStatusResponse:
             item_total=raw_progress["item_total"],
         )
 
+    # REC-EG-001: map the errored_guias side-channel (domain ErroredGuia objects)
+    # to the API DTO so an API consumer can see the 0-line guías.
+    errored_guias = [
+        ErroredGuiaResponse(
+            registro=eg.registro,
+            guia_id=eg.guia_id,
+            source_pages=list(eg.source_pages),
+        )
+        for eg in entry.get("errored_guias", [])
+    ]
+
     return RunStatusResponse(
         run_id=run_id,
         status=entry["status"],
         vision_calls_made=entry.get("vision_calls_made", 0),
         warnings=entry.get("warnings", []),
+        errored_guias=errored_guias,
         error=entry.get("error"),
         progress=progress_resp,
         started_at=entry.get("started_at"),

@@ -134,6 +134,24 @@ class ProgressResponse(BaseModel):
         return max(0.0, min(1.0, raw)) * 100.0
 
 
+class ErroredGuiaResponse(BaseModel):
+    """A guía block that resolved to 0 material lines (REC-EG-001).
+
+    Additive side-channel surfaced on the run status so an API consumer can
+    see the 0-line guías the pipeline collected; it NEVER appears as a
+    reconciliation row and never affects MATCH/MISMATCH logic.
+    """
+
+    registro: str | None = Field(
+        default=None,
+        description="Section registro número, or null when unresolved.",
+    )
+    guia_id: str = Field(description="Deterministic identifier: {serie}-{numero}.")
+    source_pages: list[int] = Field(
+        description="Physical page indices contributing to this 0-line guía."
+    )
+
+
 class RunStatusResponse(BaseModel):
     """Returned by GET /runs/{run_id}."""
 
@@ -141,6 +159,11 @@ class RunStatusResponse(BaseModel):
     status: Literal["pending", "processing", "review", "error"]
     vision_calls_made: int = 0
     warnings: list[str] = Field(default_factory=list)
+    # REC-EG-001: 0-line guías collected by the pipeline (additive side-channel).
+    errored_guias: list[ErroredGuiaResponse] = Field(
+        default_factory=list,
+        description="Guía blocks that resolved to 0 material lines (REC-EG-001).",
+    )
     error: str | None = None
     # Determinate progress bar (backward-compatible: optional fields)
     progress: ProgressResponse | None = Field(

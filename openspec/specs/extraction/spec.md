@@ -594,6 +594,35 @@ photo, unclassified) MUST NOT be classified as `guia` solely on the basis of Con
 In particular, declared/protocolo pages have > 200 chars of digital text and will not satisfy
 Condition B.
 
+**Assembly-side QR-evidence invariant (guia-classification-keystone rev-6).** Classification
+(Conditions A/B/C, page-local) is distinct from block assembly. In `_stage_assemble_blocks`,
+a single INVARIANT QR-evidence gate MUST be applied to EVERY page BEFORE the start-new-block
+logic:
+
+```python
+is_ocr_fallback_material = (
+    identity is None and len(raw.lines) > 0 and page_hashqr_url is not None
+)
+has_guia_evidence = identity is not None or is_ocr_fallback_material
+if not has_guia_evidence:
+    continue  # dropped uniformly — never opens or extends a block
+```
+
+A page MUST open or extend a guía block ONLY when it carries positive QR evidence — a decoded
+compact identity QR (`identity is not None`) or, when the compact QR fails, the URL `hashqr=`
+QR (`page_hashqr_url is not None`) together with OCR material lines. A page with NO QR evidence
+(a photo, or a no-QR sheet whose OCR emitted a spurious non-materials table) MUST be dropped
+UNIFORMLY at every position — run-start, section boundary, and continuation — via this single
+gate. This prevents a no-evidence page from opening a phantom `ocr_fallback` block with unflagged
+bogus material in the registro total. An `ocr_fallback` block (QR evidence present, compact QR
+failed) carries `requires_review = True` on its lines at any position (including run-start and
+section-boundary, rev-6 fix). The else-branch absorb gate simplifies to `absorb = identity is not None`.
+
+**Real-data validation (rev-6)**: Run `67e4e7a1` classified 165 pages: 83 `QR_IDENTITY` (real
+guías, 140/140 material lines) and 68 `FORMA_HEADER_HEURISTIC` (all 68 photos/annexes, 0 material
+lines). Zero phantom blocks opened at run-start or section-boundary. Domain authority confirms every
+SUNAT guía page carries a QR; non-QR pages inside a registro are photos/annexes.
+
 ### EXT-020 — [MODIFIED: replaces EXT-005 / EXT-008] Vision input MUST be adequate for handwritten date legibility
 
 **[MODIFIED: EXT-005 requires vision-LLM invocation with the stamp area; EXT-008 states the

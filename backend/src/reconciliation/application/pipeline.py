@@ -83,6 +83,7 @@ from reconciliation.domain.classifier import PageClassifier
 from reconciliation.domain.date_floor import apply_delivery_floor
 from reconciliation.domain.date_inference import infer_reception_year
 from reconciliation.domain.models import (
+    ErroredGuia,
     GuiaDeRemision,
     GuiaIdentity,
     MaterialLine,
@@ -225,6 +226,7 @@ class PipelineResult:
     rows: list[ReconciliationRow]
     vision_calls_made: int = 0
     warnings: list[str] = field(default_factory=list)
+    errored_guias: list[ErroredGuia] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +371,18 @@ class ReconciliationPipeline:
         # sunat_fetch_map maps guia_id → OfficialGre; empty when disabled (air-gap).
         sunat_fetch_map = self._stage_sunat_fetch(blocks, ctx=ctx, stage_total=_stage_total)
 
+        # REC-EG-001/003: collect 0-line blocks as visible omission (not silent).
+        # Additive side-channel — NEVER touches reconciliation key/status/delta/qty.
+        errored_guias: list[ErroredGuia] = [
+            ErroredGuia(
+                registro=block.registro,
+                guia_id=block.guia_id,
+                source_pages=list(block.source_pages),
+            )
+            for block in blocks
+            if len(block.lines) == 0
+        ]
+
         # Stage 6: extract vision dates (handwritten) — one call per block (first page).
         # D4: feeds the stamp-region crop (lower-right quadrant default) or >=300dpi
         # full-page fallback when cropping is disabled (EXT-020).
@@ -415,7 +429,7 @@ class ReconciliationPipeline:
         rows = self._stage_reconcile(declared, guias)
 
         # Stage 9: persist sidecar (also appends the vision audit record)
-        self._stage_persist(ctx, classifications, declared, guias, rows)
+        self._stage_persist(ctx, classifications, declared, guias, rows, errored_guias)
 
         # Final completion event — guarantees the progress bar reaches 100%.
         # stage_index == stage_total == _stage_total (6 with SUNAT, 5 without).
@@ -436,6 +450,7 @@ class ReconciliationPipeline:
             rows=rows,
             vision_calls_made=vision_calls_made,
             warnings=declared_date_warnings + ocr_warnings + warnings,
+            errored_guias=errored_guias,
         )
 
     # ------------------------------------------------------------------
@@ -917,6 +932,54 @@ class ReconciliationPipeline:
                 page_hashqr_url = page_hashqr_url_candidate  # URL QR may still exist
                 page_identity_confidence = 0.0
 
+            # A non-QR page that carries OCR material MAY be a genuine ocr_fallback
+            # guía whose compact-identity QR failed to decode (EXT-S24 ocr_fallback
+            # path).  It MUST NOT be silently dropped (validation-gate invariant:
+            # never lose material; flag for review) — BUT only when there is
+            # POSITIVE QR EVIDENCE that the page is in fact a guía.
+            #
+            # QR-evidence guard (rev-5): the evidence is the URL-variant `hashqr=`
+            # QR (`page_hashqr_url`), a SUNAT GRE URL by definition, captured even
+            # when the compact identity QR fails (adapter EXT-012; set in the
+            # identity-None branch above).  Without it, a sheet with NO QR at all
+            # that happens to carry a spurious non-materials table (OCR emits
+            # phantom "lines") would wrongly open a phantom ocr_fallback guía with
+            # bogus material.  `page_hashqr_url is not None` is the implementable
+            # QR-evidence proxy: the system CANNOT detect "compact QR
+            # present-but-unreadable" when there is also no URL QR.
+            #
+            # Residual accepted edge: a real guía where BOTH the compact QR and the
+            # URL QR fail to decode is ignored (no QR evidence).  This is rare —
+            # other-provider / manual-entry territory — and out of scope here; the
+            # validation gate still never silently drops a page with QR evidence.
+            #
+            # Case 2 (0-line FHH photo) keeps being dropped (len(lines) == 0).
+            is_ocr_fallback_material = (
+                identity is None
+                and len(raw.lines) > 0
+                and page_hashqr_url is not None
+            )
+
+            # INVARIANT QR-evidence gate (rev-6): a page is a guía ONLY when it
+            # carries QR evidence — either a decoded compact identity QR
+            # (`identity is not None`) or, when the compact QR failed, the URL
+            # `hashqr=` QR (`is_ocr_fallback_material`, which requires
+            # `page_hashqr_url is not None`).  A page with NO QR evidence (a photo,
+            # or a no-QR sheet whose OCR emitted a spurious non-materials table)
+            # NEVER opens or extends a block, at ANY position — run-start,
+            # section-boundary, or continuation.  Dropped uniformly.  (rev-6: the
+            # guard is invariant, not positional — previously it was applied only
+            # in the continuation path, so a no-evidence page landing at run-start
+            # or a section boundary opened a PHANTOM block and admitted its lines
+            # UNFLAGGED → silent bogus material in the registro total.)
+            has_guia_evidence = identity is not None or is_ocr_fallback_material
+            if not has_guia_evidence:
+                logger.debug(
+                    "assemble_blocks: dropped non-guía page %d (no QR evidence)",
+                    raw.source_page,
+                )
+                continue
+
             # Determine whether to start a new block
             start_new_block = current_block is None  # (a) run-start
 
@@ -930,17 +993,37 @@ class ReconciliationPipeline:
                     and page_guia_id != current_block.guia_id
                 ):
                     start_new_block = True
+                # (d) ocr_fallback page WITH material (C1 / rev-4): a distinct guía
+                # whose QR failed to decode but whose OCR read material lines.  It
+                # opens its own block (counted in the registro total) and is flagged
+                # requires_review (uncertain identity) below.
+                elif is_ocr_fallback_material:
+                    start_new_block = True
 
             if start_new_block:
                 # Finalise current block (if any) and push to list
                 if current_block is not None:
                     blocks.append(current_block)
+                # C1 (rev-4): an ocr_fallback page with material has an uncertain
+                # identity → flag its lines requires_review so the existing
+                # reconciliation propagation (domain/reconciliation.py: any line
+                # requires_review → row_requires_review) surfaces it for human
+                # review.  Uses the existing MaterialLine.requires_review field;
+                # no parallel flagging system.
+                block_lines: list[MaterialLine]
+                if is_ocr_fallback_material:
+                    block_lines = [
+                        line.model_copy(update={"requires_review": True})
+                        for line in raw.lines
+                    ]
+                else:
+                    block_lines = list(raw.lines)
                 current_block = _GuiaBlock(
                     guia_id=page_guia_id,
                     first_page=raw.source_page,
                     source_pages=[raw.source_page],
                     first_page_image=raw.image,
-                    lines=list(raw.lines),
+                    lines=block_lines,
                     registro=raw.registro,
                     identity_source=page_identity_source,
                     ruc_emisor=page_ruc_emisor,
@@ -950,13 +1033,23 @@ class ReconciliationPipeline:
                     identity_confidence=page_identity_confidence,
                 )
             else:
-                # Continuation page: append lines; identity propagated from first page.
+                # Continuation page: rev-3 gate (EXT-019 rev-3 / EXT-S19a..f).
+                # After rev-4 condition (d), only TWO kinds of page reach here:
+                #   - a same-guia_id QR page (identity is not None) → ABSORBED.
+                #   - a non-QR page with ZERO material lines (FHH photo / annex)
+                #     → DROPPED (Bug-1 fix).  A non-QR page WITH material no longer
+                #     reaches the else-branch: it started its own block via (d).
+                # Real-data basis (run 67e4e7a1): 68/68 FHH pages are photos,
+                # 0 material lines; every guía carries a QR per SUNAT domain authority.
                 assert current_block is not None
-                current_block.source_pages.append(raw.source_page)
-                current_block.lines.extend(raw.lines)
-                # Rev-3 D2: propagate hashqr_url — first non-null across the block.
-                if current_block.gre_hashqr_url is None and page_hashqr_url is not None:
-                    current_block.gre_hashqr_url = page_hashqr_url
+                absorb = identity is not None
+                if absorb:
+                    current_block.source_pages.append(raw.source_page)
+                    current_block.lines.extend(raw.lines)
+                    # Rev-3 D2: propagate hashqr_url — first non-null across the block.
+                    if current_block.gre_hashqr_url is None and page_hashqr_url is not None:
+                        current_block.gre_hashqr_url = page_hashqr_url
+                # else: non-QR page dropped — NOT absorbed, NOT a new block
 
             logger.debug(
                 "assemble_blocks: page %d → block guia_id=%r, source=%r, start_new=%s",
@@ -1095,7 +1188,18 @@ class ReconciliationPipeline:
 
         Replaces the block's OCR-extracted lines with SUNAT line items.
         Filters out items whose unit cannot be normalised to the domain set.
+
+        Rev-5 (FIX 2): an ocr_fallback block (compact QR failed, only the URL QR
+        decoded → SUNAT fetch by hashqr_url succeeded) has an UNCERTAIN IDENTITY.
+        The C1 flow flagged its OCR lines ``requires_review`` to surface that.
+        Rebuilding fresh SUNAT ``MaterialLine``s with the default
+        ``requires_review=False`` would ERASE that review signal even though the
+        material is enriched (default app mode is SUNAT-enabled + OCR-on, so this
+        is a production path).  Preserve the uncertain-identity flag: SUNAT lines
+        for an ocr_fallback block carry ``requires_review=True``; QR-identified
+        blocks stay ``False``.
         """
+        preserve_review = block.identity_source == "ocr_fallback"
         sunat_lines = []
         for item in official.lines:
             normalized = _normalize_sunat_unit(item.unidad)
@@ -1117,6 +1221,7 @@ class ReconciliationPipeline:
                     cantidad=item.cantidad,
                     confidence=1.0,  # SUNAT data is authoritative (no OCR confidence)
                     source_page=block.first_page,
+                    requires_review=preserve_review,
                 )
             )
         if sunat_lines:
@@ -1496,10 +1601,17 @@ class ReconciliationPipeline:
         declared: list[Registro],
         guias: list[GuiaDeRemision],
         rows: list[ReconciliationRow],
+        errored_guias: list[ErroredGuia] | None = None,
     ) -> None:
         """Stage 9: write extraction cache + initial empty review sidecar.
 
         Also appends the vision audit record collected in stage 6.
+
+        ``errored_guias`` (REC-EG-001/003) is persisted as an additive
+        side-channel for forward durability — it NEVER touches the
+        reconciliation key/status/delta/qty. The live boundary surfaces it from
+        the in-memory run registry (RunStatusResponse); the cache-load read side
+        (build_review_service) is wired in change #3.
         """
         if not ctx.has_extraction_cache():
             cache_data: dict[str, Any] = {
@@ -1508,6 +1620,9 @@ class ReconciliationPipeline:
                 "declared": [r.model_dump(mode="json") for r in declared],
                 "guias": [g.model_dump(mode="json") for g in guias],
                 "rows": [row.model_dump(mode="json") for row in rows],
+                "errored_guias": [
+                    eg.model_dump(mode="json") for eg in (errored_guias or [])
+                ],
             }
             ctx.write_extraction_cache(cache_data)
 

@@ -23,30 +23,27 @@ VALID_UNITS: frozenset[str] = frozenset({"KG", "TN", "RD", "Rollo"})
 #: callers must upper() the raw label before lookup (see normalize_unit_label).
 #: Shared by the SUNAT path (reprocess_service / pipeline) and the vision path
 #: (vision adapters) so a long-form label never silently drops a material line.
+#:
+#: R2-W1 (domain authority): this map MUST mirror the authoritative SUNAT map
+#: ``reprocess_service._SUNAT_UNIT_MAP`` EXACTLY — same key→value set.  "UND"/
+#: "UNIDAD"/"UNIDADES"/"UNID" are NOT valid steel units and deliberately have NO
+#: entry: a vision "UND" line is unmappable → dropped with a WARNING, identical to
+#: the SUNAT side.  A parity test asserts ``UNIT_LABEL_MAP == _SUNAT_UNIT_MAP`` so
+#: the two can never drift again.
 UNIT_LABEL_MAP: dict[str, str] = {
     # Toneladas
     "TONELADAS": "TN",
-    "TONELADA": "TN",
     "TNE": "TN",
     "TN": "TN",
     # Kilogramos
     "KILOGRAMOS": "KG",
-    "KILOGRAMO": "KG",
-    "KILOS": "KG",
-    "KILO": "KG",
     "KGM": "KG",
     "KG": "KG",
     # Rollo
     "ROLLO": "Rollo",
-    "ROLLOS": "Rollo",
     "ROL": "Rollo",
-    # Varilla / unidad (rod count in Peru usage)
+    # Varilla (rod count in Peru usage)
     "VARILLA": "RD",
-    "VARILLAS": "RD",
-    "UNIDAD": "RD",
-    "UNIDADES": "RD",
-    "UND": "RD",
-    "UNID": "RD",
     "RD": "RD",
 }
 

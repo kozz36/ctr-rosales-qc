@@ -282,17 +282,22 @@ class TestVisionLongFormUnitNormalization:
         ("raw_unit", "expected"),
         [
             ("TONELADAS", "TN"),
-            ("KILOS", "KG"),
+            ("TNE", "TN"),
             ("KILOGRAMOS", "KG"),
-            ("UND", "RD"),
-            ("UNIDAD", "RD"),
+            ("KGM", "KG"),
+            ("VARILLA", "RD"),
             ("ROLLO", "Rollo"),
         ],
     )
     def test_anthropic_retains_longform_unit_line(
         self, raw_unit: str, expected: str
     ) -> None:
-        """A long-form unit line is RETAINED with the canonical unit (not dropped)."""
+        """A valid long-form unit line is RETAINED with the canonical unit.
+
+        R2-W1: the vision map mirrors the authoritative SUNAT map EXACTLY.
+        Only genuine steel units (TONELADAS/KILOS/KILOGRAMOS/VARILLA/ROLLO + the
+        long-forms) are retained.
+        """
         from reconciliation.adapters.vision.anthropic_vision import AnthropicVisionAdapter
 
         payload = json.dumps({
@@ -305,19 +310,40 @@ class TestVisionLongFormUnitNormalization:
         assert result[0].unidad == expected
         assert float(result[0].cantidad) == pytest.approx(4.124, abs=1e-3)
 
+    @pytest.mark.parametrize("raw_unit", ["UND", "UNIDAD", "UNIDADES", "UNID"])
+    def test_anthropic_drops_und_unidad_mirroring_sunat(
+        self, raw_unit: str, caplog
+    ) -> None:
+        """R2-W1: "UND"/"UNIDAD" is NOT a valid steel unit → line is DROPPED + WARNING.
+
+        Mirrors the SUNAT side exactly (``_SUNAT_UNIT_MAP`` has no UND/UNIDAD key).
+        """
+        import logging  # noqa: PLC0415
+
+        from reconciliation.adapters.vision.anthropic_vision import AnthropicVisionAdapter
+
+        payload = json.dumps({
+            "lines": [{"descripcion": "BARRA 1/2\" 9M", "cantidad": 4.124, "unidad": raw_unit}],
+            "confidence": 0.9,
+        })
+        adapter = AnthropicVisionAdapter(client=_make_anthropic_fake_client(payload))
+        with caplog.at_level(logging.WARNING):
+            result = adapter.read_material_table(b"image")
+        assert result == [], f"unit {raw_unit!r} should be dropped (mirrors SUNAT)"
+        assert any(raw_unit in rec.message for rec in caplog.records)
+
     @pytest.mark.parametrize(
         ("raw_unit", "expected"),
         [
             ("TONELADAS", "TN"),
-            ("KILOS", "KG"),
-            ("UND", "RD"),
-            ("UNIDAD", "RD"),
+            ("KILOGRAMOS", "KG"),
+            ("VARILLA", "RD"),
         ],
     )
     def test_openai_retains_longform_unit_line(
         self, raw_unit: str, expected: str
     ) -> None:
-        """OpenAI-compatible adapter retains long-form unit lines too (parity)."""
+        """OpenAI-compatible adapter retains valid long-form unit lines too (parity)."""
         from reconciliation.adapters.vision.openai_compatible import (
             OpenAICompatibleVisionAdapter,
         )
@@ -330,6 +356,29 @@ class TestVisionLongFormUnitNormalization:
         result = adapter.read_material_table(b"image")
         assert len(result) == 1, f"line with unit {raw_unit!r} was silently dropped"
         assert result[0].unidad == expected
+
+    @pytest.mark.parametrize("raw_unit", ["UND", "UNIDAD"])
+    def test_openai_drops_und_unidad_mirroring_sunat(self, raw_unit: str) -> None:
+        """R2-W1: OpenAI adapter drops UND/UNIDAD too (SUNAT parity)."""
+        from reconciliation.adapters.vision.openai_compatible import (
+            OpenAICompatibleVisionAdapter,
+        )
+
+        payload = json.dumps({
+            "lines": [{"descripcion": "BARRA 3/8\" 9M", "cantidad": 2.5, "unidad": raw_unit}],
+            "confidence": 0.9,
+        })
+        adapter = OpenAICompatibleVisionAdapter(client=_make_openai_fake_client(payload))
+        result = adapter.read_material_table(b"image")
+        assert result == [], f"unit {raw_unit!r} should be dropped (mirrors SUNAT)"
+
+    def test_vision_unit_map_mirrors_sunat_map_exactly(self) -> None:
+        """PARITY GUARD (R2-W1): the vision UNIT_LABEL_MAP MUST equal the
+        authoritative SUNAT recovery map so the two can never drift again."""
+        from reconciliation.application.reprocess_service import _SUNAT_UNIT_MAP
+        from reconciliation.domain.units import UNIT_LABEL_MAP
+
+        assert UNIT_LABEL_MAP == _SUNAT_UNIT_MAP
 
     def test_unmappable_unit_still_dropped_and_warns(self, caplog) -> None:
         """A genuinely unmappable unit is still skipped but logged at WARNING."""

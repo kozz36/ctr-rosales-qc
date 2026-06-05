@@ -4,6 +4,8 @@ Covers:
 - CompositeExtractionAdapter routing (no ML deps — fake adapters injected)
 - build_page_to_registro_map: section↔registro correlation logic
 - build_pipeline / build_review_service: smoke tests with fakes
+- build_review_service hydrates errored_guias from cache (REV-E02)
+- RESTART-PRESERVATION: errored_guias + sidecar edits both survive restore
 
 No real PDF, no ML deps, no SDK deps required.
 """
@@ -20,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reconciliation.domain.models import (
+    ErroredGuia,
     GuiaDeRemision,
     MaterialLine,
     PageClassification,
@@ -724,3 +727,216 @@ class TestBuildPipelineVisionWiring:
         assert config.vision.enabled is True
         pipeline = self._patched_build_pipeline_vision_enabled(config)
         assert not isinstance(pipeline._vision, NullVisionAdapter)
+
+
+# ---------------------------------------------------------------------------
+# build_review_service hydrates errored_guias from cache (REV-E02)
+# ---------------------------------------------------------------------------
+
+
+def _make_minimal_cache(
+    tmp_path: Path,
+    run_id: str,
+    errored_guias: list[dict] | None = None,
+) -> "RunContext":  # type: ignore[name-defined]  # noqa: F821
+    """Build a RunContext with a minimal extraction cache and empty sidecar.
+
+    The cache has just enough content to let build_review_service pass:
+    declared=[], guias=[], rows=[].  errored_guias key is optional.
+    """
+    from reconciliation.application.run_context import RunContext  # noqa: PLC0415
+
+    ctx = RunContext(
+        pdf_path=tmp_path / "input.pdf",
+        output_base=tmp_path / "runs",
+        run_id=run_id,
+    )
+    cache: dict = {"declared": [], "guias": [], "rows": []}
+    if errored_guias is not None:
+        cache["errored_guias"] = errored_guias
+    ctx.write_extraction_cache(cache)
+    ctx.write_review_sidecar({"edits": [], "audit_trail": []})
+    return ctx
+
+
+class TestBuildReviewServiceErroredGuias:
+    """build_review_service hydrates errored_guias from cache (REV-E02).
+
+    These tests cover:
+    - cache with errored_guias → hydrated as list[ErroredGuia]
+    - absent key → defaults to []
+    - RESTART-PRESERVATION: sidecar edits + errored_guias both survive restore_from_sidecar
+    - additive-only: no existing rows/guias/declared affected
+    """
+
+    def test_cache_with_errored_guias_hydrates_list(self, tmp_path: Path) -> None:
+        """Cache containing errored_guias → ReviewService.errored_guias populated."""
+        from reconciliation.infrastructure.container import build_review_service  # noqa: PLC0415
+
+        raw = [
+            {"registro": "R001", "guia_id": "T009-0001", "source_pages": [5]},
+            {"registro": "R002", "guia_id": "T009-0002", "source_pages": [9, 10]},
+        ]
+        ctx = _make_minimal_cache(tmp_path, run_id="test-hydrate", errored_guias=raw)
+        svc = build_review_service(ctx, pipeline_result=None)
+
+        assert len(svc.errored_guias) == 2
+        ids = {eg.guia_id for eg in svc.errored_guias}
+        assert ids == {"T009-0001", "T009-0002"}
+
+    def test_cache_missing_errored_guias_key_defaults_empty(self, tmp_path: Path) -> None:
+        """Cache without errored_guias key → ReviewService.errored_guias is []."""
+        from reconciliation.infrastructure.container import build_review_service  # noqa: PLC0415
+
+        ctx = _make_minimal_cache(tmp_path, run_id="test-absent", errored_guias=None)
+        svc = build_review_service(ctx, pipeline_result=None)
+
+        assert svc.errored_guias == []
+
+    def test_errored_guias_have_retry_attempted_defaulted(self, tmp_path: Path) -> None:
+        """Old cache dicts without retry_attempted still hydrate with False (backward-compat)."""
+        from reconciliation.infrastructure.container import build_review_service  # noqa: PLC0415
+
+        # Old format: no retry_attempted field
+        raw = [{"registro": "R001", "guia_id": "T009-OLD", "source_pages": [3]}]
+        ctx = _make_minimal_cache(tmp_path, run_id="test-old-format", errored_guias=raw)
+        svc = build_review_service(ctx, pipeline_result=None)
+
+        assert svc.errored_guias[0].retry_attempted is False
+
+    def test_restart_preservation_hard_gate(self, tmp_path: Path) -> None:
+        """HARD GATE: errored_guias COUNT survives restore_from_sidecar with sidecar edits.
+
+        Simulates a restart: cache has 2 errored guías AND sidecar has 1 edit.
+        After rebuild, errored_guias must still contain exactly 2 items.
+        This is the invariant that proves errored_guias are constructor state,
+        NOT lost during the sidecar replay loop.
+        """
+        from datetime import date  # noqa: PLC0415
+
+        from reconciliation.application.review_service import ReviewService  # noqa: PLC0415
+        from reconciliation.application.run_context import RunContext  # noqa: PLC0415
+        from reconciliation.domain.models import (  # noqa: PLC0415
+            GuiaDeRemision,
+            MaterialLine,
+            Registro,
+        )
+        from reconciliation.domain.reconciliation import ReconciliationService  # noqa: PLC0415
+        from reconciliation.infrastructure.container import build_review_service  # noqa: PLC0415
+
+        # --- Session 1: build initial service, apply an edit, persist sidecar ---
+        run_id = "restart-preservation"
+        ctx = RunContext(
+            pdf_path=tmp_path / "in.pdf",
+            output_base=tmp_path / "runs",
+            run_id=run_id,
+        )
+
+        # Minimal domain objects for a reconcilable run
+        line = MaterialLine(
+            description_raw="BARRA 3/8",
+            description_canonical="barra 3/8",
+            unidad="TN",
+            cantidad=Decimal("5.0"),
+        )
+        guia = GuiaDeRemision(
+            guia_id="G001",
+            registro="R001",
+            fecha=date(2025, 5, 1),
+            fecha_confidence=0.95,
+            lines=[line],
+            source_pages=[1],
+        )
+        registro = Registro(
+            numero="R001",
+            fecha_declarada=date(2025, 5, 1),
+            declared_lines=[line],
+        )
+        reconciler = ReconciliationService()
+        rows = reconciler.reconcile([registro], [guia])
+
+        # Write extraction cache WITH 2 errored guías
+        errored_raw = [
+            {"registro": "R002", "guia_id": "EG001", "source_pages": [7]},
+            {"registro": "R003", "guia_id": "EG002", "source_pages": [11, 12]},
+        ]
+        ctx.write_extraction_cache({
+            "declared": [registro.model_dump(mode="json")],
+            "guias": [guia.model_dump(mode="json")],
+            "rows": [r.model_dump(mode="json") for r in rows],
+            "errored_guias": errored_raw,
+        })
+        ctx.write_review_sidecar({"edits": [], "audit_trail": []})
+
+        # Apply a field edit so the sidecar gets a non-empty edit list
+        svc1 = ReviewService(
+            declared=[registro],
+            guias=[guia],
+            rows=rows,
+            ctx=ctx,
+        )
+        svc1.apply_edit("G001", "fecha", date(2025, 6, 1))
+        # Sidecar now has 1 edit persisted by apply_edit
+
+        # --- Session 2: restart via build_review_service ---
+        svc2 = build_review_service(ctx, pipeline_result=None)
+
+        # HARD GATE: errored_guias count must be preserved across restart
+        assert len(svc2.errored_guias) == 2, (
+            f"RESTART-PRESERVATION FAILED: expected 2 errored_guias, got {len(svc2.errored_guias)}"
+        )
+
+    def test_additive_only_rows_and_guias_unaffected(self, tmp_path: Path) -> None:
+        """errored_guias hydration must NOT alter rows/guias count."""
+        from datetime import date  # noqa: PLC0415
+
+        from reconciliation.application.run_context import RunContext  # noqa: PLC0415
+        from reconciliation.domain.models import (  # noqa: PLC0415
+            GuiaDeRemision,
+            MaterialLine,
+            Registro,
+        )
+        from reconciliation.domain.reconciliation import ReconciliationService  # noqa: PLC0415
+        from reconciliation.infrastructure.container import build_review_service  # noqa: PLC0415
+
+        ctx = RunContext(
+            pdf_path=tmp_path / "in.pdf",
+            output_base=tmp_path / "runs",
+            run_id="additive-test",
+        )
+        line = MaterialLine(
+            description_raw="BARRA 1/2",
+            description_canonical="barra 1/2",
+            unidad="TN",
+            cantidad=Decimal("3.0"),
+        )
+        guia = GuiaDeRemision(
+            guia_id="G002",
+            registro="R010",
+            fecha=date(2025, 5, 1),
+            fecha_confidence=0.9,
+            lines=[line],
+            source_pages=[2],
+        )
+        registro = Registro(
+            numero="R010",
+            fecha_declarada=date(2025, 5, 1),
+            declared_lines=[line],
+        )
+        reconciler = ReconciliationService()
+        rows = reconciler.reconcile([registro], [guia])
+
+        ctx.write_extraction_cache({
+            "declared": [registro.model_dump(mode="json")],
+            "guias": [guia.model_dump(mode="json")],
+            "rows": [r.model_dump(mode="json") for r in rows],
+            "errored_guias": [{"registro": None, "guia_id": "EG999", "source_pages": [99]}],
+        })
+        ctx.write_review_sidecar({"edits": [], "audit_trail": []})
+
+        svc = build_review_service(ctx, pipeline_result=None)
+
+        # Rows and guías must be unchanged
+        assert len(svc.rows) == len(rows)
+        assert len(svc.guias) == 1
+        assert svc.guias[0].guia_id == "G002"

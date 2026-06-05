@@ -581,6 +581,7 @@ def build_review_service(
         A ReviewService with edits replayed from sidecar (or empty).
     """
     from reconciliation.domain.models import (  # noqa: PLC0415
+        ErroredGuia,
         GuiaDeRemision,
         ReconciliationRow,
         Registro,
@@ -590,10 +591,14 @@ def build_review_service(
     declared = [Registro.model_validate(r) for r in cache.get("declared", [])]
     guias = [GuiaDeRemision.model_validate(g) for g in cache.get("guias", [])]
     rows = [ReconciliationRow.model_validate(r) for r in cache.get("rows", [])]
+    errored_guias = [
+        ErroredGuia.model_validate(e) for e in cache.get("errored_guias", [])
+    ]
 
     return ReviewService.restore_from_sidecar(
         declared=declared,
         guias=guias,
         rows=rows,
         ctx=ctx,
+        errored_guias=errored_guias,
     )

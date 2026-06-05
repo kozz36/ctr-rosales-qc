@@ -5,8 +5,9 @@
 **Branch:** feat/guia-classification-keystone (not pushed)
 
 ## Executive Summary
-Both slices implemented exactly per spec rev-2. Positional gate predicate matches the spec
-semantics verbatim; errored_guias is a strictly additive side-channel. Architecture invariants
+Both slices implemented exactly per spec rev-2. Positional gate predicate is the canonical
+positional gate scoped to FORMA_HEADER_HEURISTIC (NOT verbatim-equivalent to the literal intended
+predicate — see REQ1 CORRECTION); errored_guias is a strictly additive side-channel. Architecture invariants
 hold (domain purity, ports-only pipeline, grouping key unchanged). Tests are genuine behavior
 tests, not mock theatre. 15/15 targeted + 309/309 application suite GREEN. 0 CRITICAL, 0 WARNING,
 1 SUGGESTION (pre-noted cosmetic dead-code). Scope clean: no classifier verdict change, no
@@ -17,13 +18,20 @@ as orchestrator gates before push.
 PASS. pipeline.py:967-991 (`_stage_assemble_blocks` else-branch).
 - Classifier verdict UNCHANGED — no IGNORED enum; Condition B stays GUIA/FORMA_HEADER_HEURISTIC
   (EXT-S19d GREEN, classifier.py not in diff).
-- Predicate is positional and equivalent to spec:
+- Predicate is positional and canonical (gate scoped to FORMA_HEADER_HEURISTIC):
   `absorb = not is_heuristic_only or (current_block.identity_source=="qr" and raw.registro==current_block.registro)`
   where `is_heuristic_only = page_cls.title_matched=="FORMA_HEADER_HEURISTIC" and identity is None`.
-  Semantically identical to the spec form `absorb = current_block is not None and identity is None
-  and raw.registro==current_block.registro and current_block.identity_source=="qr"` for the
-  Condition-B case (the only case where is_heuristic_only is True). For non-heuristic continuation
-  pages absorb=True (genuine continuation preserved).
+  CORRECTION (JD round-1): this is NOT "truly equivalent" to the literal intended/spec form
+  `absorb = current_block is not None and identity is None and raw.registro==current_block.registro
+  and current_block.identity_source=="qr"`. The two DIVERGE for the Condition-C / ocr_fallback-anchor
+  case: a text-title GUIA continuation (`title_matched != "FORMA_HEADER_HEURISTIC"`, `identity is None`)
+  following an ocr_fallback-opened block — the implemented form absorbs it (`is_heuristic_only` False →
+  `absorb=True`), the literal intended form would drop it (`identity is None` but
+  `identity_source != "qr"`). The implemented form is INTERNALLY CONSISTENT with its docstring (the
+  gate only ever drops heuristic-only image-dominant no-QR pages) and is the CANONICAL behavior;
+  it is equivalent to the intended form ONLY for the Condition-B case (the sole case where
+  `is_heuristic_only` is True). For non-heuristic continuation pages absorb=True (genuine continuation
+  preserved). The divergence is pinned by `TestConditionCContinuationAbsorbed`.
 - EXT-S19c regression GREEN: p151 QR + p152 heuristic same registro → 1 block, source_pages=[151,152].
 - EXT-S19a/e GREEN: non-adjacent / ocr_fallback-anchored / registro-mismatch Condition-B pages NOT
   absorbed, source_pages not inflated.
@@ -39,8 +47,9 @@ PASS. models.py:390-401 (ErroredGuia), pipeline.py:229 (field), :376-384 (popula
 
 ## Architecture invariants
 PASS (no CRITICAL).
-- Domain purity: ErroredGuia uses stdlib @dataclass only; domain/models.py imports no SDK/IO
-  (pydantic is the pre-existing domain serialization lib, not introduced here).
+- Domain purity: ErroredGuia is a Pydantic BaseModel (the pre-existing domain convention — every
+  other model in domain/models.py is BaseModel; converted from @dataclass in JD round-1 so it
+  serialises to the extraction cache + API DTO and round-trips); domain/models.py imports no SDK/IO.
 - pipeline.py imports ZERO concrete adapters (rg confirmed NONE); ErroredGuia imported from
   domain.models.
 - Grouping key (registro, material_canonical, unidad) UNCHANGED; fecha not a grouping axis; units
@@ -63,9 +72,9 @@ confirmed in apply commits 86f32e0 / abbc653).
 ### WARNING
 - None.
 ### SUGGESTION
-- S1 (cosmetic dead-code): test_positional_gate.py:163 — the first `blocks` assignment in
-  `test_no_open_block_condition_b_produces_no_guia` is computed but never asserted (only `blocks2`
-  at :179 is used). Harmless; pre-noted in apply. Could be removed for clarity.
+- S1 (cosmetic dead-code): RESOLVED in JD round-1 — the first `blocks` assignment in
+  `test_no_open_block_condition_b_produces_no_guia` (never asserted; only `blocks2` was used) was
+  removed; the test now computes a single asserted `blocks`.
 
 ## Scope discipline
 PASS. Diff f57d20f..HEAD touches only pipeline.py (+44/-6), models.py (+14), the two new test

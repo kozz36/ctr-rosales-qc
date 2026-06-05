@@ -65,7 +65,7 @@ class ExtractionPort(Protocol):
 
 @runtime_checkable
 class VisionLLMPort(Protocol):
-    """Provider-agnostic vision LLM for extracting handwritten dates."""
+    """Provider-agnostic vision LLM for extracting handwritten dates and material tables."""
 
     supports_batch: bool
 
@@ -82,6 +82,19 @@ class VisionLLMPort(Protocol):
         images: list[bytes],
     ) -> list[VisionResult]:
         """Batch variant — only valid when ``supports_batch`` is True."""
+        ...
+
+    def read_material_table(
+        self,
+        image: bytes,
+        hint: str | None = None,
+    ) -> list[MaterialLine]:
+        """Extract material rows from a full guía page image (no crop).
+
+        REV-R10: Protocol declaration only — no logic, no vendor import.
+        Adapters return ``[]`` on any SDK/parse failure (never raise).
+        The image is the full page (downscaled), never a static bbox crop.
+        """
         ...
 
 

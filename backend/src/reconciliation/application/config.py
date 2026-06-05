@@ -124,6 +124,24 @@ class VisionConfig(BaseSettings):
     # phase. Override per-machine with RECONCILIATION__VISION__DISABLE_THINKING=false.
     # Env: RECONCILIATION__VISION__DISABLE_THINKING
     disable_thinking: bool = Field(default=True)
+    # REV-R15: max concurrent vision calls during Reprocesar con IA.
+    # Bounds the asyncio.Semaphore in ReprocessService.apply_reprocess so ≤N
+    # vision SDK calls are in flight concurrently for the same run.
+    # Env: RECONCILIATION__VISION__REPROCESS_MAX_CONCURRENCY
+    reprocess_max_concurrency: int = Field(
+        default=3,
+        gt=0,
+        description="Max concurrent vision calls during Reprocesar con IA (REV-R15).",
+    )
+    # REV-R11: long-edge pixel cap for full-page downscale before read_material_table.
+    # Pages longer than this (px) are scaled so the long edge = this value.
+    # Pages shorter than this are passed unchanged (no upscaling, no crop).
+    # Env: RECONCILIATION__VISION__REPROCESS_DOWNSCALE_MAX_EDGE
+    reprocess_downscale_max_edge: int = Field(
+        default=2000,
+        gt=0,
+        description="Long-edge px cap for full-page downscale before vision table read (REV-R11).",
+    )
     # Vision-off / SUNAT-authoritative date mode.
     # When False, ALL vision LLM calls are suppressed (zero LLM calls).
     # Guía dates fall back to SUNAT fecha_entrega via the existing R9b Rule-2

@@ -1168,7 +1168,18 @@ class ReconciliationPipeline:
 
         Replaces the block's OCR-extracted lines with SUNAT line items.
         Filters out items whose unit cannot be normalised to the domain set.
+
+        Rev-5 (FIX 2): an ocr_fallback block (compact QR failed, only the URL QR
+        decoded → SUNAT fetch by hashqr_url succeeded) has an UNCERTAIN IDENTITY.
+        The C1 flow flagged its OCR lines ``requires_review`` to surface that.
+        Rebuilding fresh SUNAT ``MaterialLine``s with the default
+        ``requires_review=False`` would ERASE that review signal even though the
+        material is enriched (default app mode is SUNAT-enabled + OCR-on, so this
+        is a production path).  Preserve the uncertain-identity flag: SUNAT lines
+        for an ocr_fallback block carry ``requires_review=True``; QR-identified
+        blocks stay ``False``.
         """
+        preserve_review = getattr(block, "identity_source", None) == "ocr_fallback"
         sunat_lines = []
         for item in official.lines:
             normalized = _normalize_sunat_unit(item.unidad)
@@ -1190,6 +1201,7 @@ class ReconciliationPipeline:
                     cantidad=item.cantidad,
                     confidence=1.0,  # SUNAT data is authoritative (no OCR confidence)
                     source_page=block.first_page,
+                    requires_review=preserve_review,
                 )
             )
         if sunat_lines:

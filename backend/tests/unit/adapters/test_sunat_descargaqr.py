@@ -532,6 +532,159 @@ class TestDownloadResilience:
         assert isinstance(timeout, httpx.Timeout)
         assert timeout.connect == 10.0
 
+    def test_httpx_does_not_follow_redirects(self) -> None:
+        """FIX 2 (SSRF): httpx.get MUST be called with follow_redirects=False.
+
+        _is_allowed_sunat_url validates only the INITIAL url; following a 30x from
+        the allowlisted SUNAT host to an internal target would bypass the guard.
+        """
+        from unittest.mock import MagicMock
+
+        import httpx
+
+        from reconciliation.adapters.sunat.descargaqr import SunatDescargaqrAdapter
+
+        adapter = SunatDescargaqrAdapter(timeout_s=10.0, cache_dir=None)
+        captured: dict[str, object] = {}
+
+        def _fake_get(url: str, timeout: object = None, follow_redirects: bool = True):
+            captured["follow_redirects"] = follow_redirects
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.headers = {"content-type": "application/pdf"}
+            resp.content = b"%PDF-1.4"
+            return resp
+
+        with patch.object(httpx, "get", side_effect=_fake_get):
+            adapter._download_httpx("https://e-factura.sunat.gob.pe/descargaqr?hashqr=X", httpx)
+
+        assert captured["follow_redirects"] is False, (
+            "httpx.get must NOT follow redirects (SSRF: only the initial URL is allowlisted)"
+        )
+
+    def test_httpx_redirect_status_returns_none(self) -> None:
+        """A 30x response (redirect) is treated as non-200 → returns None, no second GET."""
+        from unittest.mock import MagicMock
+
+        import httpx
+
+        from reconciliation.adapters.sunat.descargaqr import SunatDescargaqrAdapter
+
+        adapter = SunatDescargaqrAdapter(timeout_s=10.0, cache_dir=None)
+        calls: list[str] = []
+
+        def _fake_get(url: str, timeout: object = None, follow_redirects: bool = False):
+            calls.append(url)
+            resp = MagicMock()
+            resp.status_code = 302
+            resp.headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+            resp.content = b""
+            return resp
+
+        with patch.object(httpx, "get", side_effect=_fake_get):
+            out = adapter._download_httpx(
+                "https://e-factura.sunat.gob.pe/descargaqr?hashqr=X", httpx
+            )
+
+        assert out is None
+        # Only ONE GET — the redirect target was NOT fetched.
+        assert len(calls) == 1
+        assert "169.254.169.254" not in calls[0]
+
+    def test_urllib_uses_no_follow_opener(self) -> None:
+        """FIX 2 (SSRF): urllib fallback must build its OWN opener (no global default).
+
+        urllib.request.urlopen follows redirects by default via the global opener.
+        The adapter must build a dedicated opener (urllib.request.build_opener) whose
+        redirect handler refuses to follow — proven by the adapter calling
+        build_opener and NOT the redirect-following urlopen.
+        """
+        import urllib.request
+
+        from reconciliation.adapters.sunat.descargaqr import SunatDescargaqrAdapter
+
+        adapter = SunatDescargaqrAdapter(timeout_s=10.0, cache_dir=None)
+
+        captured: dict[str, object] = {}
+        real_build_opener = urllib.request.build_opener
+
+        def _spy_build_opener(*handlers):  # noqa: ANN002
+            captured["handlers"] = handlers
+            opener = real_build_opener(*handlers)
+            # Replace the opener's .open with a stub returning a fake 200 PDF so the
+            # test does not hit the network, but we still verify the NO-FOLLOW handler
+            # is present in the handler list.
+
+            class _Resp:
+                headers = {"Content-Type": "application/pdf"}
+
+                def read(self) -> bytes:
+                    return b"%PDF-1.4"
+
+                def __enter__(self):  # noqa: ANN204
+                    return self
+
+                def __exit__(self, *a):  # noqa: ANN002
+                    return False
+
+            opener.open = lambda req, timeout=None: _Resp()  # type: ignore[method-assign]
+            return opener
+
+        with patch.object(urllib.request, "build_opener", side_effect=_spy_build_opener):
+            out = adapter._download_urllib(
+                "https://e-factura.sunat.gob.pe/descargaqr?hashqr=X"
+            )
+
+        assert out == b"%PDF-1.4"
+        # The adapter must have built a dedicated opener with at least one custom
+        # no-follow redirect handler.
+        handlers = captured.get("handlers")
+        assert handlers, "adapter must build a dedicated opener (build_opener) for no-follow"
+        has_no_follow = any(
+            isinstance(h, urllib.request.HTTPRedirectHandler) for h in handlers
+        )
+        assert has_no_follow, (
+            "adapter opener must include a custom HTTPRedirectHandler that refuses redirects"
+        )
+
+    def test_urllib_redirect_returns_none(self) -> None:
+        """A real 30x routed through the adapter's opener must NOT be followed → None."""
+        import urllib.error
+        import urllib.request
+
+        from reconciliation.adapters.sunat.descargaqr import SunatDescargaqrAdapter
+
+        adapter = SunatDescargaqrAdapter(timeout_s=10.0, cache_dir=None)
+
+        # The no-follow handler raises HTTPError on a 30x (urllib default would follow).
+        # We simulate by making the opener.open raise an HTTPError(302) — the adapter
+        # must catch it and return None WITHOUT fetching the Location target.
+        fetched: list[str] = []
+        real_build_opener = urllib.request.build_opener
+
+        def _spy_build_opener(*handlers):  # noqa: ANN002
+            opener = real_build_opener(*handlers)
+
+            def _raise_redirect(req, timeout=None):  # noqa: ANN001
+                url = req.full_url if hasattr(req, "full_url") else req
+                fetched.append(url)
+                raise urllib.error.HTTPError(
+                    url, 302, "Found",
+                    {"Location": "http://169.254.169.254/latest/meta-data/"},
+                    None,
+                )
+
+            opener.open = _raise_redirect  # type: ignore[method-assign]
+            return opener
+
+        with patch.object(urllib.request, "build_opener", side_effect=_spy_build_opener):
+            out = adapter._download_urllib(
+                "https://e-factura.sunat.gob.pe/descargaqr?hashqr=X"
+            )
+
+        assert out is None
+        assert all("169.254.169.254" not in u for u in fetched)
+
     def test_sequential_fetches_are_paced(self) -> None:
         """Two consecutive network downloads incur an inter-request pause."""
         from reconciliation.adapters.sunat.descargaqr import SunatDescargaqrAdapter

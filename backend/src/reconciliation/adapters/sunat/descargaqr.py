@@ -457,7 +457,12 @@ class SunatDescargaqrAdapter:
 
         for attempt in range(self._max_retries):
             try:
-                resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+                # SSRF: do NOT follow redirects. _is_allowed_sunat_url only validates
+                # the INITIAL url; a 30x from the allowlisted SUNAT host to an internal
+                # target would bypass the allowlist. descargaqr is a direct PDF GET — a
+                # redirect is treated as non-200 below → returns None (guía stays
+                # errored, recoverable, no crash).
+                resp = httpx.get(url, timeout=timeout, follow_redirects=False)
             except httpx.TimeoutException as exc:
                 wait = _BACKOFF_BASE * (attempt + 1)
                 logger.warning(
@@ -498,13 +503,30 @@ class SunatDescargaqrAdapter:
         return None
 
     def _download_urllib(self, url: str) -> bytes | None:
-        """Download using stdlib urllib as fallback when httpx is absent."""
+        """Download using stdlib urllib as fallback when httpx is absent.
+
+        SSRF: ``urllib.request.urlopen`` follows redirects by default via the global
+        opener. ``_is_allowed_sunat_url`` only validates the INITIAL url, so a 30x from
+        the allowlisted SUNAT host to an internal target would bypass the allowlist.
+        We build a DEDICATED opener with a no-follow redirect handler
+        (``redirect_request`` returns ``None`` → urllib raises ``HTTPError`` on a 30x
+        instead of transparently fetching the Location). A redirect therefore returns
+        ``None`` (guía stays errored, recoverable).
+        """
         import urllib.error  # noqa: PLC0415
         import urllib.request  # noqa: PLC0415
 
+        class _NoFollowRedirectHandler(urllib.request.HTTPRedirectHandler):
+            """Refuse to follow any 30x — returning None makes urllib raise HTTPError."""
+
+            def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+                return None
+
+        opener = urllib.request.build_opener(_NoFollowRedirectHandler())
+
         try:
             req = urllib.request.Request(url, headers={"Accept": "application/pdf"})
-            with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:  # noqa: S310
+            with opener.open(req, timeout=self._timeout_s) as resp:  # noqa: S310
                 content_type = resp.headers.get("Content-Type", "")
                 if "application/pdf" not in content_type:
                     logger.warning(
@@ -514,6 +536,7 @@ class SunatDescargaqrAdapter:
                 data: bytes = resp.read()
                 return data
         except urllib.error.URLError as exc:
+            # HTTPError (incl. the 30x raised by the no-follow handler) is a URLError.
             logger.warning("SunatDescargaqrAdapter(urllib): URL error: %s", exc)
             return None
         except TimeoutError as exc:

@@ -3,10 +3,17 @@
 Tests the pipeline's _stage_assemble_blocks logic indirectly via ReconciliationPipeline.run()
 using configurable fake adapters.  No external deps (pyzbar/zxing-cpp) required.
 
+Rev-3 gate semantics: absorb = identity is not None.
+A non-QR continuation page (identity is None) is DROPPED — not absorbed, not a new block.
+Only a same-guia_id QR page extends the open block.
+
 Scenarios covered:
-  EXT-S15: 3 consecutive guía pages, same section, first has QR → single block, all lines merged.
-  EXT-S16: page 2 has new QR with different guia_id → two blocks.
+  EXT-S15: 3 consecutive guía pages, first has QR T001-0001, pages 2+3 have None.
+           Rev-3: pages 2+3 DROPPED → 1 block, source_pages=[0], lines=[first page only].
+  EXT-S16: page 2 has new QR T001-0002 → two blocks.
+           Rev-3: page 1 (None) DROPPED → T001-0001 source_pages=[0], T001-0002 source_pages=[2].
   EXT-S17: section boundary separates consecutive guía pages → two blocks.
+           Rev-3: same-registro non-QR continuation dropped → registro 232 source_pages=[0] only.
   EXT-S18: 10 guía pages → no GuiaDeRemision.guia_id matches guia_page_\\d+ pattern.
   OCR fallback: QR decode returns None → identity_source="ocr_fallback".
 """
@@ -152,8 +159,10 @@ def _run_pipeline(
 
 
 class TestEXTS15SingleBlockSameQr:
-    def test_three_pages_same_qr_form_one_block(self, tmp_path: Path) -> None:
-        """3 consecutive GUIA pages, first has QR T001-0001; pages 2+3 have None → 1 block."""
+    def test_three_pages_first_qr_non_qr_continuations_dropped(self, tmp_path: Path) -> None:
+        """3 consecutive GUIA pages: p0 QR T001-0001, p1+p2 identity=None.
+        Rev-3: non-QR continuation pages DROPPED → 1 block, source_pages=[0], lines=[p0 only].
+        """
         qr = _identity("T001", "0001")
         identity_seq: list[GuiaIdentity | None] = [qr, None, None]
 
@@ -168,18 +177,18 @@ class TestEXTS15SingleBlockSameQr:
             tmp_path=tmp_path,
         )
         assert len(result.guias) == 1, (
-            f"Expected 1 block; got {len(result.guias)}: {[g.guia_id for g in result.guias]}"
+            f"Expected 1 block (p1+p2 dropped); got {len(result.guias)}: "
+            f"{[g.guia_id for g in result.guias]}"
         )
         guia = result.guias[0]
         assert guia.guia_id == "T001-0001"
         assert guia.identity_source == "qr"
-        # All 3 pages' lines merged
-        assert len(guia.lines) == 3
-        total = sum(l.cantidad for l in guia.lines)
-        assert total == Decimal("350")
+        # Rev-3: only p0 lines present (non-QR continuation pages dropped)
+        assert len(guia.lines) == 1
+        assert guia.lines[0].cantidad == Decimal("100")
 
-    def test_three_pages_source_pages_cover_all(self, tmp_path: Path) -> None:
-        """source_pages on the block covers pages 0, 1, 2."""
+    def test_three_pages_source_pages_qr_page_only(self, tmp_path: Path) -> None:
+        """Rev-3: source_pages on the block contains only the QR page (0); p1+p2 dropped."""
         qr = _identity("T001", "0001")
         result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE, _GUIA_PAGE],
@@ -187,7 +196,9 @@ class TestEXTS15SingleBlockSameQr:
             per_page_lines=[[_MAT_LINE], [_MAT_LINE], [_MAT_LINE]],
             tmp_path=tmp_path,
         )
-        assert sorted(result.guias[0].source_pages) == [0, 1, 2]
+        assert result.guias[0].source_pages == [0], (
+            f"non-QR continuation pages must be dropped; source_pages={result.guias[0].source_pages}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -214,8 +225,8 @@ class TestEXTS16TwoBlocksDifferentQr:
         ids = {g.guia_id for g in result.guias}
         assert ids == {"T001-0001", "T001-0002"}
 
-    def test_first_block_has_pages_0_and_1(self, tmp_path: Path) -> None:
-        """First block (T001-0001) covers pages 0 and 1 (continuation)."""
+    def test_first_block_has_page_0_only(self, tmp_path: Path) -> None:
+        """Rev-3: first block (T001-0001) covers page 0 only; p1 (identity=None) is DROPPED."""
         qr1 = _identity("T001", "0001")
         qr2 = _identity("T001", "0002")
         result = _run_pipeline(
@@ -225,8 +236,9 @@ class TestEXTS16TwoBlocksDifferentQr:
             tmp_path=tmp_path,
         )
         block1 = next(g for g in result.guias if g.guia_id == "T001-0001")
-        assert 0 in block1.source_pages
-        assert 1 in block1.source_pages
+        assert block1.source_pages == [0], (
+            f"non-QR continuation p1 must be dropped; source_pages={block1.source_pages}"
+        )
 
     def test_second_block_has_page_2_only(self, tmp_path: Path) -> None:
         """Second block (T001-0002) covers page 2 only."""
@@ -265,7 +277,9 @@ class TestEXTS17SectionBoundary:
         registros = {g.registro for g in result.guias}
         assert registros == {"232", "231"}
 
-    def test_first_block_covers_section_232(self, tmp_path: Path) -> None:
+    def test_first_block_covers_section_232_qr_page_only(self, tmp_path: Path) -> None:
+        """Rev-3: registro 232 block opened by p0 (ocr_fallback); p1 (identity=None, same registro)
+        is DROPPED → source_pages=[0] only."""
         result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE, _GUIA_PAGE],
             identity_seq=[None, None, None],
@@ -274,7 +288,10 @@ class TestEXTS17SectionBoundary:
             tmp_path=tmp_path,
         )
         block_232 = next(g for g in result.guias if g.registro == "232")
-        assert sorted(block_232.source_pages) == [0, 1]
+        assert block_232.source_pages == [0], (
+            f"non-QR same-registro continuation p1 must be dropped; "
+            f"source_pages={block_232.source_pages}"
+        )
 
 
 # ---------------------------------------------------------------------------

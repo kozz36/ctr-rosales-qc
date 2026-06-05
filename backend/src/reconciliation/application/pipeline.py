@@ -965,30 +965,22 @@ class ReconciliationPipeline:
                     identity_confidence=page_identity_confidence,
                 )
             else:
-                # Continuation page: apply positional gate (EXT-019 rev-2 / EXT-S19a..e).
-                # A heuristic-only Condition-B page (FORMA_HEADER_HEURISTIC, identity=None)
-                # is absorbed ONLY when the open block was started by a real QR identity
-                # AND the registro matches. Otherwise dropped — not absorbed, not a new block.
+                # Continuation page: rev-3 gate (EXT-019 rev-3 / EXT-S19a..f).
+                # QR identity is the ONLY block-extender.  A non-QR page
+                # (identity is None — FHH photo, text-title-no-QR, or any annex)
+                # is DROPPED: not appended, not creating a block.  A same-guia_id
+                # QR page (identity is not None) is absorbed into the open block.
+                # Real-data basis (run 67e4e7a1): 68/68 FHH pages are photos,
+                # 0 material lines; every guía carries a QR per SUNAT domain authority.
                 assert current_block is not None
-                page_cls = next(
-                    (c for c in classifications if c.page == raw.source_page), None
-                )
-                is_heuristic_only = (
-                    page_cls is not None
-                    and page_cls.title_matched == "FORMA_HEADER_HEURISTIC"
-                    and identity is None
-                )
-                absorb = not is_heuristic_only or (
-                    current_block.identity_source == "qr"
-                    and raw.registro == current_block.registro
-                )
+                absorb = identity is not None
                 if absorb:
                     current_block.source_pages.append(raw.source_page)
                     current_block.lines.extend(raw.lines)
                     # Rev-3 D2: propagate hashqr_url — first non-null across the block.
                     if current_block.gre_hashqr_url is None and page_hashqr_url is not None:
                         current_block.gre_hashqr_url = page_hashqr_url
-                # else: non-guía image page dropped — NOT absorbed, NOT a new block
+                # else: non-QR page dropped — NOT absorbed, NOT a new block
 
             logger.debug(
                 "assemble_blocks: page %d → block guia_id=%r, source=%r, start_new=%s",

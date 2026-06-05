@@ -32,7 +32,7 @@ class GuiaContributionResponse(BaseModel):
     cantidad: Decimal = Field(description="Total quantity contributed by this guía to the group.")
     unidad: str = Field(description="Unit of measure (must match the parent group's unidad).")
     confidence: float = Field(description="Identity confidence from QR decode or fallback.")
-    identity_source: Literal["qr", "ocr_fallback"] = Field(
+    identity_source: Literal["qr", "ocr_fallback", "vision"] = Field(
         description="How the guía identity was determined."
     )
     # Rev-3 D5 (REC-C07): year_inferred provenance flag.

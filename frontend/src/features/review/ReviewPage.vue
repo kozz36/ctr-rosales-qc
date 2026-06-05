@@ -44,6 +44,12 @@
       @assign-guia="onAssignUnresolved"
     />
 
+    <!-- Errored guías panel (REV-E05) — read-only, shown above the grid when entries exist -->
+    <ErroredGuiasPanel
+      v-if="isReady && erroredGuias.length > 0"
+      :errored-guias="erroredGuias"
+    />
+
     <!-- Review grid (only when ready) -->
     <ReviewGrid
       v-if="isReady"
@@ -102,11 +108,12 @@ import { useReconciliationStore } from '@/stores/reconciliation'
 import { useTable, useReassignGuia, useExportRun, queryKeys } from '@/composables/useReconciliationApi'
 import { getRunStatus } from '@/api/client'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import type { ReconciliationRowResponse, ExportFormat, ReassignRequest, UnresolvedGuiaResponse } from '@/api/types'
+import type { ReconciliationRowResponse, ExportFormat, ReassignRequest, UnresolvedGuiaResponse, ErroredGuiaResponse } from '@/api/types'
 import ReviewGrid from './ReviewGrid.vue'
 import GuiaReassignDialog from './GuiaReassignDialog.vue'
 import ExportButton from './ExportButton.vue'
 import UnresolvedGuiasPanel from './UnresolvedGuiasPanel.vue'
+import ErroredGuiasPanel from './ErroredGuiasPanel.vue'
 import PageSheetViewer from './PageSheetViewer.vue'
 
 const props = defineProps<{
@@ -157,6 +164,11 @@ const rows = computed<ReconciliationRowResponse[]>(
 /** Rev-2: unresolved guías bucket (REV-C04). Never appears in the main grid. */
 const unresolvedGuias = computed<UnresolvedGuiaResponse[]>(
   () => tableQuery.data.value?.unresolved_guias ?? [],
+)
+
+/** Rev-3 (REV-E05): errored guías bucket — 0-line guías, read-only surface. */
+const erroredGuias = computed<ErroredGuiaResponse[]>(
+  () => tableQuery.data.value?.errored_guias ?? [],
 )
 
 const tableError = computed<string | null>(() =>

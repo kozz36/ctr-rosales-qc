@@ -1,61 +1,211 @@
 # ctr-rosales-qc — v1.0.0
 
-Local-first QC reconciliation tool for construction material receipts. It ingests a
-large Autodesk Forma PDF export (`CTR-PLC01-FR001 Recepción de Materiales en Obra`) and
+Local-first QC reconciliation tool for construction material receipts. It ingests an
+Autodesk Forma PDF export (`CTR-PLC01-FR001 Recepción de Materiales en Obra`) and
 reconciles, per **Registro N°**, the **declared** materials (digital text from the detail
 page + Protocolo de Recepción) against the **sum of materials** extracted from the scanned
 **guías de remisión** (SUNAT GRE). It flags mismatches, lets a quality engineer reassign
-misfiled guías, and exports the reconciled table to xlsx/csv.
+misfiled guías, and exports the reconciled table to XLSX/CSV.
 
 > **Operator guide:** see **[`docs/USAGE.md`](docs/USAGE.md)** for how to run and use the
-> tool (run commands, operating modes, the upload → review → reassign → export flow, and how to
-> read the review table).
->
-> Built with Spec-Driven Development. See **[`docs/HANDOFF.md`](docs/HANDOFF.md)** for
-> current state, known issues, and next steps.
+> tool (run commands, operating modes, the upload → review → reassign → export flow, and how
+> to read the review table).
 
-## Installation / Quick Start
+---
 
-**Prerequisite:** Docker and Docker Compose (no Python or Node.js required on the host).
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Installation — Linux / macOS](#installation--linux--macos)
+- [Installation — Windows](#installation--windows)
+- [Opening the app](#opening-the-app)
+- [Stopping the app](#stopping-the-app)
+- [Default run mode](#default-run-mode)
+- [Troubleshooting](#troubleshooting)
+- [Where to download](#where-to-download)
+- [Architecture](#architecture)
+- [Development quick start](#development-quick-start)
+- [Status](#status)
+- [Privacy](#privacy)
+- [License](#license)
+
+---
+
+## Prerequisites
+
+The installer builds and runs the stack inside Docker containers. You do **not** need
+Python, Node.js, or any runtime installed on the host.
+
+| Platform | Requirement |
+|---|---|
+| **Windows** | [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/) (includes Docker Compose) |
+| **macOS** | [Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/) (includes Docker Compose) |
+| **Linux** | [Docker Engine](https://docs.docker.com/engine/install/) + [Docker Compose plugin](https://docs.docker.com/compose/install/) v2 |
+
+Verify your installation before proceeding:
 
 ```bash
+docker --version          # Docker 24+ recommended
+docker compose version    # must be v2 (the "compose" sub-command, not "docker-compose")
+```
+
+---
+
+## Installation — Linux / macOS
+
+```bash
+git clone https://github.com/kozz36/ctr-rosales-qc.git
+cd ctr-rosales-qc
 ./install.sh
 ```
 
-`install.sh` checks prerequisites, builds backend and frontend images from source, and
-launches the stack via Docker Compose in deterministic mode. The app is ready at:
+`install.sh` checks prerequisites, builds the backend and frontend images from source,
+and starts the stack in deterministic mode. The first build takes a few minutes; subsequent
+starts are fast.
 
-- **Frontend:** http://localhost:5173
-- **Backend API:** http://localhost:8000 (docs at `/docs`)
+| Command | Action |
+|---|---|
+| `./install.sh` | Build + start the app |
+| `./install.sh --stop` | Stop the app |
+| `./install.sh --logs` | Follow live logs |
 
-To stop:
+---
 
-```bash
-make app-down
+## Installation — Windows
+
+**Requirement:** Docker Desktop must be installed and running before you begin.
+
+Open **PowerShell** (Windows Terminal or the Start menu) and run:
+
+```powershell
+git clone https://github.com/kozz36/ctr-rosales-qc.git
+cd ctr-rosales-qc
+.\install.ps1
 ```
 
-**Default operating mode — deterministic vision-off + SUNAT-authoritative:**
+If PowerShell reports an execution-policy restriction, you can bypass it for a single run:
 
-Out of the box the stack runs with `vision.enabled=false` and `sunat.enabled=true`. In this
-mode there are **zero LLM calls**: material quantities come from SUNAT GRE data and guía
-reception dates resolve to the SUNAT `fecha_entrega` delivery date. The pipeline is fully
-deterministic and produces stable output across runs once the SUNAT cross-run cache is warm.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
 
-Requirements for this mode:
-- Network access to SUNAT on first run (the QR-decoded GRE document is fetched and cached).
-  Subsequent runs use the cache and are air-gap-friendly.
-- The SUNAT cache persists via a named Docker volume; it survives `make app-down` / `make
-  app-up` restarts but is reset by `make app-clean`.
+Alternatively, double-click `install.bat` in File Explorer — it calls `install.ps1`
+with the execution-policy bypass automatically.
 
-To enable cloud or local Ollama vision (handwritten guía date reads), set `vision.enabled=true`
-and configure `RECONCILIATION__VISION__PROVIDER` / `RECONCILIATION__VISION__MODEL` in the
-environment (see `.env.example` and `backend/.env.example` for the full reference).
+| Command | Action |
+|---|---|
+| `.\install.ps1` | Build + start the app |
+| `.\install.ps1 -Stop` | Stop the app |
+| `.\install.ps1 -Logs` | Follow live logs |
 
-## Why it exists
+Both `install.ps1` and `install.bat` use the same `docker-compose.app.yml` as the
+Linux/macOS installer, so the stack is byte-identical across platforms.
 
-Manually cross-checking material receipts across a ~500-page PDF (11 reception records, each
-fanning out into multiple rotated, scanned delivery notes) is slow and error-prone. This tool
-automates the reconciliation and surfaces only what needs human judgment.
+---
+
+## Opening the app
+
+Once the installer reports that the backend is ready, open your browser at:
+
+- **App (frontend):** http://localhost:5173
+- **Backend API / docs:** http://localhost:8000/docs
+
+The installer attempts to open the browser automatically on Linux (X11/Wayland) and Windows.
+
+---
+
+## Stopping the app
+
+```bash
+# Linux / macOS
+./install.sh --stop
+# or equivalently
+make app-down
+
+# Windows PowerShell
+.\install.ps1 -Stop
+```
+
+---
+
+## Default run mode
+
+Out of the box the stack runs in **deterministic vision-off + SUNAT-authoritative** mode:
+
+- `vision.enabled = false` — zero LLM calls; no Ollama or API key required.
+- `sunat.enabled = true` — material quantities and guía reception dates come from SUNAT GRE
+  data fetched via the QR-decoded `serie-numero`.
+
+**SUNAT reachability:** the first run for each guía fetches from
+`e-factura.sunat.gob.pe`. Subsequent runs read from a local cross-run cache stored in a
+named Docker volume (`sunat-cache`). Once the cache is warm the tool runs fully offline.
+
+The cache survives `--stop` / restart cycles but is cleared by `make app-clean`.
+
+To enable cloud or local Ollama vision (handwritten guía date reads), set
+`vision.enabled = true` and configure the provider via environment variables — see
+`.env.example` and `backend/.env.example`.
+
+---
+
+## Troubleshooting
+
+**Port already in use (5173 or 8000)**
+
+Another process is listening on that port. Find and stop it, then run the installer again.
+
+```bash
+# Linux / macOS
+ss -tlnp | grep '5173\|8000'
+
+# Windows PowerShell
+netstat -ano | findstr "5173 8000"
+```
+
+**Docker is not running**
+
+The installer will print an error message. On Windows/macOS, open Docker Desktop and wait
+for it to report "Engine running" before retrying. On Linux, run:
+
+```bash
+sudo systemctl start docker
+```
+
+**Backend takes too long to start**
+
+On first run, the backend initializes its environment. The installer waits up to 60 seconds.
+If it times out, check logs:
+
+```bash
+./install.sh --logs      # Linux / macOS
+.\install.ps1 -Logs      # Windows
+```
+
+**Build fails on first run**
+
+Ensure Docker Desktop has sufficient resources (Recommended: 4 GB RAM, 2 CPUs). On Windows,
+verify that Docker Desktop is using the WSL 2 backend (Settings → General).
+
+**SUNAT is unreachable**
+
+The app starts regardless. The SUNAT fetch will be retried on the next pipeline run. If
+your network blocks SUNAT, contact your network administrator or enable an alternative
+operating mode (vision-on with a local Ollama instance).
+
+---
+
+## Where to download
+
+The source and tagged releases are at:
+
+- **Repository:** https://github.com/kozz36/ctr-rosales-qc
+- **Releases:** https://github.com/kozz36/ctr-rosales-qc/releases
+
+Download the source archive for the tagged version (`v1.0.0` or later) and follow the
+installation steps above. There are no pre-built binary installers; the Docker build step
+produces the runtime images from source on your machine.
+
+---
 
 ## Architecture
 
@@ -77,7 +227,9 @@ gate; mismatches are flagged for human review, never auto-corrected.
 See **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** for the full layout and
 **[`docs/DECISIONS.md`](docs/DECISIONS.md)** for every design decision and audit finding.
 
-## Quick start
+---
+
+## Development quick start
 
 ```bash
 # Backend (Python 3.12, uv)
@@ -115,11 +267,12 @@ docker compose run --rm \
   backend python -m pytest tests/integration/test_pipeline_r9_gate.py -v -s
 ```
 
-Ollama endpoint and model are configurable via `OLLAMA_BASE_URL` / `OLLAMA_MODEL` environment
-variables. For full air-gap, point to a local Ollama instance; `ocr.enabled=false` removes
-the PaddleOCR dependency entirely (SUNAT-supplied quantities are used instead).
+Ollama endpoint and model are configurable via `OLLAMA_BASE_URL` / `OLLAMA_MODEL`
+environment variables.
 
-## Status & roadmap
+---
+
+## Status
 
 ### Current status — v1.0.0 (2026-06-04)
 
@@ -151,12 +304,14 @@ the PaddleOCR dependency entirely (SUNAT-supplied quantities are used instead).
 
 ### Deferred follow-ups (post-v1.0.0)
 
-1. **`disable_thinking` perf lever** — `VisionConfig.disable_thinking` defaults to `true` since
-   PR #3; verify the compose default propagates correctly under load with the full 493-page PDF.
+1. **`disable_thinking` perf lever** — verify the compose default propagates correctly under
+   load with the full 493-page PDF.
 2. **Determinate progress bar ETA calibration** — ETA accuracy improves as the pipeline
    accumulates real timing samples; current estimate is linear interpolation from first 5%.
-3. **Date-read variance verify** — vision-read year reconstruction under high-load
-   `qwen3.5` throttling can produce year inference edge cases; monitor on multi-page runs.
+3. **Date-read variance verify** — vision-read year reconstruction under high-load throttling
+   can produce year inference edge cases; monitor on multi-page runs.
+
+---
 
 ## Privacy
 
@@ -164,6 +319,8 @@ Local-first by design. The input PDF is treated read-only and never leaves the m
 Page images go only to the configured vision provider (which can be a local Ollama instance
 for full air-gap). The SUNAT document-fetch feature and cloud vision are opt-in and off by
 default.
+
+---
 
 ## License
 

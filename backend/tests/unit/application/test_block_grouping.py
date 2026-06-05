@@ -210,11 +210,15 @@ class TestEXTS15SingleBlockSameQr:
 
 class TestEXTS16TwoBlocksDifferentQr:
     def test_new_qr_on_page2_starts_second_block(self, tmp_path: Path) -> None:
-        """Page 0: QR T001-0001. Page 1: None WITH material (ocr_fallback). Page 2: QR T001-0002.
+        """Page 0: QR T001-0001. Page 1: None WITH material but NO QR evidence. Page 2: QR T001-0002.
 
-        Rev-4 (C1): the non-QR page 1 carries material → it opens its OWN block
-        (``ocr_1``, flagged requires_review) instead of being silently dropped.
-        Three blocks total: T001-0001 (p0), ocr_1 (p1), T001-0002 (p2).
+        Rev-5 (FIX 1 / QR-evidence guard): page 1 has material BUT no QR evidence
+        at all (no compact QR and — via this fake's non-cache path — no URL
+        ``hashqr=`` QR), so its OCR "lines" are treated as a spurious table and the
+        page is DROPPED, NOT opened as a phantom ocr_fallback guía.  Two blocks
+        remain: T001-0001 (p0) and T001-0002 (p2).  (The C1 own-block behavior with
+        positive QR evidence is covered by
+        TestC1OcrFallbackMaterialPageStartsOwnBlock::test_url_qr_evidence_material_page_opens_own_block.)
         """
         qr1 = _identity("T001", "0001")
         qr2 = _identity("T001", "0002")
@@ -226,12 +230,12 @@ class TestEXTS16TwoBlocksDifferentQr:
             per_page_lines=[[_MAT_LINE], [_MAT_LINE], [_MAT_LINE]],
             tmp_path=tmp_path,
         )
-        assert len(result.guias) == 3, (
-            f"Expected 3 blocks (p1 material → own ocr_fallback block); "
+        assert len(result.guias) == 2, (
+            f"Expected 2 blocks (p1 dropped — no QR evidence); "
             f"got {len(result.guias)}: {[g.guia_id for g in result.guias]}"
         )
         ids = {g.guia_id for g in result.guias}
-        assert ids == {"T001-0001", "ocr_1", "T001-0002"}
+        assert ids == {"T001-0001", "T001-0002"}
 
     def test_first_block_has_page_0_only(self, tmp_path: Path) -> None:
         """Rev-3: first block (T001-0001) covers page 0 only; p1 (identity=None) is DROPPED."""
@@ -271,12 +275,16 @@ class TestEXTS17SectionBoundary:
     def test_section_boundary_starts_new_block(self, tmp_path: Path) -> None:
         """Pages 0+1 in registro '232'; page 2 in registro '231'.
 
-        Rev-4 (C1): every page is a non-QR ocr_fallback page WITH material, so each
-        opens its OWN block — p0 (ocr_0, reg 232), p1 (ocr_1, reg 232 via condition d),
-        p2 (ocr_2, reg 231 via the section boundary).  Three blocks total; the section
-        boundary still separates registros (232 ≠ 231).
+        Rev-5 (FIX 1 / QR-evidence guard): every page is a non-QR page with NO QR
+        evidence at all (no compact QR and — via this fake's non-cache path — no URL
+        ``hashqr=`` QR).  A page with material but no QR evidence is NOT a guía: its
+        OCR "lines" are a spurious table.  p0 still opens a block at run-start
+        (condition a), p1 is DROPPED (no QR evidence, same registro), and p2 opens a
+        new block via the section boundary (registro 231 ≠ 232).  Two blocks total,
+        spanning both registros.
         """
-        # No QR on any page: OCR fallback. Each material page → its own block.
+        # No QR on any page and no URL evidence: spurious tables.  Only run-start
+        # (p0) and the section-boundary page (p2) open blocks; p1 is dropped.
         result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE, _GUIA_PAGE],
             identity_seq=[None, None, None],
@@ -284,17 +292,17 @@ class TestEXTS17SectionBoundary:
             page_to_registro={0: "232", 1: "232", 2: "231"},
             tmp_path=tmp_path,
         )
-        assert len(result.guias) == 3, (
-            f"Expected 3 blocks (each material ocr_fallback page → own block); "
+        assert len(result.guias) == 2, (
+            f"Expected 2 blocks (p1 dropped — no QR evidence; section boundary keeps p2); "
             f"got {len(result.guias)}: {[(g.guia_id, g.registro) for g in result.guias]}"
         )
         registros = {g.registro for g in result.guias}
         assert registros == {"232", "231"}
 
-    def test_section_232_material_pages_each_own_block(self, tmp_path: Path) -> None:
-        """Rev-4 (C1): reg 232 has two non-QR material pages → TWO own blocks (ocr_0 [0]
-        and ocr_1 [1]), each single-page.  p1 is NOT absorbed into p0's block and is NOT
-        dropped — it carries material and opens its own ocr_fallback block."""
+    def test_section_232_no_qr_evidence_second_page_dropped(self, tmp_path: Path) -> None:
+        """Rev-5 (FIX 1): reg 232 has two non-QR material pages with NO QR evidence →
+        only ONE block (p0 via run-start); p1 is DROPPED (no QR evidence), NOT opened
+        as a phantom ocr_fallback guía and NOT absorbed."""
         result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE, _GUIA_PAGE],
             identity_seq=[None, None, None],
@@ -303,13 +311,12 @@ class TestEXTS17SectionBoundary:
             tmp_path=tmp_path,
         )
         blocks_232 = [g for g in result.guias if g.registro == "232"]
-        assert len(blocks_232) == 2, (
-            f"reg 232 has two material pages → two ocr_fallback blocks; "
+        assert len(blocks_232) == 1, (
+            f"reg 232: only p0 opens a block (p1 dropped — no QR evidence); "
             f"got {[(g.guia_id, g.source_pages) for g in blocks_232]}"
         )
-        assert sorted(g.source_pages for g in blocks_232) == [[0], [1]], (
-            "each reg-232 material page must be its own single-page block; "
-            f"got {[g.source_pages for g in blocks_232]}"
+        assert blocks_232[0].source_pages == [0], (
+            f"reg-232 block must be p0 only (p1 dropped); got {blocks_232[0].source_pages}"
         )
 
 

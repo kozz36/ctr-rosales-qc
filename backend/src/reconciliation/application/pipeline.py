@@ -932,12 +932,33 @@ class ReconciliationPipeline:
                 page_hashqr_url = page_hashqr_url_candidate  # URL QR may still exist
                 page_identity_confidence = 0.0
 
-            # A non-QR page that carries OCR material is a genuine ocr_fallback
-            # guía whose QR failed to decode (EXT-S24 ocr_fallback path).  It MUST
-            # NOT be silently dropped (validation-gate invariant: never lose
-            # material; flag for review).  Case 3 (rev-4 / C1): such a page starts
-            # its OWN block.  Case 2 (0-line FHH photo) keeps being dropped.
-            is_ocr_fallback_material = identity is None and len(raw.lines) > 0
+            # A non-QR page that carries OCR material MAY be a genuine ocr_fallback
+            # guía whose compact-identity QR failed to decode (EXT-S24 ocr_fallback
+            # path).  It MUST NOT be silently dropped (validation-gate invariant:
+            # never lose material; flag for review) — BUT only when there is
+            # POSITIVE QR EVIDENCE that the page is in fact a guía.
+            #
+            # QR-evidence guard (rev-5): the evidence is the URL-variant `hashqr=`
+            # QR (`page_hashqr_url`), a SUNAT GRE URL by definition, captured even
+            # when the compact identity QR fails (adapter EXT-012; set in the
+            # identity-None branch above).  Without it, a sheet with NO QR at all
+            # that happens to carry a spurious non-materials table (OCR emits
+            # phantom "lines") would wrongly open a phantom ocr_fallback guía with
+            # bogus material.  `page_hashqr_url is not None` is the implementable
+            # QR-evidence proxy: the system CANNOT detect "compact QR
+            # present-but-unreadable" when there is also no URL QR.
+            #
+            # Residual accepted edge: a real guía where BOTH the compact QR and the
+            # URL QR fail to decode is ignored (no QR evidence).  This is rare —
+            # other-provider / manual-entry territory — and out of scope here; the
+            # validation gate still never silently drops a page with QR evidence.
+            #
+            # Case 2 (0-line FHH photo) keeps being dropped (len(lines) == 0).
+            is_ocr_fallback_material = (
+                identity is None
+                and len(raw.lines) > 0
+                and page_hashqr_url is not None
+            )
 
             # Determine whether to start a new block
             start_new_block = current_block is None  # (a) run-start

@@ -127,10 +127,16 @@ def _decode_qr(identity: GuiaIdentity) -> DecodeOutcome:
     )
 
 
-def _decode_no_qr() -> DecodeOutcome:
+def _decode_no_qr(hashqr_url: str | None = None) -> DecodeOutcome:
+    """No compact identity QR.
+
+    ``hashqr_url`` is the URL-variant ``hashqr=`` QR — POSITIVE QR EVIDENCE that the
+    page is a guía (rev-5 case-3 guard).  When None there is no QR evidence at all,
+    so a material-bearing page must be dropped, NOT treated as an ocr_fallback guía.
+    """
     return DecodeOutcome(
         identity=None,
-        hashqr_url=None,
+        hashqr_url=hashqr_url,
         rendered=_PNG,
         decoded=False,
     )
@@ -595,7 +601,9 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         ]
         decode_map = {
             0: _decode_qr(qr_a),
-            1: _decode_no_qr(),  # identity None → ocr_fallback
+            # B: compact identity QR failed BUT the URL `hashqr=` QR decoded →
+            # POSITIVE QR EVIDENCE (rev-5) → still a genuine ocr_fallback guía.
+            1: _decode_no_qr(hashqr_url="https://e-factura.sunat.gob.pe/v1/?hashqr=ABC"),
             2: _decode_qr(qr_c),
         }
 
@@ -677,4 +685,91 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         )
         assert blocks[0].source_pages == [98], (
             f"0-line FHH photo must still be DROPPED; source_pages={blocks[0].source_pages}"
+        )
+
+    # -----------------------------------------------------------------------
+    # rev-5 — QR-evidence guard on case 3 (FIX 1).
+    #
+    # A page with material BUT no QR evidence at all (no compact identity QR AND
+    # no URL `hashqr=` QR) is NOT a guía: the OCR "lines" are a spurious
+    # non-materials table.  It must be DROPPED, not opened as a phantom
+    # ocr_fallback guía with bogus material.  A page with material AND a URL QR
+    # (positive QR evidence) still opens its own ocr_fallback block.
+    # -----------------------------------------------------------------------
+
+    def test_no_qr_evidence_material_page_dropped(self) -> None:
+        """rev-5 (FIX 1): material page with NO QR evidence (hashqr_url None) is
+        dropped — NOT treated as an ocr_fallback guía.
+
+        RED against the rev-4 condition (identity is None and len(lines) > 0),
+        which opened a phantom block; GREEN after the `page_hashqr_url is not None`
+        guard is added.
+        """
+        qr_a = _identity("T112", "0001")
+        line_a = _MAT_LINE.model_copy(update={"cantidad": Decimal("100")})
+        # B: spurious non-materials table, NO compact QR, NO URL QR.
+        line_b = _MAT_LINE.model_copy(update={"cantidad": Decimal("150")})
+
+        p_a = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[line_a], registro="232")
+        p_b = _RawGuia(guia_id="", source_page=1, image=_PNG, lines=[line_b], registro="232")
+
+        classifications = [
+            _cls(0, "QR_IDENTITY"),
+            _cls(1, "FORMA_HEADER_HEURISTIC"),
+        ]
+        decode_map = {
+            0: _decode_qr(qr_a),
+            1: _decode_no_qr(hashqr_url=None),  # NO QR evidence
+        }
+
+        pipeline = _make_pipeline()
+        blocks = pipeline._stage_assemble_blocks(
+            [p_a, p_b], classifications, decode_map=decode_map
+        )
+
+        assert len(blocks) == 1, (
+            "A material page with NO QR evidence must NOT open an ocr_fallback "
+            f"block; got {len(blocks)}: {[(b.guia_id, b.source_pages) for b in blocks]}"
+        )
+        assert blocks[0].source_pages == [0], (
+            f"No-QR-evidence page must be DROPPED; source_pages={blocks[0].source_pages}"
+        )
+
+    def test_url_qr_evidence_material_page_opens_own_block(self) -> None:
+        """rev-5 (FIX 1): material page WITH URL QR evidence (hashqr_url present) but
+        failed compact QR still opens its OWN ocr_fallback block + requires_review.
+
+        This is the C1 behavior preserved under the QR-evidence guard.
+        """
+        qr_a = _identity("T112", "0001")
+        line_a = _MAT_LINE.model_copy(update={"cantidad": Decimal("100")})
+        line_b = _MAT_LINE.model_copy(update={"cantidad": Decimal("150")})
+
+        p_a = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[line_a], registro="232")
+        p_b = _RawGuia(guia_id="", source_page=1, image=_PNG, lines=[line_b], registro="232")
+
+        classifications = [
+            _cls(0, "QR_IDENTITY"),
+            _cls(1, "FORMA_HEADER_HEURISTIC"),
+        ]
+        decode_map = {
+            0: _decode_qr(qr_a),
+            1: _decode_no_qr(hashqr_url="https://e-factura.sunat.gob.pe/v1/?hashqr=XYZ"),
+        }
+
+        pipeline = _make_pipeline()
+        blocks = pipeline._stage_assemble_blocks(
+            [p_a, p_b], classifications, decode_map=decode_map
+        )
+
+        assert len(blocks) == 2, (
+            "A material page WITH URL QR evidence must open its own ocr_fallback "
+            f"block; got {len(blocks)}: {[(b.guia_id, b.source_pages) for b in blocks]}"
+        )
+        block_b = next((b for b in blocks if 1 in b.source_pages), None)
+        assert block_b is not None
+        assert block_b.identity_source == "ocr_fallback"
+        assert block_b.gre_hashqr_url == "https://e-factura.sunat.gob.pe/v1/?hashqr=XYZ"
+        assert all(line.requires_review for line in block_b.lines), (
+            "ocr_fallback material block (URL QR evidence) lines MUST be requires_review"
         )

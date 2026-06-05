@@ -1,5 +1,17 @@
 # Design: Guía Classification Keystone (backend, change #2)
 
+> **rev-4 (2026-06-05): Decision-1 AMENDED (C1 fix).** The rev-3 gate
+> `absorb = identity is not None` silently dropped a non-QR page that *carries OCR
+> material* (the EXT-S24 `ocr_fallback` path: QR-decode failed but OCR read lines)
+> when it was same-registro as an open block — material lost, no block, no
+> `requires_review`. This violates the validation-gate invariant ("never silently
+> drop; flag `requires_review`"). **Fix (case 3):** a non-QR page WITH material now
+> opens its OWN `ocr_fallback` block (counted in the registro total) and is flagged
+> `requires_review` (uncertain identity). The else-branch gate stays
+> `absorb = identity is not None`; a material non-QR page no longer reaches it. The
+> rev-3 0-line FHH-photo drop (case 2) is unchanged. See **Decision-1 (rev-4)** below.
+> Decision-2 (`errored_guias`) is unchanged — do NOT redo it.
+>
 > **rev-3 (2026-06-05): Decision-1 REVISED.** The positional/adjacency gate was
 > built on a premise the real-data e2e gate (run `67e4e7a1`) proved FALSE. See
 > **Decision-1 (REVISED)** below. Decision-2 (`errored_guias`) is unchanged and
@@ -83,11 +95,58 @@ exist in the data. Removing it eliminates photo inflation (reg228 source_pages
 collapses to `[98]`) with zero material loss, and remains correct for the only
 real multi-page case (repeated QR identity).
 
-**Known limitation + recovery path**: a real guía page that is a text-title
-"GUIA DE REMISION" page WITHOUT a QR is dropped by this gate (treated like any
-non-QR page). Per domain authority this is unseen/rare and explicitly OUT OF
-SCOPE. Recovery: the #3 reprocess flow / a future MANUAL-ENTRY feature. Documented,
-not silently handled.
+**Known limitation + recovery path (rev-3, SUPERSEDED by rev-4 for the
+material case)**: a real guía page that is a text-title "GUIA DE REMISION" page
+WITHOUT a QR is dropped by the rev-3 gate (treated like any non-QR page). For a
+page with **0 material lines** (FHH photo) this remains the intended behaviour.
+For a page **with material** (`ocr_fallback`), rev-4 (Decision-1 rev-4 below)
+no longer drops it — it opens its own reviewable block. The recovery path (#3
+reprocess / future MANUAL-ENTRY) still applies to a no-material text-title page.
+
+### Decision-1 (rev-4): non-QR page WITH material → own ocr_fallback block + requires_review
+
+**Problem (C1).** The rev-3 gate is correct for 0-line photos but WRONG for a
+genuine guía page whose QR failed to decode yet whose OCR read material lines
+(EXT-S24 `ocr_fallback`: `identity_source == "ocr_fallback"`, `raw.lines`
+non-empty). When such a page is same-registro as an open block it reaches the
+else-branch (`identity is None` → not absorbed, not a new block) and is **silently
+dropped** — material lost, no `errored_guia`, no `requires_review`. Empirically
+(unit C1 regression): 400 KG across 3 guías → 250 KG, B's 150 KG vanished. QR
+decode failure is real and documented (HANDOFF §QR fragility); OCR is ON by default.
+
+**Choice.** Three cases, decided at block-assembly:
+| Case | Condition | Action |
+|------|-----------|--------|
+| 1 | `identity is not None` (QR page) | extends/opens block as in rev-3 |
+| 2 | `identity is None` AND `len(raw.lines) == 0` (FHH photo) | **dropped** (rev-3, unchanged) |
+| 3 | `identity is None` AND `len(raw.lines) > 0` (`ocr_fallback` material) | **starts its OWN block**, flagged `requires_review` |
+
+Implementation (`_stage_assemble_blocks`, pipeline.py ~935-993):
+- Compute `is_ocr_fallback_material = identity is None and len(raw.lines) > 0`.
+- Add start-new-block **condition (d)**: an `is_ocr_fallback_material` page opens a
+  new block (a distinct `ocr_fallback` guía; `page_guia_id = f"ocr_{source_page}"`,
+  `identity_source = "ocr_fallback"`).
+- On opening that block, set `requires_review=True` on its `MaterialLine`s
+  (`line.model_copy(update={"requires_review": True})`). This reuses the existing
+  `MaterialLine.requires_review` field; the domain propagation in
+  `domain/reconciliation.py` (any contributing-guía line `requires_review` →
+  `row_requires_review`) surfaces it — **no parallel flagging system**.
+- The else-branch gate stays `absorb = identity is not None`. After condition (d),
+  only TWO kinds of page reach it: a same-`guia_id` 2nd QR page (absorbed) and a
+  non-QR 0-line photo (dropped). A material non-QR page never reaches the else-branch.
+
+**Alternatives considered**:
+| Option | Tradeoff | Decision |
+|--------|----------|----------|
+| Keep rev-3 (drop the material page) | Silent material loss; violates the validation-gate invariant. | **Rejected** |
+| Absorb the material page into the open block | Wrong identity assigned to its lines; would merge two distinct guías; hides the QR-decode failure. | Rejected |
+| Route to `errored_guias` instead of a block | `errored_guias` is for 0-line phantom blocks (Decision-2); this page HAS material and must be counted in the registro total, not just listed. | Rejected |
+| Own `ocr_fallback` block + `requires_review` (case 3) | Material retained and counted; uncertain identity surfaced for human review; uses the existing flag; additive. | **Chosen (rev-4)** |
+
+**Real-data invariant preserved.** The 68 FHH photos in run `67e4e7a1` all have
+0 lines → condition (d) NOT triggered → still dropped (case 2). reg228 still
+collapses to `source_pages=[98]`, 140/140 material retained. Confirmed by unit
+`test_zero_line_photo_still_dropped`.
 
 ### Decision-2 (UNCHANGED — validated): additive `PipelineResult.errored_guias`
 

@@ -107,7 +107,7 @@ empty list) that surfaces, per Registro, every guía that resolved to 0 material
 the SUNAT fetch stage.
 
 `ErroredGuia` MUST carry exactly:
-- `registro: str` — the Registro N° the guía was assigned to
+- `registro: str | None` — the Registro N° the guía was assigned to (null when the section is unresolved)
 - `guia_id: str` — the deterministic `{serie}-{numero}` identifier (or OCR-fallback value)
 - `source_pages: list[int]` — all page indices in the guía block
 

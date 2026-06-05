@@ -38,6 +38,7 @@ from reconciliation.infrastructure.api.schemas import (
     ReassignResponse,
     ReconciliationRowResponse,
     ReconciliationTableResponse,
+    ReprocessGuiaResponse,
     RetryBatchResponse,
     RetryGuiaResponse,
     RowEditRequest,
@@ -990,6 +991,78 @@ def retry_registro(
         run_id=run_id,
         registro=registro,
         count=len(target_guias),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reprocesar con IA — vision recovery (PR#3)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/runs/{run_id}/errored-guias/{guia_id}/reprocess",
+    response_model=ReprocessGuiaResponse,
+    status_code=200,
+    summary="Attempt to recover an errored guía using vision (Reprocesar con IA).",
+)
+async def reprocess_guia(
+    run_id: str,
+    guia_id: str,
+    registry: RunRegistry,
+) -> ReprocessGuiaResponse:
+    """Attempt to recover a single errored guía via vision (Reprocesar con IA, PR#3).
+
+    Spec: REV-R16.
+
+    Flow: render page → downscale → VisionLLMPort.read_material_table → normalize
+    → re-reconcile.  Vision; guía fecha = ErroredGuia.fecha_entrega (R9b floor) when
+    available, else None.
+
+    Returns:
+        200 ReprocessGuiaResponse with recovered=True on success, or
+        recovered=False + reason on failure.
+
+    Errors:
+        404 — run_id unknown, or guia_id not in errored_guias.
+        503 — both vision and SUNAT disabled (reprocess_service is None).
+    """
+    entry = _require_run(registry, run_id)
+    reprocess_service = _require_reprocess_service(entry, run_id)
+    review_service = _require_review_service(entry, run_id)
+
+    # Verify guia_id is in errored_guias.
+    errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []
+    errored_entry = next((e for e in errored_list if e.guia_id == guia_id), None)
+    if errored_entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Guía '{guia_id}' not found in errored_guias for run '{run_id}'.",
+        )
+
+    result = await reprocess_service.apply_reprocess(
+        guia_id=guia_id,
+        source_pages=list(errored_entry.source_pages),
+    )
+
+    updated_rows = [_row_to_response(r) for r in result.rows] if result.rows else []
+
+    remaining_errored = [
+        ErroredGuiaResponse(
+            registro=eg.registro,
+            guia_id=eg.guia_id,
+            source_pages=list(eg.source_pages),
+            retry_attempted=eg.retry_attempted,
+        )
+        for eg in review_service.errored_guias
+    ]
+
+    return ReprocessGuiaResponse(
+        run_id=run_id,
+        guia_id=guia_id,
+        recovered=result.recovered,
+        reason=result.reason,
+        rows=updated_rows,
+        errored_guias=remaining_errored,
     )
 
 

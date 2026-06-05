@@ -502,6 +502,36 @@ class RetryBatchResponse(BaseModel):
     task: str = Field(default="started", description="Task handle (always 'started').")
 
 
+class ReprocessGuiaResponse(BaseModel):
+    """Response for POST /runs/{run_id}/errored-guias/{guia_id}/reprocess (PR#3).
+
+    recovered=True when the guía was successfully recovered via vision.
+    recovered=False when recovery failed (vision_empty | not_found).
+    rows is the updated reconciliation table after re-reconcile (empty on failure).
+    errored_guias is the remaining errored guías list after the attempt.
+    """
+
+    run_id: str
+    guia_id: str
+    recovered: bool
+    reason: str | None = Field(
+        default=None,
+        description=(
+            "Failure reason when recovered=False: "
+            "'vision_empty' | 'not_found'. "
+            "Null on success."
+        ),
+    )
+    rows: list[ReconciliationRowResponse] = Field(
+        default_factory=list,
+        description="Updated reconciliation rows after recovery (empty on failure).",
+    )
+    errored_guias: list[ErroredGuiaResponse] = Field(
+        default_factory=list,
+        description="Remaining errored guías after the reprocess attempt.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

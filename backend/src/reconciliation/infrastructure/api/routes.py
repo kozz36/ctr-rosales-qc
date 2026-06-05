@@ -160,18 +160,41 @@ def _require_review_service(entry: Any, run_id: str) -> Any:
 
 
 def _require_reprocess_service(entry: Any, run_id: str) -> Any:
-    """Return the ReprocessService from a run entry, or raise 503 if SUNAT is disabled."""
+    """Return the ReprocessService from a run entry, or raise 503 if unavailable.
+
+    PR#3 (T5): service is now built when vision OR SUNAT is enabled.
+    This guard only raises 503 when BOTH are disabled (service is None).
+    For REINTENTAR-specific SUNAT check, use _require_sunat_on_service.
+    """
     reprocess_service = entry.get("reprocess_service")
     if reprocess_service is None:
         raise HTTPException(
             status_code=503,
             detail=(
-                f"REINTENTAR not available for run '{run_id}': "
-                "SUNAT fetch is disabled (sunat.enabled=False). "
-                "Enable SUNAT in config to use this endpoint."
+                f"Recovery endpoints not available for run '{run_id}': "
+                "both vision and SUNAT fetch are disabled. "
+                "Enable vision or SUNAT in config to use REINTENTAR / Reprocesar con IA."
             ),
         )
     return reprocess_service
+
+
+def _require_sunat_on_service(reprocess_service: Any, run_id: str) -> None:
+    """Raise 503 if the ReprocessService has no SUNAT adapter (REINTENTAR-specific guard).
+
+    REINTENTAR (apply_retry) requires a SUNAT adapter.  Reprocesar con IA (apply_reprocess)
+    does not.  After PR#3 T5, the service may be built for vision-only runs where _sunat
+    is None — this guard preserves the REINTENTAR 503 behaviour in that scenario.
+    """
+    if getattr(reprocess_service, "_sunat", None) is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"REINTENTAR not available for run '{run_id}': "
+                "SUNAT fetch is disabled (sunat.enabled=False). "
+                "Enable SUNAT in config to use REINTENTAR."
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +880,8 @@ def retry_errored_guia(
     """
     entry = _require_run(registry, run_id)
     reprocess_service = _require_reprocess_service(entry, run_id)
+    # REINTENTAR requires SUNAT; raise 503 if the service was built for vision-only.
+    _require_sunat_on_service(reprocess_service, run_id)
     review_service = _require_review_service(entry, run_id)
 
     # Verify guia_id is in the errored_guias list.
@@ -931,6 +956,8 @@ def retry_registro(
     """
     entry = _require_run(registry, run_id)
     reprocess_service = _require_reprocess_service(entry, run_id)
+    # Batch REINTENTAR also requires SUNAT.
+    _require_sunat_on_service(reprocess_service, run_id)
     review_service = _require_review_service(entry, run_id)
 
     errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []

@@ -570,23 +570,30 @@ def build_reprocess_service(
 ) -> "ReprocessService | None":
     """Build a ReprocessService wired with concrete adapters from the run context.
 
-    T-6 (REV-R02 wiring): mirrors build_pipeline's adapter construction for the
-    adapters ReprocessService needs.  Container.py is the ONLY place that imports
-    concrete adapter classes — application/reprocess_service.py stays ports-only.
+    Container.py is the ONLY place that imports concrete adapter classes.
+    application/reprocess_service.py stays ports-only.
+
+    PR#3 (T5 / REV-R17): decoupled from SUNAT gate.  Service is built whenever
+    vision.enabled OR sunat.enabled — one or the other is sufficient.
+    - vision.enabled=True  → apply_reprocess (Reprocesar con IA) works.
+    - sunat.enabled=True   → apply_retry (REINTENTAR) works.
+    - Both disabled        → return None (503 for both endpoints).
+
+    The REINTENTAR route independently checks service._sunat is not None and
+    raises 503 when SUNAT is disabled (even if the service was built for vision).
 
     Returns:
-        A ReprocessService when SUNAT is enabled; None when disabled.
-        Callers (API routes) must return 503 when this is None (SUNAT gate).
+        A ReprocessService when vision OR SUNAT is enabled; None when both disabled.
     """
     from reconciliation.application.reprocess_service import (  # noqa: PLC0415
         ReprocessService,
     )
 
-    # SUNAT gate: ReprocessService is only meaningful when SUNAT is enabled.
-    # When disabled, the caller 503s (design-pr2.md §API / T-7).
-    if not config.sunat.enabled:
+    # Guard: need at least one capability.
+    if not config.sunat.enabled and not config.vision.enabled:
         logger.debug(
-            "build_reprocess_service: SUNAT disabled — ReprocessService not built (503 gate)"
+            "build_reprocess_service: both vision and SUNAT disabled — "
+            "ReprocessService not built (503 gate)"
         )
         return None
 
@@ -602,6 +609,8 @@ def build_reprocess_service(
         return None
 
     # --- Identity adapter (QR decode for hashqr_url; lazy heavy deps) ---
+    # Required for REINTENTAR (apply_retry uses decode_hashqr_url).
+    # When absent: apply_retry returns no_hashqr_url; apply_reprocess unaffected.
     identity = None
     try:
         from reconciliation.adapters.identity.qr_barcode import (  # noqa: PLC0415
@@ -615,35 +624,62 @@ def build_reprocess_service(
             "REINTENTAR decode_hashqr_url will always return None",
             exc,
         )
-        # Fall through with identity=None — apply_retry will return no_hashqr_url
-        return None
+        # For vision-only builds this is acceptable — identity is not used by apply_reprocess.
+        # For SUNAT-only builds, no identity = no QR decode = apply_retry returns no_hashqr_url.
 
-    # --- SUNAT adapter (same config as build_pipeline) ---
+    # --- SUNAT adapter (only when sunat.enabled) ---
     sunat_adapter = None
-    try:
-        from reconciliation.adapters.sunat.descargaqr import (  # noqa: PLC0415
-            SunatDescargaqrAdapter,
+    if config.sunat.enabled:
+        try:
+            from reconciliation.adapters.sunat.descargaqr import (  # noqa: PLC0415
+                SunatDescargaqrAdapter,
+            )
+
+            sunat_cache_dir = None
+            if config.sunat.cache:
+                if config.sunat.cache_dir is not None:
+                    sunat_cache_dir = config.sunat.cache_dir
+                    sunat_cache_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    sunat_cache_dir = ctx.run_dir / "sunat"
+
+            sunat_adapter = SunatDescargaqrAdapter(
+                timeout_s=config.sunat.timeout_s,
+                cache_dir=sunat_cache_dir,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "build_reprocess_service: SunatDescargaqrAdapter init failed: %s; "
+                "apply_retry will not be able to fetch SUNAT data",
+                exc,
+            )
+            # Not fatal when vision is also enabled.
+            if not config.vision.enabled:
+                return None
+
+    # --- Vision adapter (only when vision.enabled) ---
+    vision_adapter = None
+    if config.vision.enabled:
+        try:
+            from reconciliation.adapters.vision.factory import (  # noqa: PLC0415
+                build_vision_adapter,
+            )
+
+            vision_adapter = build_vision_adapter(config)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "build_reprocess_service: build_vision_adapter failed: %s; "
+                "apply_reprocess will return vision_empty",
+                exc,
+            )
+    else:
+        # Vision disabled — use NullVisionAdapter so apply_reprocess returns vision_empty
+        # gracefully instead of crashing on None._vision.
+        from reconciliation.adapters.vision.null_vision import (  # noqa: PLC0415
+            NullVisionAdapter,
         )
 
-        sunat_cache_dir = None
-        if config.sunat.cache:
-            if config.sunat.cache_dir is not None:
-                sunat_cache_dir = config.sunat.cache_dir
-                sunat_cache_dir.mkdir(parents=True, exist_ok=True)
-            else:
-                sunat_cache_dir = ctx.run_dir / "sunat"
-
-        sunat_adapter = SunatDescargaqrAdapter(
-            timeout_s=config.sunat.timeout_s,
-            cache_dir=sunat_cache_dir,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "build_reprocess_service: SunatDescargaqrAdapter init failed: %s; "
-            "REINTENTAR will not be able to fetch SUNAT data",
-            exc,
-        )
-        return None
+        vision_adapter = NullVisionAdapter()
 
     # --- Material key resolver (same as build_pipeline) ---
     from reconciliation.adapters.inference.factory import (  # noqa: PLC0415
@@ -665,6 +701,9 @@ def build_reprocess_service(
         sunat=sunat_adapter,
         key_resolver=key_resolver,
         review_service=review_service,
+        vision=vision_adapter,
+        max_concurrency=config.vision.reprocess_max_concurrency,
+        downscale_max_edge=config.vision.reprocess_downscale_max_edge,
     )
 
 

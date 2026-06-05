@@ -28,6 +28,7 @@ from datetime import date
 from typing import Any
 
 from reconciliation.domain.models import MaterialLine, VisionResult
+from reconciliation.domain.units import normalize_unit_label
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,11 @@ def _parse_table_json(raw: str) -> list[MaterialLine]:
             cantidad = float(entry.get("cantidad", 0))
         except (TypeError, ValueError):
             continue
-        unidad = str(entry.get("unidad") or "").strip()
+        # Normalize long-form unit labels ("TONELADAS"→"TN", "UND"→"RD") BEFORE the
+        # Literal coercion so a long-form unit does not silently drop the line
+        # (FIX #3 — parity with the SUNAT path; shared domain map, no conversion).
+        raw_unidad = str(entry.get("unidad") or "").strip()
+        unidad = normalize_unit_label(raw_unidad)
         try:
             line = MaterialLine(  # type: ignore[call-arg]
                 description_raw=str(desc),
@@ -135,8 +140,12 @@ def _parse_table_json(raw: str) -> list[MaterialLine]:
                 confidence=confidence,
             )
             result.append(line)
-        except Exception:  # noqa: BLE001 — invalid unit or validation failure; skip line
-            logger.debug("_parse_table_json: skipping invalid line entry %r", entry)
+        except Exception:  # noqa: BLE001 — still-unmappable unit or validation failure
+            logger.warning(
+                "_parse_table_json: dropping line with unmappable unit %r "
+                "(normalized=%r, descripcion=%r)",
+                raw_unidad, unidad, desc,
+            )
     return result
 
 

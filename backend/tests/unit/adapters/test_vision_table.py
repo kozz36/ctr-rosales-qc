@@ -264,3 +264,85 @@ class TestOpenAICompatibleVisionAdapterTable:
         result = adapter.read_material_table(b"image")
         assert len(result) == 1
         assert result[0].confidence == pytest.approx(0.77, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# FIX #3 — vision long-form unit normalization parity (silent line-loss guard)
+#
+# When the vision model emits a long-form unit ("TONELADAS", "KILOS", "UND",
+# "UNIDAD") the MaterialLine Literal["KG","TN","RD","Rollo"] coercion used to
+# raise → the line was SILENTLY skipped → summed_qty short → spurious MISMATCH.
+# The SUNAT path normalizes long-form→canonical BEFORE the valid-unit check;
+# the vision path must mirror that (domain/units.normalize_unit_label).
+# ---------------------------------------------------------------------------
+
+
+class TestVisionLongFormUnitNormalization:
+    @pytest.mark.parametrize(
+        ("raw_unit", "expected"),
+        [
+            ("TONELADAS", "TN"),
+            ("KILOS", "KG"),
+            ("KILOGRAMOS", "KG"),
+            ("UND", "RD"),
+            ("UNIDAD", "RD"),
+            ("ROLLO", "Rollo"),
+        ],
+    )
+    def test_anthropic_retains_longform_unit_line(
+        self, raw_unit: str, expected: str
+    ) -> None:
+        """A long-form unit line is RETAINED with the canonical unit (not dropped)."""
+        from reconciliation.adapters.vision.anthropic_vision import AnthropicVisionAdapter
+
+        payload = json.dumps({
+            "lines": [{"descripcion": "BARRA 1/2\" 9M", "cantidad": 4.124, "unidad": raw_unit}],
+            "confidence": 0.9,
+        })
+        adapter = AnthropicVisionAdapter(client=_make_anthropic_fake_client(payload))
+        result = adapter.read_material_table(b"image")
+        assert len(result) == 1, f"line with unit {raw_unit!r} was silently dropped"
+        assert result[0].unidad == expected
+        assert float(result[0].cantidad) == pytest.approx(4.124, abs=1e-3)
+
+    @pytest.mark.parametrize(
+        ("raw_unit", "expected"),
+        [
+            ("TONELADAS", "TN"),
+            ("KILOS", "KG"),
+            ("UND", "RD"),
+            ("UNIDAD", "RD"),
+        ],
+    )
+    def test_openai_retains_longform_unit_line(
+        self, raw_unit: str, expected: str
+    ) -> None:
+        """OpenAI-compatible adapter retains long-form unit lines too (parity)."""
+        from reconciliation.adapters.vision.openai_compatible import (
+            OpenAICompatibleVisionAdapter,
+        )
+
+        payload = json.dumps({
+            "lines": [{"descripcion": "BARRA 3/8\" 9M", "cantidad": 2.5, "unidad": raw_unit}],
+            "confidence": 0.9,
+        })
+        adapter = OpenAICompatibleVisionAdapter(client=_make_openai_fake_client(payload))
+        result = adapter.read_material_table(b"image")
+        assert len(result) == 1, f"line with unit {raw_unit!r} was silently dropped"
+        assert result[0].unidad == expected
+
+    def test_unmappable_unit_still_dropped_and_warns(self, caplog) -> None:
+        """A genuinely unmappable unit is still skipped but logged at WARNING."""
+        import logging  # noqa: PLC0415
+
+        from reconciliation.adapters.vision.anthropic_vision import AnthropicVisionAdapter
+
+        payload = json.dumps({
+            "lines": [{"descripcion": "MYSTERY", "cantidad": 1, "unidad": "PARSECS"}],
+            "confidence": 0.9,
+        })
+        adapter = AnthropicVisionAdapter(client=_make_anthropic_fake_client(payload))
+        with caplog.at_level(logging.WARNING):
+            result = adapter.read_material_table(b"image")
+        assert result == []
+        assert any("PARSECS" in rec.message for rec in caplog.records)

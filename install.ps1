@@ -137,16 +137,21 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Bold "5) Waiting for backend to be ready..."
 
-$elapsed   = 0
-$ready     = $false
-$probeUrl  = "$BackendUrl/api/v1/runs/"
+$elapsed = 0
+$ready   = $false
 
+# TCP liveness: the port accepting connections means uvicorn is up. An HTTP probe
+# on a collection route returns 405, and Invoke-WebRequest THROWS on 4xx — that
+# would falsely read as "not ready" even though the backend is serving.
 while ($elapsed -lt $MaxWaitSec) {
+    $tcp = New-Object System.Net.Sockets.TcpClient
     try {
-        $probe = Invoke-WebRequest -Uri $probeUrl -TimeoutSec 4 -UseBasicParsing -ErrorAction Stop
+        $tcp.Connect('localhost', 8000)
         $ready = $true
+        $tcp.Close()
         break
     } catch {
+        $tcp.Close()
         Start-Sleep -Seconds $PollInterval
         $elapsed += $PollInterval
     }

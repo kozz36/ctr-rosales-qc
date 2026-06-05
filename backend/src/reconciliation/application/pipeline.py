@@ -932,6 +932,13 @@ class ReconciliationPipeline:
                 page_hashqr_url = page_hashqr_url_candidate  # URL QR may still exist
                 page_identity_confidence = 0.0
 
+            # A non-QR page that carries OCR material is a genuine ocr_fallback
+            # guía whose QR failed to decode (EXT-S24 ocr_fallback path).  It MUST
+            # NOT be silently dropped (validation-gate invariant: never lose
+            # material; flag for review).  Case 3 (rev-4 / C1): such a page starts
+            # its OWN block.  Case 2 (0-line FHH photo) keeps being dropped.
+            is_ocr_fallback_material = identity is None and len(raw.lines) > 0
+
             # Determine whether to start a new block
             start_new_block = current_block is None  # (a) run-start
 
@@ -945,17 +952,37 @@ class ReconciliationPipeline:
                     and page_guia_id != current_block.guia_id
                 ):
                     start_new_block = True
+                # (d) ocr_fallback page WITH material (C1 / rev-4): a distinct guía
+                # whose QR failed to decode but whose OCR read material lines.  It
+                # opens its own block (counted in the registro total) and is flagged
+                # requires_review (uncertain identity) below.
+                elif is_ocr_fallback_material:
+                    start_new_block = True
 
             if start_new_block:
                 # Finalise current block (if any) and push to list
                 if current_block is not None:
                     blocks.append(current_block)
+                # C1 (rev-4): an ocr_fallback page with material has an uncertain
+                # identity → flag its lines requires_review so the existing
+                # reconciliation propagation (domain/reconciliation.py: any line
+                # requires_review → row_requires_review) surfaces it for human
+                # review.  Uses the existing MaterialLine.requires_review field;
+                # no parallel flagging system.
+                block_lines: list[MaterialLine]
+                if is_ocr_fallback_material:
+                    block_lines = [
+                        line.model_copy(update={"requires_review": True})
+                        for line in raw.lines
+                    ]
+                else:
+                    block_lines = list(raw.lines)
                 current_block = _GuiaBlock(
                     guia_id=page_guia_id,
                     first_page=raw.source_page,
                     source_pages=[raw.source_page],
                     first_page_image=raw.image,
-                    lines=list(raw.lines),
+                    lines=block_lines,
                     registro=raw.registro,
                     identity_source=page_identity_source,
                     ruc_emisor=page_ruc_emisor,
@@ -966,10 +993,11 @@ class ReconciliationPipeline:
                 )
             else:
                 # Continuation page: rev-3 gate (EXT-019 rev-3 / EXT-S19a..f).
-                # QR identity is the ONLY block-extender.  A non-QR page
-                # (identity is None — FHH photo, text-title-no-QR, or any annex)
-                # is DROPPED: not appended, not creating a block.  A same-guia_id
-                # QR page (identity is not None) is absorbed into the open block.
+                # After rev-4 condition (d), only TWO kinds of page reach here:
+                #   - a same-guia_id QR page (identity is not None) → ABSORBED.
+                #   - a non-QR page with ZERO material lines (FHH photo / annex)
+                #     → DROPPED (Bug-1 fix).  A non-QR page WITH material no longer
+                #     reaches the else-branch: it started its own block via (d).
                 # Real-data basis (run 67e4e7a1): 68/68 FHH pages are photos,
                 # 0 material lines; every guía carries a QR per SUNAT domain authority.
                 assert current_block is not None

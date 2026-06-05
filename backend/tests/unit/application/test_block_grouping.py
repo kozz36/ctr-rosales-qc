@@ -159,21 +159,23 @@ def _run_pipeline(
 
 
 class TestEXTS15SingleBlockSameQr:
-    def test_three_pages_first_qr_non_qr_continuations_dropped(self, tmp_path: Path) -> None:
-        """3 consecutive GUIA pages: p0 QR T001-0001, p1+p2 identity=None.
-        Rev-3: non-QR continuation pages DROPPED → 1 block, source_pages=[0], lines=[p0 only].
+    def test_three_pages_first_qr_non_qr_photo_continuations_dropped(self, tmp_path: Path) -> None:
+        """3 consecutive GUIA pages: p0 QR T001-0001, p1+p2 identity=None, ZERO material lines.
+        Rev-3/rev-4: non-QR 0-line photo continuation pages DROPPED → 1 block,
+        source_pages=[0], lines=[p0 only].  (Material non-QR pages now open their own
+        block via condition (d) — see TestC1OcrFallbackMaterialPageStartsOwnBlock; this
+        test pins the real-data 0-line FHH photo case which is still dropped.)
         """
         qr = _identity("T001", "0001")
         identity_seq: list[GuiaIdentity | None] = [qr, None, None]
 
         line_a = _MAT_LINE.model_copy(update={"cantidad": Decimal("100")})
-        line_b = _MAT_LINE.model_copy(update={"cantidad": Decimal("200")})
-        line_c = _MAT_LINE.model_copy(update={"cantidad": Decimal("50")})
 
         result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE, _GUIA_PAGE],
             identity_seq=identity_seq,
-            per_page_lines=[[line_a], [line_b], [line_c]],
+            # p1, p2 are 0-line FHH photos (no OCR material) → dropped.
+            per_page_lines=[[line_a], [], []],
             tmp_path=tmp_path,
         )
         assert len(result.guias) == 1, (
@@ -208,7 +210,12 @@ class TestEXTS15SingleBlockSameQr:
 
 class TestEXTS16TwoBlocksDifferentQr:
     def test_new_qr_on_page2_starts_second_block(self, tmp_path: Path) -> None:
-        """Page 0: QR T001-0001. Page 1: None (continuation). Page 2: new QR T001-0002 → split."""
+        """Page 0: QR T001-0001. Page 1: None WITH material (ocr_fallback). Page 2: QR T001-0002.
+
+        Rev-4 (C1): the non-QR page 1 carries material → it opens its OWN block
+        (``ocr_1``, flagged requires_review) instead of being silently dropped.
+        Three blocks total: T001-0001 (p0), ocr_1 (p1), T001-0002 (p2).
+        """
         qr1 = _identity("T001", "0001")
         qr2 = _identity("T001", "0002")
         identity_seq: list[GuiaIdentity | None] = [qr1, None, qr2]
@@ -219,11 +226,12 @@ class TestEXTS16TwoBlocksDifferentQr:
             per_page_lines=[[_MAT_LINE], [_MAT_LINE], [_MAT_LINE]],
             tmp_path=tmp_path,
         )
-        assert len(result.guias) == 2, (
-            f"Expected 2 blocks; got {len(result.guias)}: {[g.guia_id for g in result.guias]}"
+        assert len(result.guias) == 3, (
+            f"Expected 3 blocks (p1 material → own ocr_fallback block); "
+            f"got {len(result.guias)}: {[g.guia_id for g in result.guias]}"
         )
         ids = {g.guia_id for g in result.guias}
-        assert ids == {"T001-0001", "T001-0002"}
+        assert ids == {"T001-0001", "ocr_1", "T001-0002"}
 
     def test_first_block_has_page_0_only(self, tmp_path: Path) -> None:
         """Rev-3: first block (T001-0001) covers page 0 only; p1 (identity=None) is DROPPED."""
@@ -261,8 +269,14 @@ class TestEXTS16TwoBlocksDifferentQr:
 
 class TestEXTS17SectionBoundary:
     def test_section_boundary_starts_new_block(self, tmp_path: Path) -> None:
-        """Pages 0+1 in registro '232'; page 2 in registro '231' → split at boundary."""
-        # No QR on any page: OCR fallback. Section boundary (different registro) triggers split.
+        """Pages 0+1 in registro '232'; page 2 in registro '231'.
+
+        Rev-4 (C1): every page is a non-QR ocr_fallback page WITH material, so each
+        opens its OWN block — p0 (ocr_0, reg 232), p1 (ocr_1, reg 232 via condition d),
+        p2 (ocr_2, reg 231 via the section boundary).  Three blocks total; the section
+        boundary still separates registros (232 ≠ 231).
+        """
+        # No QR on any page: OCR fallback. Each material page → its own block.
         result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE, _GUIA_PAGE],
             identity_seq=[None, None, None],
@@ -270,16 +284,17 @@ class TestEXTS17SectionBoundary:
             page_to_registro={0: "232", 1: "232", 2: "231"},
             tmp_path=tmp_path,
         )
-        # Pages 0+1 → one block (registro='232'), page 2 → second block (registro='231')
-        assert len(result.guias) == 2, (
-            f"Expected 2 blocks from section boundary; got {len(result.guias)}"
+        assert len(result.guias) == 3, (
+            f"Expected 3 blocks (each material ocr_fallback page → own block); "
+            f"got {len(result.guias)}: {[(g.guia_id, g.registro) for g in result.guias]}"
         )
         registros = {g.registro for g in result.guias}
         assert registros == {"232", "231"}
 
-    def test_first_block_covers_section_232_qr_page_only(self, tmp_path: Path) -> None:
-        """Rev-3: registro 232 block opened by p0 (ocr_fallback); p1 (identity=None, same registro)
-        is DROPPED → source_pages=[0] only."""
+    def test_section_232_material_pages_each_own_block(self, tmp_path: Path) -> None:
+        """Rev-4 (C1): reg 232 has two non-QR material pages → TWO own blocks (ocr_0 [0]
+        and ocr_1 [1]), each single-page.  p1 is NOT absorbed into p0's block and is NOT
+        dropped — it carries material and opens its own ocr_fallback block."""
         result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE, _GUIA_PAGE],
             identity_seq=[None, None, None],
@@ -287,10 +302,14 @@ class TestEXTS17SectionBoundary:
             page_to_registro={0: "232", 1: "232", 2: "231"},
             tmp_path=tmp_path,
         )
-        block_232 = next(g for g in result.guias if g.registro == "232")
-        assert block_232.source_pages == [0], (
-            f"non-QR same-registro continuation p1 must be dropped; "
-            f"source_pages={block_232.source_pages}"
+        blocks_232 = [g for g in result.guias if g.registro == "232"]
+        assert len(blocks_232) == 2, (
+            f"reg 232 has two material pages → two ocr_fallback blocks; "
+            f"got {[(g.guia_id, g.source_pages) for g in blocks_232]}"
+        )
+        assert sorted(g.source_pages for g in blocks_232) == [[0], [1]], (
+            "each reg-232 material page must be its own single-page block; "
+            f"got {[g.source_pages for g in blocks_232]}"
         )
 
 

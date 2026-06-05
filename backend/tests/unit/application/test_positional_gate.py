@@ -546,3 +546,135 @@ class TestEXTS19fTrueMultiQRPageGuiaAbsorbed:
         assert sorted(block.source_pages) == [10, 11], (
             f"Both QR pages must be in source_pages; got {block.source_pages}"
         )
+
+
+# ---------------------------------------------------------------------------
+# C1 (rev-4) — ocr_fallback material page → own block + requires_review.
+#
+# Bug (rev-3): a genuine guía page whose QR failed to decode but which carries
+# OCR material (identity None, len(lines) > 0, identity_source="ocr_fallback")
+# reaches the else-branch when same-registro as an open block and is SILENTLY
+# DROPPED — material lost, no block, no requires_review.  Violates the
+# validation-gate invariant ("never silently drop; flag requires_review").
+#
+# Fix (case 3, condition d): a non-QR page WITH material opens its OWN block
+# (a distinct ocr_fallback guía), is counted in the registro total, and is
+# flagged requires_review (uncertain identity) on its lines.  Case 2 (non-QR
+# 0-line FHH photo) is still dropped (Bug-1 fix, unchanged).
+# ---------------------------------------------------------------------------
+
+
+class TestC1OcrFallbackMaterialPageStartsOwnBlock:
+    """C1 (rev-4): a non-QR page with material starts its own ocr_fallback block.
+
+    RED against the rev-3 gate (where the same-registro non-QR material page is
+    dropped via the else-branch); GREEN after condition (d) is added.
+    """
+
+    def test_qr_then_ocr_fallback_material_then_qr_same_registro(self) -> None:
+        """[QR A (material), ocr_fallback B (identity None, material, same reg), QR C (material)]
+        → B is NOT dropped: it becomes its OWN block, flagged requires_review, and the
+        registro total includes A + B + C.
+        """
+        qr_a = _identity("T112", "0001")
+        qr_c = _identity("T112", "0003")
+
+        line_a = _MAT_LINE.model_copy(update={"cantidad": Decimal("100")})
+        line_b = _MAT_LINE.model_copy(update={"cantidad": Decimal("150")})
+        line_c = _MAT_LINE.model_copy(update={"cantidad": Decimal("150")})
+
+        p_a = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[line_a], registro="232")
+        # B: QR-decode failed (identity None) but OCR read material lines.
+        p_b = _RawGuia(guia_id="", source_page=1, image=_PNG, lines=[line_b], registro="232")
+        p_c = _RawGuia(guia_id="", source_page=2, image=_PNG, lines=[line_c], registro="232")
+
+        classifications = [
+            _cls(0, "QR_IDENTITY"),
+            _cls(1, "FORMA_HEADER_HEURISTIC"),  # no QR but carries material
+            _cls(2, "QR_IDENTITY"),
+        ]
+        decode_map = {
+            0: _decode_qr(qr_a),
+            1: _decode_no_qr(),  # identity None → ocr_fallback
+            2: _decode_qr(qr_c),
+        }
+
+        pipeline = _make_pipeline()
+        blocks = pipeline._stage_assemble_blocks(
+            [p_a, p_b, p_c], classifications, decode_map=decode_map
+        )
+
+        # Three distinct blocks: A (QR), B (ocr_fallback), C (QR).
+        assert len(blocks) == 3, (
+            f"Expected 3 blocks (B not dropped); got {len(blocks)}: "
+            f"{[(b.guia_id, b.source_pages) for b in blocks]}"
+        )
+
+        block_b = next((b for b in blocks if 1 in b.source_pages), None)
+        assert block_b is not None, "ocr_fallback page B (material) must start its OWN block"
+        assert block_b.identity_source == "ocr_fallback"
+        assert block_b.guia_id == "ocr_1"
+        assert block_b.source_pages == [1]
+
+        # B's material is NOT lost.
+        assert sum(line.cantidad for line in block_b.lines) == Decimal("150"), (
+            "B's OCR material must be retained on its own block"
+        )
+
+        # B is flagged requires_review (uncertain identity) on its lines.
+        assert all(line.requires_review for line in block_b.lines), (
+            "ocr_fallback material block lines MUST be flagged requires_review"
+        )
+
+        # Registro total includes A + B + C material (no silent loss of B's 150 KG).
+        total = sum(line.cantidad for b in blocks for line in b.lines)
+        assert total == Decimal("400"), (
+            f"Registro total must include A+B+C (400 KG); got {total} — B's material lost"
+        )
+
+    def test_qr_pages_do_not_get_requires_review(self) -> None:
+        """A QR-identified block's lines are NOT flagged requires_review by this change
+        (only ocr_fallback material blocks carry the uncertain-identity flag)."""
+        qr_a = _identity("T112", "0001")
+        line_a = _MAT_LINE.model_copy(update={"cantidad": Decimal("100"), "requires_review": False})
+
+        p_a = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[line_a], registro="232")
+        classifications = [_cls(0, "QR_IDENTITY")]
+        decode_map = {0: _decode_qr(qr_a)}
+
+        pipeline = _make_pipeline()
+        blocks = pipeline._stage_assemble_blocks([p_a], classifications, decode_map=decode_map)
+
+        assert len(blocks) == 1
+        assert blocks[0].identity_source == "qr"
+        assert not any(line.requires_review for line in blocks[0].lines), (
+            "QR block lines must NOT be flagged requires_review by the ocr_fallback rule"
+        )
+
+    def test_zero_line_photo_still_dropped(self) -> None:
+        """Case 2 invariant (Bug-1, unchanged): a non-QR 0-line photo same registro is
+        STILL dropped (condition d requires len(lines) > 0)."""
+        qr = _identity("T112", "0065900")
+
+        p98 = _RawGuia(guia_id="", source_page=98, image=_PNG, lines=[_MAT_LINE], registro="228")
+        # 0-line FHH photo (run 67e4e7a1 reg228 model).
+        photo = _RawGuia(guia_id="", source_page=99, image=_PNG, lines=[], registro="228")
+
+        classifications = [
+            _cls(98, "QR_IDENTITY"),
+            _cls(99, "FORMA_HEADER_HEURISTIC"),
+        ]
+        decode_map = {98: _decode_qr(qr), 99: _decode_no_qr()}
+
+        pipeline = _make_pipeline()
+        blocks = pipeline._stage_assemble_blocks(
+            [p98, photo], classifications, decode_map=decode_map
+        )
+
+        assert len(blocks) == 1, (
+            f"0-line photo must NOT create a block; got {len(blocks)}: "
+            f"{[(b.guia_id, b.source_pages) for b in blocks]}"
+        )
+        assert blocks[0].source_pages == [98], (
+            f"0-line FHH photo must still be DROPPED; source_pages={blocks[0].source_pages}"
+        )

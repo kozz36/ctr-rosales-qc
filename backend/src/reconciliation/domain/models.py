@@ -6,7 +6,6 @@ No I/O, no framework, no adapter imports permitted in this module.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Literal
@@ -387,12 +386,14 @@ class ReconciliationResult(BaseModel):
     unresolved_guias: list[GuiaDeRemision] = []
 
 
-@dataclass
-class ErroredGuia:
+class ErroredGuia(BaseModel):
     """A guía block that resolved to 0 material lines after SUNAT fetch.
 
     Additive side-channel only — NEVER alters grouping key, status,
     delta, qty, or any correctly-processed guía. (REC-EG-001/002/003)
+
+    BaseModel (the domain convention here) so it serialises to the extraction
+    cache and the API DTO and round-trips on cache load.
     """
 
     registro: str | None

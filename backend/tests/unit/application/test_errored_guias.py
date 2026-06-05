@@ -111,6 +111,7 @@ def _run_pipeline(
     per_page_lines: list[list[MaterialLine]] | None = None,
     page_to_registro: dict[int, str | None] | None = None,
     tmp_path: Path | None = None,
+    return_ctx: bool = False,
 ):
     cfg = AppConfig()
     doc = _FakeDoc(pages)
@@ -128,7 +129,10 @@ def _run_pipeline(
     )
     base = tmp_path or Path(".")
     ctx = RunContext(pdf_path=base / "in.pdf", output_base=base / "runs")
-    return pipeline.run(ctx)
+    result = pipeline.run(ctx)
+    if return_ctx:
+        return result, ctx
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -364,3 +368,46 @@ class TestMultipleErroredGuiasAcrossRegistros:
             assert entry.registro is not None, f"registro must be set; got None for {entry.guia_id}"
             assert isinstance(entry.source_pages, list)
             assert len(entry.source_pages) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — errored_guias round-trips through the extraction cache (boundary)
+# ---------------------------------------------------------------------------
+
+
+class TestErroredGuiasCacheRoundTrip:
+    def test_errored_guias_persisted_and_round_trips(self, tmp_path: Path) -> None:
+        """The extraction cache MUST persist errored_guias so it survives a cache load.
+
+        RED before _stage_persist writes errored_guias: the cache dict has no
+        'errored_guias' key, so the persisted JSON can never round-trip the
+        0-line block to the boundary.
+        """
+        from reconciliation.domain.models import ErroredGuia  # noqa: PLC0415
+
+        qr_ok = _identity("T112", "0065421")
+        qr_err = _identity("T112", "0065422")
+
+        result, ctx = _run_pipeline(
+            pages=[_GUIA_PAGE, _GUIA_PAGE],
+            identity_seq=[qr_ok, qr_err],
+            per_page_lines=[[_MAT_LINE], []],
+            page_to_registro={0: "232", 1: "232"},
+            tmp_path=tmp_path,
+            return_ctx=True,
+        )
+
+        # The raw cache JSON must carry the errored_guias side-channel.
+        cache = ctx.read_extraction_cache()
+        assert "errored_guias" in cache, (
+            "extraction cache must persist 'errored_guias' so it reaches the boundary"
+        )
+        assert len(cache["errored_guias"]) == 1
+
+        # Round-trip: rebuild the domain models from the persisted JSON.
+        round_tripped = [ErroredGuia.model_validate(e) for e in cache["errored_guias"]]
+        assert round_tripped[0].guia_id == "T112-0065422"
+        assert round_tripped[0].registro == "232"
+        assert 1 in round_tripped[0].source_pages
+        # Equivalent to the in-memory side-channel produced by the same run.
+        assert round_tripped == result.errored_guias

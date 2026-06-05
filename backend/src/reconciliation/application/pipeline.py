@@ -429,7 +429,7 @@ class ReconciliationPipeline:
         rows = self._stage_reconcile(declared, guias)
 
         # Stage 9: persist sidecar (also appends the vision audit record)
-        self._stage_persist(ctx, classifications, declared, guias, rows)
+        self._stage_persist(ctx, classifications, declared, guias, rows, errored_guias)
 
         # Final completion event — guarantees the progress bar reaches 100%.
         # stage_index == stage_total == _stage_total (6 with SUNAT, 5 without).
@@ -1528,10 +1528,15 @@ class ReconciliationPipeline:
         declared: list[Registro],
         guias: list[GuiaDeRemision],
         rows: list[ReconciliationRow],
+        errored_guias: list[ErroredGuia] | None = None,
     ) -> None:
         """Stage 9: write extraction cache + initial empty review sidecar.
 
         Also appends the vision audit record collected in stage 6.
+
+        ``errored_guias`` (REC-EG-001/003) is persisted as an additive
+        side-channel so the 0-line blocks survive a cache load and reach the
+        boundary — it NEVER touches the reconciliation key/status/delta/qty.
         """
         if not ctx.has_extraction_cache():
             cache_data: dict[str, Any] = {
@@ -1540,6 +1545,9 @@ class ReconciliationPipeline:
                 "declared": [r.model_dump(mode="json") for r in declared],
                 "guias": [g.model_dump(mode="json") for g in guias],
                 "rows": [row.model_dump(mode="json") for row in rows],
+                "errored_guias": [
+                    eg.model_dump(mode="json") for eg in (errored_guias or [])
+                ],
             }
             ctx.write_extraction_cache(cache_data)
 

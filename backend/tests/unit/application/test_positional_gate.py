@@ -6,8 +6,11 @@ Strategy: call _stage_assemble_blocks directly on a minimal pipeline instance,
 injecting pre-built _RawGuia and PageClassification lists so we can control
 title_matched="FORMA_HEADER_HEURISTIC" precisely without a full pipeline run.
 
-STRICT TDD: tests A-1 (EXT-S19a, EXT-S19c, EXT-S19e) MUST be RED before the
-positional gate is wired. Test A-4 (EXT-S19d) MUST be GREEN (classifier untouched).
+STRICT TDD: tests A-1 (EXT-S19a, EXT-S19e) MUST be RED before the positional
+gate is wired. EXT-S19c is a regression PIN (genuine continuation), not a
+RED-first test — it passes pre-impl because unconditional absorption already
+yields one block; it locks that the gate must NOT over-drop. Test A-4
+(EXT-S19d) MUST be GREEN (classifier untouched).
 """
 
 from __future__ import annotations
@@ -138,55 +141,33 @@ class TestEXTS19aConditionBNoQrBlockNotAbsorbed:
     """EXT-S19a: a FORMA_HEADER_HEURISTIC page with no preceding QR block must be dropped."""
 
     def test_no_open_block_condition_b_produces_no_guia(self) -> None:
-        """Condition-B raw page, no preceding current_block → NOT absorbed, block NOT created.
+        """Condition-B continuation, ocr_fallback anchor, same registro → NOT absorbed.
 
-        Before the gate: the else-branch appends unconditionally, but asserts
-        current_block is not None (assert would trip or the page starts a new block).
-        Actually, start_new_block=True at run-start, so page 0 always starts a block.
-        The interesting case is: p0 is Condition A (QR), p1 is Condition B, p2 is
-        Condition B in a DIFFERENT registro — p2 must NOT be absorbed into p0's block.
+        p0 opens a block with identity_source="ocr_fallback" (no QR). p1 is a
+        FORMA_HEADER_HEURISTIC page in the SAME registro. The positional gate
+        MUST prevent absorption because the anchor's identity_source != "qr".
         """
-        qr = _identity("T112", "0065421")
-        p0 = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[_MAT_LINE], registro="232")
-        p1 = _RawGuia(guia_id="", source_page=1, image=_PNG, lines=[], registro="228")
-
         classifications = [
             _cls(0, "QR_IDENTITY"),
             _cls(1, "FORMA_HEADER_HEURISTIC"),
         ]
-        decode_map = {
-            0: _decode_qr(qr),
-            1: _decode_no_qr(),
-        }
 
-        pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
-            [p0, p1], classifications, decode_map=decode_map
-        )
-
-        # p1 has registro="228" vs current_block registro="232" → registro mismatch also
-        # triggers start_new_block before the positional gate even fires.
-        # Let's use a scenario with SAME registro but NO preceding QR block:
-        # p0 starts a block (ocr_fallback), p1 is Condition B same registro → currently absorbed.
-        # With the gate: p1 should NOT be absorbed (no QR anchor).
         p0_ocr = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[_MAT_LINE], registro="232")
         p1_heur = _RawGuia(guia_id="", source_page=1, image=_PNG, lines=[], registro="232")
 
-        decode_map2 = {
+        decode_map = {
             0: _decode_no_qr(),
             1: _decode_no_qr(),
         }
-        blocks2 = pipeline._stage_assemble_blocks(
-            [p0_ocr, p1_heur], classifications, decode_map=decode_map2
+        pipeline = _make_pipeline()
+        blocks = pipeline._stage_assemble_blocks(
+            [p0_ocr, p1_heur], classifications, decode_map=decode_map
         )
 
-        # p0 opens a block with identity_source="ocr_fallback"
-        # p1 is FORMA_HEADER_HEURISTIC, same registro — gate MUST prevent absorption
-        # because current_block.identity_source != "qr"
-        assert len(blocks2) == 1, (
-            f"Expected 1 block (p1 dropped by gate); got {len(blocks2)}"
+        assert len(blocks) == 1, (
+            f"Expected 1 block (p1 dropped by gate); got {len(blocks)}"
         )
-        block = blocks2[0]
+        block = blocks[0]
         assert 1 not in block.source_pages, (
             f"p1 (FORMA_HEADER_HEURISTIC, no QR anchor) must NOT appear in source_pages: {block.source_pages}"
         )
@@ -213,6 +194,65 @@ class TestEXTS19aConditionBNoQrBlockNotAbsorbed:
         # p1 dropped by positional gate (no QR anchor)
         assert 1 not in blocks[0].source_pages, (
             f"Condition-B page must NOT be absorbed into an ocr_fallback block: {blocks[0].source_pages}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Condition-C continuation — text-title GUIA page, identity None, ocr_fallback
+# anchor, same registro → ABSORBED (gate scoped to FORMA_HEADER_HEURISTIC only).
+# Pins the canonical absorption semantics of pipeline.py:981-984 so the
+# implemented predicate's behavior is documented and locked. The gate code is
+# NOT changed — both judges confirmed the implementation is correct; this test
+# locks it.
+# ---------------------------------------------------------------------------
+
+
+class TestConditionCContinuationAbsorbed:
+    """A text-title continuation page (`title_matched == "GUIA DE REMISION"`,
+    `identity is None`) following an ocr_fallback-opened block in the SAME
+    registro must be ABSORBED.
+
+    Rationale: `is_heuristic_only` is gated on `title_matched ==
+    "FORMA_HEADER_HEURISTIC"`. A Condition-C page carries a real text GUIA
+    title, so `is_heuristic_only` is False → `absorb = not is_heuristic_only`
+    short-circuits to True regardless of the anchor's identity_source. The gate
+    only ever drops heuristic-only (image-dominant, no-QR) pages.
+    """
+
+    def test_text_title_continuation_ocr_anchor_same_registro_absorbed(self) -> None:
+        """ocr_fallback block + text-title GUIA continuation, same registro → ONE block."""
+        p0 = _RawGuia(
+            guia_id="", source_page=0, image=_PNG, lines=[_MAT_LINE], registro="232"
+        )
+        # Continuation: text title "GUIA DE REMISION", no QR identity, same registro.
+        p1 = _RawGuia(
+            guia_id="", source_page=1, image=_PNG, lines=[], registro="232"
+        )
+
+        classifications = [
+            _cls(0, "GUIA DE REMISION"),  # Condition C — text title opens an ocr_fallback block
+            _cls(1, "GUIA DE REMISION"),  # Condition C — text-title continuation (identity None)
+        ]
+        decode_map = {
+            0: _decode_no_qr(),
+            1: _decode_no_qr(),
+        }
+
+        pipeline = _make_pipeline()
+        blocks = pipeline._stage_assemble_blocks(
+            [p0, p1], classifications, decode_map=decode_map
+        )
+
+        # is_heuristic_only is False (title != FORMA_HEADER_HEURISTIC) → absorb=True.
+        assert len(blocks) == 1, (
+            f"Expected 1 block (text-title continuation absorbed); got {len(blocks)}"
+        )
+        block = blocks[0]
+        assert block.identity_source == "ocr_fallback", (
+            "block opened by a text-title page with no QR must be ocr_fallback"
+        )
+        assert sorted(block.source_pages) == [0, 1], (
+            f"text-title continuation must be absorbed; source_pages={block.source_pages}"
         )
 
 
@@ -288,14 +328,11 @@ class TestEXTS19eRegistroMismatchNotAbsorbed:
 class TestEXTS19cGenuineContinuationRegression:
     """EXT-S19c: QR p151 + no-QR Condition-B p152 same registro → ONE block.
 
-    This is the PRIMARY regression guard. The gate must NOT over-drop.
-    MUST FAIL before the positional gate is wired (currently absorbs unconditionally
-    in the else-branch with no check, so the test actually PASSES on the current code
-    because the unconditional absorption DOES produce ONE block — but the gate-off
-    behaviour is: any no-QR page same registro gets absorbed, even non-guías.
-
-    After the gate: same behaviour for genuine continuation (QR anchor + same registro).
-    The test pins this invariant so any regression is caught immediately.
+    This is the PRIMARY regression PIN — NOT a RED-first test. It PASSES
+    pre-impl: the pre-gate else-branch absorbs unconditionally, which already
+    produces ONE block for a genuine continuation. The pin guarantees the gate
+    must NOT over-drop a genuine continuation (QR anchor + same registro);
+    after the gate the behaviour is unchanged and any regression is caught.
     """
 
     def test_qr_p151_then_condition_b_p152_same_registro_one_block(self) -> None:

@@ -221,3 +221,50 @@ class TestReprocessEndpoint:
         """Unknown run_id → 404."""
         resp = client.post("/api/v1/runs/no-such-run/errored-guias/T227-0001/reprocess")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# V-W2 (REV-R17-S03) — REINTENTAR 503 when the service was built VISION-ONLY.
+#
+# build_reprocess_service may build a service with sunat.enabled=False +
+# vision.enabled=True (the service is present but ``_sunat is None``).  In that
+# case REINTENTAR (POST .../retry) MUST still return 503 (it requires SUNAT),
+# while Reprocesar con IA (POST .../reprocess) remains reachable.
+# ---------------------------------------------------------------------------
+
+
+class TestReintentarGateVisionOnlyService:
+    def test_retry_returns_503_when_service_built_vision_only(
+        self, client: TestClient
+    ) -> None:
+        """sunat.enabled=False + vision.enabled=True (``_sunat is None``) →
+        POST .../retry returns 503 (REINTENTAR requires SUNAT)."""
+        fake_service = MagicMock()
+        fake_service._sunat = None  # vision-only build: no SUNAT adapter
+        fake_service._vision = MagicMock()  # vision present
+        # apply_retry must NOT be reached — the SUNAT gate fires first.
+        fake_service.apply_retry = AsyncMock()
+        _seed_run(client, "test-run", fake_service, [_make_errored()])
+
+        resp = client.post("/api/v1/runs/test-run/errored-guias/T227-0001/retry")
+        assert resp.status_code == 503
+        fake_service.apply_retry.assert_not_awaited()
+
+    def test_reprocess_reachable_when_service_built_vision_only(
+        self, client: TestClient
+    ) -> None:
+        """Same vision-only build: POST .../reprocess IS reachable (200), proving
+        the 503 is REINTENTAR-specific, not a blanket service gate."""
+        fake_service = MagicMock()
+        fake_service._sunat = None  # vision-only build
+        fake_service._vision = MagicMock()  # a real (non-Null) vision port
+        fake_service.apply_reprocess = AsyncMock(
+            return_value=ReprocessResult(
+                recovered=False, guia_id="T227-0001", reason="vision_empty"
+            )
+        )
+        _seed_run(client, "test-run", fake_service, [_make_errored()])
+
+        resp = client.post("/api/v1/runs/test-run/errored-guias/T227-0001/reprocess")
+        assert resp.status_code == 200
+        fake_service.apply_reprocess.assert_awaited()

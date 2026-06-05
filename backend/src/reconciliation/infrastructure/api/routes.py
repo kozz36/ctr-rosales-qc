@@ -38,6 +38,8 @@ from reconciliation.infrastructure.api.schemas import (
     ReassignResponse,
     ReconciliationRowResponse,
     ReconciliationTableResponse,
+    RetryBatchResponse,
+    RetryGuiaResponse,
     RowEditRequest,
     RowEditResponse,
     RunCreateResponse,
@@ -157,6 +159,21 @@ def _require_review_service(entry: Any, run_id: str) -> Any:
     return review_service
 
 
+def _require_reprocess_service(entry: Any, run_id: str) -> Any:
+    """Return the ReprocessService from a run entry, or raise 503 if SUNAT is disabled."""
+    reprocess_service = entry.get("reprocess_service")
+    if reprocess_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"REINTENTAR not available for run '{run_id}': "
+                "SUNAT fetch is disabled (sunat.enabled=False). "
+                "Enable SUNAT in config to use this endpoint."
+            ),
+        )
+    return reprocess_service
+
+
 # ---------------------------------------------------------------------------
 # Background pipeline runner
 # ---------------------------------------------------------------------------
@@ -185,6 +202,7 @@ def _run_pipeline_background(
     from reconciliation.application.run_context import ProgressEvent  # noqa: PLC0415
     from reconciliation.infrastructure.container import (  # noqa: PLC0415
         build_pipeline,
+        build_reprocess_service,
         build_review_service,
     )
 
@@ -206,6 +224,9 @@ def _run_pipeline_background(
         )
         result = pipeline.run(ctx)
         review_service = build_review_service(ctx)
+        reprocess_service = build_reprocess_service(
+            config=config, ctx=ctx, review_service=review_service
+        )
 
         registry[run_id].update(
             {
@@ -213,6 +234,7 @@ def _run_pipeline_background(
                 "ctx": ctx,
                 "result": result,
                 "review_service": review_service,
+                "reprocess_service": reprocess_service,
                 "page_to_registro": page_to_registro,
                 "vision_calls_made": result.vision_calls_made,
                 "warnings": result.warnings,
@@ -298,6 +320,7 @@ async def create_run(
         "status": "pending",
         "pdf_path": str(pdf_path),
         "review_service": None,
+        "reprocess_service": None,
         "ctx": None,
         "result": None,
         "vision_calls_made": 0,
@@ -342,6 +365,7 @@ def get_run_status(run_id: str, registry: RunRegistry) -> RunStatusResponse:
             registro=eg.registro,
             guia_id=eg.guia_id,
             source_pages=list(eg.source_pages),
+            retry_attempted=eg.retry_attempted,
         )
         for eg in entry.get("errored_guias", [])
     ]
@@ -397,6 +421,7 @@ def get_table(run_id: str, registry: RunRegistry) -> ReconciliationTableResponse
             registro=eg.registro,
             guia_id=eg.guia_id,
             source_pages=eg.source_pages,
+            retry_attempted=eg.retry_attempted,
         )
         for eg in review_service.errored_guias
     ]
@@ -802,6 +827,142 @@ def get_page_image(
         headers={
             "Content-Disposition": f'inline; filename="{run_id[:8]}_page_{page:04d}_full.png"',
         },
+    )
+
+
+@router.post(
+    "/runs/{run_id}/errored-guias/{guia_id}/retry",
+    response_model=RetryGuiaResponse,
+    status_code=200,
+    summary="Retry a single errored guía via REINTENTAR deterministic recovery.",
+)
+def retry_errored_guia(
+    run_id: str,
+    guia_id: str,
+    registry: RunRegistry,
+) -> RetryGuiaResponse:
+    """Attempt to recover a single errored guía using SUNAT descargaqr (REINTENTAR).
+
+    Spec: REV-R08.
+
+    Flow: render → decode_hashqr_url → SUNAT fetch → normalize → re-reconcile.
+    No vision; guía fecha = SUNAT fecha_entrega (R9b floor, deterministic).
+
+    Returns:
+        200 RetryGuiaResponse with recovered=True on success, or recovered=False + reason on failure.
+
+    Errors:
+        404 — run_id unknown, or guia_id not in errored_guias (already recovered or never existed).
+        503 — SUNAT fetch is disabled (sunat.enabled=False); REINTENTAR requires SUNAT.
+    """
+    entry = _require_run(registry, run_id)
+    reprocess_service = _require_reprocess_service(entry, run_id)
+    review_service = _require_review_service(entry, run_id)
+
+    # Verify guia_id is in the errored_guias list.
+    errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []
+    errored_entry = next((e for e in errored_list if e.guia_id == guia_id), None)
+    if errored_entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Guía '{guia_id}' not found in errored_guias for run '{run_id}'.",
+        )
+
+    result = reprocess_service.apply_retry(
+        guia_id=guia_id,
+        source_pages=list(errored_entry.source_pages),
+    )
+
+    # FIX 1: on a FAILED retry the guía stays errored — durably mark it so the
+    # frontend gates the REINTENTAR button + shows the "SUNAT no disponible" hint.
+    # On SUCCESS the guía leaves errored entirely (no flag needed).
+    if result.recovered is False:
+        review_service.mark_retry_attempted(guia_id)
+
+    # Map updated rows to response DTOs.
+    updated_rows = [_row_to_response(r) for r in result.rows] if result.rows else []
+
+    # Map remaining errored guías.
+    remaining_errored = [
+        ErroredGuiaResponse(
+            registro=eg.registro,
+            guia_id=eg.guia_id,
+            source_pages=list(eg.source_pages),
+            retry_attempted=eg.retry_attempted,
+        )
+        for eg in review_service.errored_guias
+    ]
+
+    return RetryGuiaResponse(
+        run_id=run_id,
+        guia_id=guia_id,
+        recovered=result.recovered,
+        reason=result.reason,
+        rows=updated_rows,
+        errored_guias=remaining_errored,
+    )
+
+
+@router.post(
+    "/runs/{run_id}/registros/{registro}/retry",
+    response_model=RetryBatchResponse,
+    status_code=202,
+    summary="Retry all errored guías for a registro as a background task.",
+)
+def retry_registro(
+    run_id: str,
+    registro: str,
+    background_tasks: BackgroundTasks,
+    registry: RunRegistry,
+) -> RetryBatchResponse:
+    """Start a background batch retry for all errored guías in a registro.
+
+    Spec: REV-R07.
+
+    Returns 202 immediately; client re-polls GET /table for updated rows.
+    Individual guía failures do NOT abort the remaining guías in the batch.
+
+    Returns:
+        202 RetryBatchResponse with the count of guías queued.
+
+    Errors:
+        404 — run_id unknown or no errored guías for the registro.
+        503 — SUNAT fetch is disabled.
+    """
+    entry = _require_run(registry, run_id)
+    reprocess_service = _require_reprocess_service(entry, run_id)
+    review_service = _require_review_service(entry, run_id)
+
+    errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []
+    target_guias = [e for e in errored_list if e.registro == registro]
+
+    if not target_guias:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No errored guías found for registro='{registro}' in run '{run_id}'.",
+        )
+
+    def _retry_batch() -> None:
+        for eg in target_guias:
+            try:
+                reprocess_service.apply_retry(
+                    guia_id=eg.guia_id,
+                    source_pages=list(eg.source_pages),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "retry_registro: apply_retry failed for %r in run %r: %s",
+                    eg.guia_id,
+                    run_id,
+                    exc,
+                )
+
+    background_tasks.add_task(_retry_batch)
+
+    return RetryBatchResponse(
+        run_id=run_id,
+        registro=registro,
+        count=len(target_guias),
     )
 
 

@@ -52,6 +52,28 @@
             Error en páginas {{ guia.source_pages.join(', ') }}
           </span>
         </div>
+
+        <!-- T-8 / REV-R09: REINTENTAR button per guía entry -->
+        <div class="errored-panel__item-actions">
+          <!-- hint when retry_attempted=true -->
+          <span
+            v-if="guia.retry_attempted"
+            class="errored-panel__retry-hint"
+            aria-label="SUNAT no disponible para este intento"
+          >
+            SUNAT no disponible
+          </span>
+
+          <button
+            class="errored-panel__retry-btn"
+            :disabled="guia.retry_attempted || retryingId === guia.guia_id || undefined"
+            :aria-busy="retryingId === guia.guia_id"
+            :title="guia.retry_attempted ? 'REINTENTAR ya fue ejecutado para esta guía' : 'Recuperar guía vía SUNAT'"
+            @click="handleRetry(guia)"
+          >
+            {{ retryingId === guia.guia_id ? 'Reintentando…' : 'REINTENTAR' }}
+          </button>
+        </div>
       </div>
     </div>
   </section>
@@ -59,25 +81,63 @@
 
 <script setup lang="ts">
 /**
- * ErroredGuiasPanel — collapsible read-only panel listing guías with 0 material lines (REV-E05).
+ * ErroredGuiasPanel — collapsible panel listing guías with 0 material lines (REV-E05).
  *
- * These are guías whose SUNAT/OCR extraction resolved to 0 material lines.
- * They are surfaced here for human awareness.  NO action buttons in this slice
- * (REINTENTAR / Reprocesar are PR #2 / PR #3 scope).
+ * T-8 / REV-R09: REINTENTAR button per guía entry.
+ *   - Enabled when !guia.retry_attempted && retryingId !== guia.guia_id.
+ *   - Disabled + "SUNAT no disponible" hint when retry_attempted=true.
+ *   - Loading/disabled via retryingId ref during in-flight request.
+ *   - On success: emits 'retry-success' for the parent to invalidate the table query.
  *
  * Props:
  *   erroredGuias — list of ErroredGuiaResponse from GET /table.
+ *   runId        — current run ID (required for retry endpoint calls).
  */
 
 import { ref } from 'vue'
 import type { ErroredGuiaResponse } from '@/api/types'
+import { retryGuia } from '@/api/client'
 
-defineProps<{
+const props = defineProps<{
   /** Errored guías from the table response (REV-E04). */
   erroredGuias: ErroredGuiaResponse[]
+  /** Run ID — required for REINTENTAR calls. */
+  runId?: string
+}>()
+
+const emit = defineEmits<{
+  /** Emitted when a guía is successfully recovered. Carry the updated errored list. */
+  (e: 'retry-success', payload: { guiaId: string; erroredGuias: ErroredGuiaResponse[] }): void
+  /** Emitted when a retry attempt completes (success or failure). */
+  (e: 'retry', guiaId: string): void
 }>()
 
 const isOpen = ref(true)
+
+/** ID of the guía currently being retried (loading state); null when idle. */
+const retryingId = ref<string | null>(null)
+
+async function handleRetry(guia: ErroredGuiaResponse): Promise<void> {
+  if (!props.runId || guia.retry_attempted || retryingId.value !== null) return
+
+  retryingId.value = guia.guia_id
+  emit('retry', guia.guia_id)
+
+  try {
+    const result = await retryGuia(props.runId, guia.guia_id)
+    if (result.recovered) {
+      emit('retry-success', {
+        guiaId: guia.guia_id,
+        erroredGuias: result.errored_guias,
+      })
+    }
+  } catch {
+    // Failure is non-blocking — the button will remain in its current state.
+    // The parent/TanStack re-fetch on the next polling cycle will update state.
+  } finally {
+    retryingId.value = null
+  }
+}
 </script>
 
 <style scoped>
@@ -196,5 +256,44 @@ const isOpen = ref(true)
 .errored-panel__item-pages {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
+}
+
+/* T-8: action area per item */
+.errored-panel__item-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.errored-panel__retry-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background-color: var(--surface-raised);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), opacity var(--transition-fast);
+  white-space: nowrap;
+}
+
+.errored-panel__retry-btn:hover:not(:disabled) {
+  background-color: var(--surface-hover);
+}
+
+.errored-panel__retry-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.errored-panel__retry-hint {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
 }
 </style>

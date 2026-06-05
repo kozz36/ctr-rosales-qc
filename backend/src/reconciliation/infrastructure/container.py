@@ -57,7 +57,7 @@ from reconciliation.domain.ports import ExtractionPort
 from reconciliation.domain.section_id_guard import is_section_id
 
 if TYPE_CHECKING:
-    pass
+    from reconciliation.application.reprocess_service import ReprocessService
 
 logger = logging.getLogger(__name__)
 
@@ -561,6 +561,111 @@ def build_pipeline(
     )
 
     return pipeline, ctx, page_to_registro
+
+
+def build_reprocess_service(
+    config: AppConfig,
+    ctx: RunContext,
+    review_service: ReviewService,
+) -> "ReprocessService | None":
+    """Build a ReprocessService wired with concrete adapters from the run context.
+
+    T-6 (REV-R02 wiring): mirrors build_pipeline's adapter construction for the
+    adapters ReprocessService needs.  Container.py is the ONLY place that imports
+    concrete adapter classes — application/reprocess_service.py stays ports-only.
+
+    Returns:
+        A ReprocessService when SUNAT is enabled; None when disabled.
+        Callers (API routes) must return 503 when this is None (SUNAT gate).
+    """
+    from reconciliation.application.reprocess_service import (  # noqa: PLC0415
+        ReprocessService,
+    )
+
+    # SUNAT gate: ReprocessService is only meaningful when SUNAT is enabled.
+    # When disabled, the caller 503s (design-pr2.md §API / T-7).
+    if not config.sunat.enabled:
+        logger.debug(
+            "build_reprocess_service: SUNAT disabled — ReprocessService not built (503 gate)"
+        )
+        return None
+
+    # --- PDF source adapter (reuse same class as build_pipeline) ---
+    try:
+        from reconciliation.adapters.pdf.pymupdf_source import (  # noqa: PLC0415
+            PdfStructureAdapter,
+        )
+
+        doc_source = PdfStructureAdapter(ctx.pdf_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("build_reprocess_service: PdfStructureAdapter init failed: %s", exc)
+        return None
+
+    # --- Identity adapter (QR decode for hashqr_url; lazy heavy deps) ---
+    identity = None
+    try:
+        from reconciliation.adapters.identity.qr_barcode import (  # noqa: PLC0415
+            QrBarcodeExtractionAdapter,
+        )
+
+        identity = QrBarcodeExtractionAdapter()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "build_reprocess_service: QrBarcodeExtractionAdapter init failed: %s; "
+            "REINTENTAR decode_hashqr_url will always return None",
+            exc,
+        )
+        # Fall through with identity=None — apply_retry will return no_hashqr_url
+        return None
+
+    # --- SUNAT adapter (same config as build_pipeline) ---
+    sunat_adapter = None
+    try:
+        from reconciliation.adapters.sunat.descargaqr import (  # noqa: PLC0415
+            SunatDescargaqrAdapter,
+        )
+
+        sunat_cache_dir = None
+        if config.sunat.cache:
+            if config.sunat.cache_dir is not None:
+                sunat_cache_dir = config.sunat.cache_dir
+                sunat_cache_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                sunat_cache_dir = ctx.run_dir / "sunat"
+
+        sunat_adapter = SunatDescargaqrAdapter(
+            timeout_s=config.sunat.timeout_s,
+            cache_dir=sunat_cache_dir,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "build_reprocess_service: SunatDescargaqrAdapter init failed: %s; "
+            "REINTENTAR will not be able to fetch SUNAT data",
+            exc,
+        )
+        return None
+
+    # --- Material key resolver (same as build_pipeline) ---
+    from reconciliation.adapters.inference.factory import (  # noqa: PLC0415
+        build_inference_adapter,
+    )
+    from reconciliation.domain.material_key_normalizer import (  # noqa: PLC0415
+        MaterialKeyNormalizer,
+    )
+    from reconciliation.domain.material_key_resolver import (  # noqa: PLC0415
+        MaterialKeyResolver,
+    )
+
+    inference_adapter = build_inference_adapter(config)
+    key_resolver = MaterialKeyResolver(MaterialKeyNormalizer(), inference_adapter)
+
+    return ReprocessService(
+        doc_source=doc_source,
+        identity=identity,
+        sunat=sunat_adapter,
+        key_resolver=key_resolver,
+        review_service=review_service,
+    )
 
 
 def build_review_service(

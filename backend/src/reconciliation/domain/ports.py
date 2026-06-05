@@ -106,6 +106,12 @@ class IdentityExtractionPort(Protocol):
 
     The concrete implementation (``QrBarcodeExtractionAdapter``) lives in the adapter
     layer and MUST NOT be imported by the domain or application layer directly.
+
+    Rev-3 (T-1 / REV-R01): ``decode_hashqr_url`` promoted from a duck-type seam
+    (``hasattr`` guard in pipeline.py:510) to a first-class Protocol method so callers
+    can depend on the contract without defensive hasattr guards.
+    ``QrBarcodeExtractionAdapter`` already satisfies it (qr_barcode.py L259) — no
+    concrete-adapter change required.
     """
 
     def decode_identity(self, image: bytes, page_idx: int | None = None) -> GuiaIdentity | None:
@@ -113,6 +119,21 @@ class IdentityExtractionPort(Protocol):
 
         ``None`` signals that QR decoding failed or confidence gating rejected the
         result; the caller MUST fall back to OCR-derived identity (EXT-014).
+
+        Args:
+            image:    PNG or JPEG bytes of a rendered page.
+            page_idx: Optional 0-based page index for audit logging.
+        """
+        ...
+
+    def decode_hashqr_url(self, image: bytes, page_idx: int | None = None) -> str | None:
+        """Decode the URL-variant (hashqr) QR from *image* and return the URL, or ``None``.
+
+        Rev-3 (D2 / T-1 / REV-R01): used by ``ReprocessService.apply_retry`` and by the
+        pipeline's ``decode_identities`` pre-pass when only the hashqr URL is needed
+        (e.g. for block-level propagation without a full compact-QR identity decode).
+
+        Returns the first URL-variant payload found, or ``None`` when absent.
 
         Args:
             image:    PNG or JPEG bytes of a rendered page.

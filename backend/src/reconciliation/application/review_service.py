@@ -414,6 +414,128 @@ class ReviewService:
 
         return list(self._rows)
 
+    def add_recovered_guia(
+        self,
+        guia: GuiaDeRemision,
+    ) -> list[ReconciliationRow]:
+        """Append a recovered guía and remove its ErroredGuia entry; re-reconcile.
+
+        T-3 / REV-R05: this is the SOLE ReviewService mutation hook for REINTENTAR
+        recovery.  Only accepts guías whose lines all have ``requires_review=True``
+        (invariant — reconciliation validation gate; recovered guías are never
+        auto-accepted).
+
+        Sequence:
+          1. Resolve replace-vs-idempotent-vs-append against the REAL precondition.
+             The pipeline persists each errored block as a 0-line GuiaDeRemision that
+             IS already in ``_guias`` (``errored_guias`` is a PARALLEL side-channel for
+             the same guia_id).  So a guia_id match does NOT imply genuine idempotency:
+               - existing guía already recovered (``len(lines) > 0``)  → TRUE idempotency,
+                 no-op, return current rows (no audit event, no double-add).
+               - existing guía is the 0-line PLACEHOLDER (``len(lines) == 0``) → REPLACE
+                 it with the with-lines recovered guía.
+               - no existing guía with that guia_id → append (transient-error path).
+          2. Drop matching guia_id from _errored_guias.
+          3. Re-reconcile via _reconciler.reconcile with current _delivery_dates().
+          4. Emit ``recovered_guia`` EditEvent to the audit trail.
+          5. _persist().
+
+        Args:
+            guia: A GuiaDeRemision built by ReprocessService (all lines requires_review=True).
+
+        Returns:
+            Updated list of reconciliation rows after re-reconcile.
+        """
+        # Resolve the existing guía with this guia_id (if any).
+        existing_idx: int | None = next(
+            (i for i, g in enumerate(self._guias) if g.guia_id == guia.guia_id),
+            None,
+        )
+
+        if existing_idx is not None and len(self._guias[existing_idx].lines) > 0:
+            # TRUE idempotency: a with-lines guía already exists → no mutation.
+            return list(self._rows)
+
+        new_guias = list(self._guias)
+        if existing_idx is not None:
+            # PLACEHOLDER (0-line) case: REPLACE in place so we never duplicate
+            # the guia_id and the with-lines version wins for re-reconcile.
+            # The placeholder carries the AUTHORITATIVE registro from pipeline
+            # assembly (Protocolo linkage); SUNAT-recovered guías have registro=None
+            # → inherit it so the recovered material reconciles INTO the registro
+            # instead of landing in unresolved (registro=None).
+            placeholder = self._guias[existing_idx]
+            if guia.registro is None and placeholder.registro is not None:
+                guia = guia.model_copy(update={"registro": placeholder.registro})
+            new_guias[existing_idx] = guia
+        else:
+            # Transient-error path: the errored guía was never a 0-line placeholder
+            # in _guias → append.
+            new_guias.append(guia)
+        self._guias = new_guias
+
+        # Remove from errored_guias.
+        self._errored_guias = [
+            e for e in self._errored_guias if e.guia_id != guia.guia_id
+        ]
+
+        # Re-reconcile with the updated guía list.
+        self._rows = self._reconciler.reconcile(
+            self._declared, self._guias, delivery_dates=self._delivery_dates()
+        )
+
+        # Audit event (new kind: "recovered_guia").
+        event = EditEvent(
+            kind="recovered_guia",
+            target={"guia_id": guia.guia_id},
+            field=None,
+            old_value=None,
+            new_value=guia.model_dump(mode="json"),
+        )
+        self._audit_trail.append(event)
+        self._persist()
+
+        return list(self._rows)
+
+    def mark_retry_attempted(self, guia_id: str) -> None:
+        """Durably flag a FAILED REINTENTAR on the matching errored guía (FIX 1).
+
+        When ``ReprocessService.apply_retry`` returns ``recovered=False`` the guía
+        stays errored.  Flipping ``ErroredGuia.retry_attempted`` to ``True`` is the
+        SOLE signal the frontend uses to gate the REINTENTAR button + show the
+        "SUNAT no disponible" hint (and, downstream, the "Reprocesar con IA" button).
+
+        ``ErroredGuia`` is a pydantic model → replaced via ``model_copy`` (immutable
+        update).  A ``retry_attempted`` sidecar event is emitted and replayed in
+        ``restore_from_sidecar`` so the flag survives a restart.  This is an additive
+        UX side-channel — it NEVER touches the group key, status, delta, or qty of any
+        reconciliation row.  Unknown ``guia_id`` is a no-op.
+        """
+        idx = next(
+            (i for i, e in enumerate(self._errored_guias) if e.guia_id == guia_id),
+            None,
+        )
+        if idx is None:
+            return  # no-op: guia_id already recovered or never errored
+
+        if self._errored_guias[idx].retry_attempted:
+            # Idempotent: already flagged → no duplicate event/persist.
+            return
+
+        updated = list(self._errored_guias)
+        updated[idx] = updated[idx].model_copy(update={"retry_attempted": True})
+        self._errored_guias = updated
+
+        event = EditEvent(
+            kind="retry_attempted",
+            target={"guia_id": guia_id},
+            field=None,
+            old_value=None,
+            new_value=None,
+        )
+        self._audit_trail.append(event)
+        self._persist()
+
     # ------------------------------------------------------------------
     # Resumability: restore from sidecar
     # ------------------------------------------------------------------
@@ -504,6 +626,27 @@ class ReviewService:
                     continue
                 try:
                     service.apply_reassignment(guia_id, new_registro, new_fecha)
+                except (ValueError, ReconciliationError):
+                    pass
+
+            elif kind == "recovered_guia":
+                # T-4 (REV-R06): replay a recovered_guia event — re-adds the fully
+                # normalized GuiaDeRemision from sidecar JSON without re-fetching.
+                # new_value is the model_dump(mode="json") dict written at persist time.
+                raw_guia = edit.get("new_value")
+                if not isinstance(raw_guia, dict):
+                    continue
+                try:
+                    guia = GuiaDeRemision.model_validate(raw_guia)
+                    service.add_recovered_guia(guia)
+                except (ValueError, ReconciliationError):
+                    # Tolerate replay errors; continue.
+                    pass
+
+            elif kind == "retry_attempted":
+                # FIX 1: replay the failed-retry flag so it survives a restart.
+                try:
+                    service.mark_retry_attempted(guia_id)
                 except (ValueError, ReconciliationError):
                     pass
 

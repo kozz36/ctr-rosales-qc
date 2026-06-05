@@ -150,6 +150,14 @@ class ErroredGuiaResponse(BaseModel):
     source_pages: list[int] = Field(
         description="Physical page indices contributing to this 0-line guía."
     )
+    retry_attempted: bool = Field(
+        default=False,
+        description=(
+            "True once a REINTENTAR (SUNAT recovery) was attempted and FAILED for "
+            "this guía. Gates the frontend REINTENTAR button + 'SUNAT no disponible' "
+            "hint. Additive UX flag — never alters qty/status/delta of any row."
+        ),
+    )
 
 
 class RunStatusResponse(BaseModel):
@@ -445,6 +453,53 @@ class ErrorResponse(BaseModel):
     """Generic error envelope."""
 
     detail: str
+
+
+# ---------------------------------------------------------------------------
+# REINTENTAR (T-7 / REV-R08)
+# ---------------------------------------------------------------------------
+
+
+class RetryGuiaResponse(BaseModel):
+    """Response for POST /runs/{run_id}/errored-guias/{guia_id}/retry.
+
+    recovered=True when the guía was successfully recovered (SUNAT fetch + lines).
+    recovered=False when recovery failed (no_hashqr_url | sunat_empty | sunat_none).
+    rows is the updated reconciliation table after re-reconcile (empty on failure).
+    errored_guias is the remaining errored guías list after the attempt.
+    """
+
+    run_id: str
+    guia_id: str
+    recovered: bool
+    reason: str | None = Field(
+        default=None,
+        description=(
+            "Failure reason when recovered=False: "
+            "'no_hashqr_url' | 'sunat_empty' | 'sunat_none'. "
+            "Null on success."
+        ),
+    )
+    rows: list[ReconciliationRowResponse] = Field(
+        default_factory=list,
+        description="Updated reconciliation rows after recovery (empty on failure).",
+    )
+    errored_guias: list[ErroredGuiaResponse] = Field(
+        default_factory=list,
+        description="Remaining errored guías after the retry attempt.",
+    )
+
+
+class RetryBatchResponse(BaseModel):
+    """Response for POST /runs/{run_id}/registros/{registro}/retry → 202 Accepted.
+
+    Background task started; client re-polls GET /table for updates.
+    """
+
+    run_id: str
+    registro: str
+    count: int = Field(description="Number of errored guías queued for retry.")
+    task: str = Field(default="started", description="Task handle (always 'started').")
 
 
 # ---------------------------------------------------------------------------

@@ -44,10 +44,13 @@
       @assign-guia="onAssignUnresolved"
     />
 
-    <!-- Errored guías panel (REV-E05) — read-only, shown above the grid when entries exist -->
+    <!-- Errored guías panel (REV-E05 + REV-R09 REINTENTAR) — shown above the grid when entries exist -->
     <ErroredGuiasPanel
       v-if="isReady && erroredGuias.length > 0"
       :errored-guias="erroredGuias"
+      :run-id="id"
+      @retry="void tableQuery.refetch()"
+      @retry-success="void tableQuery.refetch()"
     />
 
     <!-- Review grid (only when ready) -->

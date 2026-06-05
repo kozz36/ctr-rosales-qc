@@ -19,6 +19,7 @@ import type {
   ReassignRequest,
   ReassignResponse,
   ReconciliationTableResponse,
+  ReprocessGuiaResponse,
   RetryBatchResponse,
   RetryGuiaResponse,
   RowEditRequest,
@@ -167,6 +168,20 @@ export async function retryRegistro(
 ): Promise<RetryBatchResponse> {
   const { data } = await http.post<RetryBatchResponse>(
     `/runs/${runId}/registros/${encodeURIComponent(registro)}/retry`,
+  )
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// POST /runs/{run_id}/errored-guias/{guia_id}/reprocess — Reprocesar con IA (T7/PR#3)
+// ---------------------------------------------------------------------------
+
+export async function reprocessGuia(
+  runId: string,
+  guiaId: string,
+): Promise<ReprocessGuiaResponse> {
+  const { data } = await http.post<ReprocessGuiaResponse>(
+    `/runs/${runId}/errored-guias/${encodeURIComponent(guiaId)}/reprocess`,
   )
   return data
 }

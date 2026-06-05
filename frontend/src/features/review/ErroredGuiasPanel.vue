@@ -53,7 +53,7 @@
           </span>
         </div>
 
-        <!-- T-8 / REV-R09: REINTENTAR button per guía entry -->
+        <!-- Action area: REINTENTAR (PR#2) + Reprocesar con IA (PR#3) -->
         <div class="errored-panel__item-actions">
           <!-- hint when retry_attempted=true -->
           <span
@@ -73,6 +73,18 @@
           >
             {{ retryingId === guia.guia_id ? 'Reintentando…' : 'REINTENTAR' }}
           </button>
+
+          <!-- PR#3 / REV-R18: Reprocesar con IA — only shown when retry_attempted=true -->
+          <button
+            v-if="guia.retry_attempted"
+            class="errored-panel__reprocess-btn"
+            :disabled="reprocessingIds.has(guia.guia_id) || undefined"
+            :aria-busy="reprocessingIds.has(guia.guia_id)"
+            title="Recuperar guía usando visión IA (Reprocesar con IA)"
+            @click="handleReprocess(guia)"
+          >
+            {{ reprocessingIds.has(guia.guia_id) ? 'Reprocesando…' : 'Reprocesar con IA' }}
+          </button>
         </div>
       </div>
     </div>
@@ -89,33 +101,55 @@
  *   - Loading/disabled via retryingId ref during in-flight request.
  *   - On success: emits 'retry-success' for the parent to invalidate the table query.
  *
+ * T7 / PR#3: Reprocesar con IA button per guía entry.
+ *   - Shown ONLY when guia.retry_attempted=true (REINTENTAR must have been tried first).
+ *   - In-flight tracking via reprocessingIds: reactive(new Set<string>()) — REV-R18
+ *     CRITICAL: reactive() NOT ref() so Vue tracks Set.add/delete mutations.
+ *   - On success: emits 'reprocess-success'.
+ *
  * Props:
  *   erroredGuias — list of ErroredGuiaResponse from GET /table.
- *   runId        — current run ID (required for retry endpoint calls).
+ *   runId        — current run ID (required for retry/reprocess endpoint calls).
  */
 
-import { ref } from 'vue'
+import { ref, reactive } from 'vue'
 import type { ErroredGuiaResponse } from '@/api/types'
-import { retryGuia } from '@/api/client'
+import { retryGuia, reprocessGuia } from '@/api/client'
 
 const props = defineProps<{
   /** Errored guías from the table response (REV-E04). */
   erroredGuias: ErroredGuiaResponse[]
-  /** Run ID — required for REINTENTAR calls. */
+  /** Run ID — required for REINTENTAR / Reprocesar calls. */
   runId?: string
 }>()
 
 const emit = defineEmits<{
-  /** Emitted when a guía is successfully recovered. Carry the updated errored list. */
+  /** Emitted when a guía is successfully recovered via REINTENTAR. */
   (e: 'retry-success', payload: { guiaId: string; erroredGuias: ErroredGuiaResponse[] }): void
   /** Emitted when a retry attempt completes (success or failure). */
   (e: 'retry', guiaId: string): void
+  /** Emitted when a guía is successfully recovered via Reprocesar con IA. */
+  (e: 'reprocess-success', payload: { guiaId: string; erroredGuias: ErroredGuiaResponse[] }): void
+  /** Emitted when a reprocess attempt starts. */
+  (e: 'reprocess', guiaId: string): void
 }>()
 
 const isOpen = ref(true)
 
 /** ID of the guía currently being retried (loading state); null when idle. */
 const retryingId = ref<string | null>(null)
+
+/**
+ * Set of guia_ids currently in-flight for Reprocesar con IA.
+ *
+ * REV-R18 CRITICAL: MUST be reactive(new Set()) NOT ref(new Set()).
+ * Vue 3's reactivity system tracks object property access, not value replacement.
+ * ref(new Set()) wraps the Set in a ref; calling .add/.delete does NOT trigger
+ * reactive updates because the ref's .value reference didn't change.
+ * reactive(new Set()) makes the Set itself reactive — Vue intercepts .add/.delete
+ * via the Proxy and triggers re-renders correctly.
+ */
+const reprocessingIds = reactive(new Set<string>())
 
 async function handleRetry(guia: ErroredGuiaResponse): Promise<void> {
   if (!props.runId || guia.retry_attempted || retryingId.value !== null) return
@@ -136,6 +170,27 @@ async function handleRetry(guia: ErroredGuiaResponse): Promise<void> {
     // The parent/TanStack re-fetch on the next polling cycle will update state.
   } finally {
     retryingId.value = null
+  }
+}
+
+async function handleReprocess(guia: ErroredGuiaResponse): Promise<void> {
+  if (!props.runId || reprocessingIds.has(guia.guia_id)) return
+
+  reprocessingIds.add(guia.guia_id)
+  emit('reprocess', guia.guia_id)
+
+  try {
+    const result = await reprocessGuia(props.runId, guia.guia_id)
+    if (result.recovered) {
+      emit('reprocess-success', {
+        guiaId: guia.guia_id,
+        erroredGuias: result.errored_guias,
+      })
+    }
+  } catch {
+    // Non-blocking — parent re-polls on next cycle.
+  } finally {
+    reprocessingIds.delete(guia.guia_id)
   }
 }
 </script>
@@ -295,5 +350,31 @@ async function handleRetry(guia: ErroredGuiaResponse): Promise<void> {
   font-size: var(--text-2xs);
   color: var(--text-tertiary);
   white-space: nowrap;
+}
+
+/* PR#3: Reprocesar con IA button — distinct from REINTENTAR */
+.errored-panel__reprocess-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-primary, #4f46e5);
+  background-color: var(--surface-raised);
+  color: var(--color-primary, #4f46e5);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), opacity var(--transition-fast);
+  white-space: nowrap;
+}
+
+.errored-panel__reprocess-btn:hover:not(:disabled) {
+  background-color: var(--surface-hover);
+}
+
+.errored-panel__reprocess-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 </style>

@@ -210,6 +210,16 @@ export interface RetryBatchResponse {
   task: string
 }
 
+/** POST /runs/{run_id}/errored-guias/{guia_id}/reprocess → 200 (PR#3) */
+export interface ReprocessGuiaResponse {
+  run_id: string
+  guia_id: string
+  recovered: boolean
+  reason: string | null
+  rows: ReconciliationRowResponse[]
+  errored_guias: ErroredGuiaResponse[]
+}
+
 /** GET /runs/{run_id}/table */
 export interface ReconciliationTableResponse {
   run_id: string

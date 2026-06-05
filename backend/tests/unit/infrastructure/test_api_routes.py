@@ -1053,3 +1053,99 @@ class TestFechaDivergenceInTableResponse:
             }
         )
         assert row.has_fecha_divergence is False
+
+
+# ---------------------------------------------------------------------------
+# T-7: POST /runs/{run_id}/errored-guias/{guia_id}/retry (REV-R08)
+# ---------------------------------------------------------------------------
+
+
+class TestRetryErroredGuia:
+    """T-7: sync REINTENTAR endpoint + 404/503 error cases."""
+
+    def _seed_with_errored(
+        self,
+        client: TestClient,
+        run_id: str,
+        guia_id: str = "T009-0741770",
+        reprocess_svc: Any = None,
+    ) -> None:
+        """Seed a run in 'review' state with one errored guía and optional reprocess_service."""
+        from reconciliation.domain.models import ErroredGuia  # noqa: PLC0415
+
+        errored = ErroredGuia(registro="232", guia_id=guia_id, source_pages=[4])
+        review_svc = _make_review_service()
+        review_svc.errored_guias = [errored]
+
+        registry = client.app.state.run_registry  # type: ignore[attr-defined]
+        registry[run_id] = {
+            "status": "review",
+            "review_service": review_svc,
+            "reprocess_service": reprocess_svc,
+            "ctx": None,
+            "result": None,
+            "vision_calls_made": 0,
+            "warnings": [],
+            "errored_guias": [errored],
+            "error": None,
+        }
+
+    def test_retry_success_200(self, client: TestClient) -> None:
+        """Successful retry returns 200 with recovered=True and updated rows."""
+        from reconciliation.application.reprocess_service import RetryResult  # noqa: PLC0415
+
+        run_id = str(uuid.uuid4())
+        mock_reprocess = MagicMock()
+        mock_reprocess.apply_retry.return_value = RetryResult(
+            recovered=True, guia_id="T009-0741770", rows=[]
+        )
+        self._seed_with_errored(client, run_id, reprocess_svc=mock_reprocess)
+
+        resp = client.post(f"/api/v1/runs/{run_id}/errored-guias/T009-0741770/retry")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["recovered"] is True
+
+    def test_retry_failure_returns_200_with_recovered_false(self, client: TestClient) -> None:
+        """Failed retry (no hashqr_url) returns 200 with recovered=False."""
+        from reconciliation.application.reprocess_service import RetryResult  # noqa: PLC0415
+
+        run_id = str(uuid.uuid4())
+        mock_reprocess = MagicMock()
+        mock_reprocess.apply_retry.return_value = RetryResult(
+            recovered=False, guia_id="T009-0741770", reason="no_hashqr_url"
+        )
+        self._seed_with_errored(client, run_id, reprocess_svc=mock_reprocess)
+
+        resp = client.post(f"/api/v1/runs/{run_id}/errored-guias/T009-0741770/retry")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["recovered"] is False
+
+    def test_retry_503_when_sunat_disabled(self, client: TestClient) -> None:
+        """Returns 503 when reprocess_service is None (SUNAT disabled)."""
+        run_id = str(uuid.uuid4())
+        self._seed_with_errored(client, run_id, reprocess_svc=None)
+
+        resp = client.post(f"/api/v1/runs/{run_id}/errored-guias/T009-0741770/retry")
+
+        assert resp.status_code == 503
+
+    def test_retry_404_unknown_run(self, client: TestClient) -> None:
+        """Returns 404 for an unknown run_id."""
+        resp = client.post("/api/v1/runs/no-such-run/errored-guias/T009-0741770/retry")
+        assert resp.status_code == 404
+
+    def test_retry_404_unknown_guia(self, client: TestClient) -> None:
+        """Returns 404 when the guia_id is not in errored_guias."""
+        from reconciliation.application.reprocess_service import RetryResult  # noqa: PLC0415
+
+        run_id = str(uuid.uuid4())
+        mock_reprocess = MagicMock()
+        self._seed_with_errored(client, run_id, guia_id="SOME-OTHER-GUIA", reprocess_svc=mock_reprocess)
+
+        resp = client.post(f"/api/v1/runs/{run_id}/errored-guias/T009-0741770/retry")
+
+        assert resp.status_code == 404

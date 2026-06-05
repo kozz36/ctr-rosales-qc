@@ -594,6 +594,19 @@ photo, unclassified) MUST NOT be classified as `guia` solely on the basis of Con
 In particular, declared/protocolo pages have > 200 chars of digital text and will not satisfy
 Condition B.
 
+**Assembly-side QR-evidence invariant (guia-classification-keystone rev-6).** Classification
+(Conditions A/B/C, page-local) is distinct from block assembly. In `_stage_assemble_blocks`,
+a page MUST open or extend a guía block ONLY when it carries positive QR evidence — a decoded
+compact identity QR (`identity is not None`) or, when the compact QR fails, the URL `hashqr=`
+QR (`page_hashqr_url is not None`) together with OCR material lines. A page with NO QR evidence
+(a photo, or a no-QR sheet whose OCR emitted a spurious non-materials table) MUST be dropped
+UNIFORMLY at every position — run-start, section boundary, and continuation — via a single
+`has_guia_evidence` gate applied BEFORE the start-new-block logic. This prevents a no-evidence
+page from opening a phantom `ocr_fallback` block with unflagged bogus material in the registro
+total. An `ocr_fallback` block (QR evidence present, compact QR failed) carries
+`requires_review = True` on its lines at any position. See the change-folder extraction delta
+(EXT-019, rev-6) for the full case disposition.
+
 ### EXT-020 — [MODIFIED: replaces EXT-005 / EXT-008] Vision input MUST be adequate for handwritten date legibility
 
 **[MODIFIED: EXT-005 requires vision-LLM invocation with the stamp area; EXT-008 states the

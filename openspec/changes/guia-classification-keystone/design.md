@@ -1,5 +1,36 @@
 # Design: Guía Classification Keystone (backend, change #2)
 
+> **rev-6 (2026-06-05): QR-evidence guard made INVARIANT across all positions
+> (JD round-5, both blind judges).**
+> The rev-5 QR-evidence guard was applied ONLY in the continuation path
+> (start_new_block condition d). At run-start (condition a, `current_block is None`)
+> and at a section boundary (condition b, different registro) a block was opened
+> UNCONDITIONALLY — so a no-QR-evidence page (identity None, `page_hashqr_url`
+> None) carrying a spurious non-materials OCR table that landed in those slots
+> opened a PHANTOM `ocr_fallback` guía whose lines were admitted UNFLAGGED
+> (`requires_review=False`) → silent bogus material in the registro total. The
+> guard is now **positional-independent**: a single guía-evidence gate is applied
+> to EVERY page BEFORE the start_new_block logic:
+> ```python
+> is_ocr_fallback_material = (
+>     identity is None and len(raw.lines) > 0 and page_hashqr_url is not None
+> )
+> has_guia_evidence = identity is not None or is_ocr_fallback_material
+> if not has_guia_evidence:
+>     continue  # NEVER opens or extends a block, at ANY position
+> ```
+> A no-evidence page is dropped uniformly (run-start / section-boundary /
+> continuation). The existing `requires_review` flagging keyed on
+> `is_ocr_fallback_material` inside `if start_new_block:` now applies correctly at
+> run-start and section-boundary too (a run-start ocr_fallback-material page WITH
+> URL QR evidence opens its own block AND flags its lines). Real-data invariant
+> unchanged: 0-line FHH photo dropped (reg228 → source_pages=[98], 140/140);
+> Bug-2 `errored_guias` intact (a QR-identified 0-line guía has `identity is not
+> None` → `has_guia_evidence` True → still opens + still scanned). Also applied
+> the round-5 SUGGESTION: `block.identity_source` (required field) replaces the
+> defensive `getattr(block, "identity_source", None)` in `_apply_sunat_result`.
+> Decision-2 (`errored_guias`) is unchanged.
+>
 > **rev-5 (2026-06-05): Decision-1 case 3 GUARDED + SUNAT review-flag preserved.**
 > Two surgical fixes:
 > 1. **QR-evidence guard on case 3 (FIX 1).** The rev-4 condition
@@ -219,6 +250,56 @@ review flag is carried.
 0 lines → not case 3 (and mostly no QR) → still dropped. reg228 still collapses to
 `source_pages=[98]`, 140/140 retained. Confirmed by `test_zero_line_photo_still_dropped`
 and `TestEXTS19bRealDataReg228PhotosNotAbsorbed`.
+
+### Decision-1 (rev-6): the QR-evidence guard is INVARIANT across all positions
+
+**JD round-5 (both blind judges).** The rev-5 guard (`is_ocr_fallback_material`)
+was consulted ONLY in the continuation path — start_new_block **condition (d)**. At
+**run-start** (condition a, `current_block is None`) and at a **section boundary**
+(condition b, registro change) a block was opened UNCONDITIONALLY, regardless of QR
+evidence. A no-QR-evidence page (identity None, `page_hashqr_url` None) carrying a
+spurious non-materials OCR table that landed in either slot opened a PHANTOM
+`ocr_fallback` guía; because `is_ocr_fallback_material` was `False` there, its lines
+were admitted with `requires_review=False` → **silent bogus material** in the
+registro total. The guard was positional, not invariant.
+
+**Fix — single guía-evidence gate before the start_new_block logic**
+(`_stage_assemble_blocks`, pipeline.py):
+```python
+is_ocr_fallback_material = (
+    identity is None and len(raw.lines) > 0 and page_hashqr_url is not None
+)
+has_guia_evidence = identity is not None or is_ocr_fallback_material
+if not has_guia_evidence:
+    logger.debug("assemble_blocks: dropped non-guía page %d (no QR evidence)", raw.source_page)
+    continue
+```
+The `continue` skips the page entirely without touching `current_block`, so the
+start_new_block conditions (a/b/c/d) AND the `requires_review` flagging (keyed on
+`is_ocr_fallback_material` inside `if start_new_block:`) only ever run for
+evidence-bearing pages. The continuation else-branch gate (`absorb = identity is not
+None`) now only sees evidence pages.
+
+| Position | No-QR-evidence page (identity None, `page_hashqr_url` None) | Evidence page |
+|----------|-----------------------------------------------------------|---------------|
+| run-start (a) | **dropped** (rev-6; was: opened phantom block) | opens block |
+| section boundary (b) | **dropped** (rev-6; was: opened phantom block) | opens block |
+| continuation (d / else) | dropped (rev-5) | absorbs / opens own block |
+
+A run-start ocr_fallback-material page WITH URL QR evidence now opens its own block
+AND flags `requires_review` (the flagging keys on `is_ocr_fallback_material`
+regardless of which condition opened the block).
+
+**Real-data invariant unchanged.** 0-line FHH photo → `is_ocr_fallback_material`
+False AND `identity is None` → `has_guia_evidence` False → dropped uniformly (same
+outcome, now position-independent). reg228 → `source_pages=[98]`, 140/140 retained.
+**Bug-2 not affected**: a QR-identified guía with 0 lines (URL-QR failed) has
+`identity is not None` → `has_guia_evidence` True → still opens (0 lines) → still in
+the `errored_guias` scan.
+
+**Round-5 SUGGESTION applied.** `_apply_sunat_result` now reads `block.identity_source`
+directly (it is a required `_GuiaBlock` field, always set), replacing the defensive
+`getattr(block, "identity_source", None)`.
 
 ### Decision-2 (UNCHANGED — validated): additive `PipelineResult.errored_guias`
 

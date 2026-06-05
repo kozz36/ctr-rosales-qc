@@ -100,6 +100,46 @@ Declared quantity MUST equal the guía sum exactly; any nonzero delta MUST be tr
 Per-unit tolerance overrides and rounding epsilon are PROHIBITED for this change.
 (Previously: tolerance was described as configurable with a default of 0 — now locked unconditionally.)
 
+### REC-EG-001 — Errored-guías side-channel on PipelineResult (guia-classification-keystone)
+
+`PipelineResult` MUST carry an additive field `errored_guias: list[ErroredGuia]` (default
+empty list) that surfaces, per Registro, every guía that resolved to 0 material lines after
+the SUNAT fetch stage.
+
+`ErroredGuia` MUST carry exactly:
+- `registro: str` — the Registro N° the guía was assigned to
+- `guia_id: str` — the deterministic `{serie}-{numero}` identifier (or OCR-fallback value)
+- `source_pages: list[int]` — all page indices in the guía block
+
+No additional fields (transient/systematic classification, re-decode probe result) MUST be
+included in this change; those are deferred to change #3.
+
+The field MUST be populated **after** the SUNAT fetch stage, examining each assembled guía
+block for `len(lines) == 0`.
+
+### REC-EG-002 — Errored-guías side-channel is strictly additive (guia-classification-keystone)
+
+The `errored_guias` side-channel MUST NOT alter:
+- the grouping key `(registro, material_canonical, unidad)` of any reconciled group
+- the `status` (MATCH / MISMATCH / declared_missing / guia_missing) of any group
+- the `delta` or `summed_qty` of any group
+- the `cantidad` of any `GuiaContribution` from a correctly-processed guía
+
+A guía that appears in `errored_guias` contributes 0 lines to the reconciled sum. This is
+NOT a new exclusion — the guía already contributed 0 lines. The side-channel makes the
+omission visible rather than silent.
+
+### REC-EG-003 — 0-line guías MUST NOT be silently included (guia-classification-keystone)
+
+A `GuiaDeRemision` with `len(lines) == 0` MUST NOT contribute to any `ReconciliationRow`
+sum as if it were a valid guía with unread quantities. It MUST appear in `errored_guias`
+so the engineer can identify which pages failed and take action (manual re-decode, SUNAT
+retry, or reassignment).
+
+This requirement extends REC-007 (no silent exclusions): instead of being silently dropped
+or silently contributing 0, the guía is **visibly accounted for** in the `errored_guias`
+side-channel.
+
 ---
 
 ## Acceptance Scenarios

@@ -303,8 +303,7 @@ class TestApplyReprocess:
             errored_guias=[errored],
         )
         await service.apply_reprocess("T227-0001", [10])
-        remaining = result = await service.apply_reprocess("T227-0001", [10])
-        # Still in errored
+        # Still in errored (vision returned no lines → no recovery).
         assert any(e.guia_id == "T227-0001" for e in review_svc.errored_guias)
 
     async def test_unknown_guia_id_not_recovered(self) -> None:
@@ -403,76 +402,155 @@ class TestApplyReprocess:
 
 @pytest.mark.asyncio
 class TestApplyReprocessConcurrency:
-    async def test_concurrent_commits_serialized_event_rendezvous(self) -> None:
-        """MANDATORY REV-R15 sleep-free rendezvous test.
+    """REV-R15 — the Semaphore BOUNDS and the Lock SERIALIZES (sleep-free).
 
-        Three concurrent apply_reprocess calls all block at the vision step
-        (gated on asyncio.Event). Once released, all three complete and
-        add_recovered_guia is called 3 times total with no lost updates.
+    These tests are designed to FAIL if either primitive is removed:
+      - the semaphore test sets max_concurrency BELOW the task count and asserts
+        the peak in-flight vision count never exceeds the bound;
+      - the lock test instruments the commit critical section so two commits
+        overlapping is detectable, and asserts they never do.
+    """
 
-        The asyncio.Lock ensures add_recovered_guia is never interleaved.
+    async def test_semaphore_bounds_in_flight_vision_calls(self) -> None:
+        """max_concurrency=2 with 3 tasks → never more than 2 vision calls in-flight.
+
+        Sleep-free rendezvous: each vision call registers entry, then BLOCKS on a
+        per-call threading.Event (it runs in an executor thread).  The test polls
+        (event-driven, via asyncio yields) until exactly `max_concurrency` calls
+        are parked, asserts no MORE than that ever park simultaneously, then
+        releases them one at a time.  If the semaphore is removed, all 3 park at
+        once and `peak_in_flight` becomes 3 → RED.
         """
-        from reconciliation.application.reprocess_service import ReprocessService  # noqa: PLC0415
+        import threading  # noqa: PLC0415
 
-        gate = asyncio.Event()
-        vision_entered = []
-        commit_order: list[str] = []
+        from reconciliation.application.reprocess_service import (  # noqa: PLC0415
+            ReprocessService,
+        )
 
-        # Three errored guías
+        MAX = 2
+        N = 3
+
+        in_flight = 0
+        peak_in_flight = 0
+        state_lock = threading.Lock()
+        # Per-call release gates; entry signal lets the driver know a call parked.
+        entered = threading.Semaphore(0)
+        release = threading.Event()
+
+        class _ParkingVision:
+            supports_batch: bool = False
+
+            def read_handwritten_date(self, image, hint=None):
+                from reconciliation.domain.models import VisionResult  # noqa: PLC0415
+                return VisionResult(date=None, confidence=0.0, raw="")
+
+            def read_handwritten_date_batch(self, images):
+                return []
+
+            def read_material_table(self, image, hint=None):
+                nonlocal in_flight, peak_in_flight
+                with state_lock:
+                    in_flight += 1
+                    peak_in_flight = max(peak_in_flight, in_flight)
+                entered.release()  # signal: one call has parked
+                release.wait(timeout=10)
+                with state_lock:
+                    in_flight -= 1
+                return [_make_material_line()]
+
         errored_guias = [
-            _make_errored_guia(guia_id="g1", source_pages=[1]),
-            _make_errored_guia(guia_id="g2", source_pages=[2]),
-            _make_errored_guia(guia_id="g3", source_pages=[3]),
+            _make_errored_guia(guia_id=f"g{i}", source_pages=[i]) for i in range(N)
         ]
         review_service = _FakeReviewService(errored_guias=errored_guias)
 
-        # Vision fake that blocks all calls until gate is set
-        class _BlockingVision:
-            supports_batch: bool = False
+        service = ReprocessService(
+            doc_source=_FakeDocSource(),
+            identity=MagicMock(),
+            sunat=None,
+            key_resolver=_FakeKeyResolver(),
+            review_service=review_service,
+            vision=_ParkingVision(),
+            max_concurrency=MAX,
+            downscale_max_edge=2000,
+        )
 
-            def read_handwritten_date(self, image, hint=None):
-                from reconciliation.domain.models import VisionResult  # noqa: PLC0415
-                return VisionResult(date=None, confidence=0.0, raw="")
+        tasks = [
+            asyncio.create_task(service.apply_reprocess(f"g{i}", [i])) for i in range(N)
+        ]
 
-            def read_handwritten_date_batch(self, images):
-                return []
+        # Wait (event-driven, NO sleep) until MAX calls have parked.
+        for _ in range(MAX):
+            while not entered.acquire(blocking=False):
+                await asyncio.sleep(0)  # yield to let executor threads dispatch
 
-            def read_material_table(self, image: bytes, hint=None) -> list[MaterialLine]:
-                # This runs in a thread via run_in_executor
-                # We signal entry by appending to the shared list
-                import threading  # noqa: PLC0415
-                vision_entered.append(threading.current_thread().name)
-                # Block until gate is set (wait via threading Event)
-                gate_threading = _gate_threading  # noqa: F821
-                gate_threading.wait()
-                return [_make_material_line()]
+        # Give any (erroneously) unbounded extra call a chance to park, then assert
+        # the bound held.  Yield a bounded number of times — if the semaphore is
+        # removed the 3rd call parks and peak_in_flight climbs to 3.
+        for _ in range(50):
+            await asyncio.sleep(0)
+        with state_lock:
+            assert peak_in_flight <= MAX, (
+                f"semaphore breached: {peak_in_flight} vision calls in-flight "
+                f"(max_concurrency={MAX})"
+            )
 
-        # Use a threading.Event for the blocking vision (runs in executor thread)
-        import threading  # noqa: PLC0415
-        _gate_threading = threading.Event()
+        # Release everyone and drain.
+        release.set()
+        results = await asyncio.gather(*tasks)
 
-        # Monkey-patch the closure to use the threading gate
-        class _BlockingVision2:
-            supports_batch: bool = False
+        assert sum(1 for r in results if r.recovered) == N
+        with state_lock:
+            assert peak_in_flight <= MAX
 
-            def read_handwritten_date(self, image, hint=None):
-                from reconciliation.domain.models import VisionResult  # noqa: PLC0415
-                return VisionResult(date=None, confidence=0.0, raw="")
+    async def test_commit_lock_acquired_and_serializes_each_commit(self) -> None:
+        """The production commit Lock is acquired around EVERY add_recovered_guia.
 
-            def read_handwritten_date_batch(self, images):
-                return []
+        The production commit body is synchronous; in single-thread asyncio a sync
+        region is already non-interleaving, so a holder-overlap assertion cannot
+        distinguish lock-present from lock-absent.  What IS observable — and what
+        breaks if `async with self._get_commit_lock()` is removed — is that the
+        commit runs WITHOUT ever acquiring the lock.
 
-            def read_material_table(self, image: bytes, hint=None) -> list[MaterialLine]:
-                vision_entered.append(1)
-                _gate_threading.wait(timeout=10)
-                return [_make_material_line()]
+        We inject an instrumented asyncio.Lock that (a) counts acquisitions and
+        (b) asserts at most one holder at any instant (so a future async-bodied
+        commit that interleaves would also fail).  Removing the production
+        `async with` makes `acquired` stay 0 while N commits run → RED.
+        """
+        from reconciliation.application.reprocess_service import (  # noqa: PLC0415
+            ReprocessService,
+        )
 
-        # Wrap add_recovered_guia to track call order
+        N = 3
+        order: list[str] = []
+
+        class _CountingLock(asyncio.Lock):
+            acquired = 0
+            held = 0
+            max_held = 0
+
+            async def acquire(self) -> bool:  # type: ignore[override]
+                ok = await super().acquire()
+                type(self).acquired += 1
+                type(self).held += 1
+                type(self).max_held = max(type(self).max_held, type(self).held)
+                return ok
+
+            def release(self) -> None:
+                type(self).held -= 1
+                super().release()
+
+        counting = _CountingLock()
+
+        errored_guias = [
+            _make_errored_guia(guia_id=f"g{i}", source_pages=[i]) for i in range(N)
+        ]
+        review_service = _FakeReviewService(errored_guias=errored_guias)
         original_add = review_service.add_recovered_guia
-        lock_check = threading.Lock()
 
-        def tracked_add(guia: GuiaDeRemision) -> list[ReconciliationRow]:
-            commit_order.append(guia.guia_id)
+        def tracked_add(guia: GuiaDeRemision):
+            # The lock MUST be held when the commit runs.
+            assert _CountingLock.held >= 1, "commit ran without holding the lock"
+            order.append(guia.guia_id)
             return original_add(guia)
 
         review_service.add_recovered_guia = tracked_add  # type: ignore[method-assign]
@@ -483,32 +561,27 @@ class TestApplyReprocessConcurrency:
             sunat=None,
             key_resolver=_FakeKeyResolver(),
             review_service=review_service,
-            vision=_BlockingVision2(),
-            max_concurrency=3,
+            vision=_FakeVision(lines=[_make_material_line()]),
+            max_concurrency=N,
             downscale_max_edge=2000,
         )
+        # Inject the instrumented lock as the service's commit lock so it guards
+        # the PRODUCTION `async with self._get_commit_lock()` critical section.
+        service._commit_lock = counting  # type: ignore[assignment]
 
-        # Launch 3 concurrent tasks
         tasks = [
-            asyncio.create_task(service.apply_reprocess(gid, [i + 1]))
-            for i, gid in enumerate(["g1", "g2", "g3"])
+            asyncio.create_task(service.apply_reprocess(f"g{i}", [i])) for i in range(N)
         ]
-
-        # Yield the event loop so tasks can start
-        await asyncio.sleep(0)
-        # Wait a tiny bit for threads to be dispatched
-        await asyncio.sleep(0.05)
-
-        # Release the threading gate — all 3 vision calls can now finish
-        _gate_threading.set()
-
         results = await asyncio.gather(*tasks)
 
-        # All 3 recovered
-        assert sum(1 for r in results if r.recovered) == 3
-        # add_recovered_guia called exactly 3 times (one per guía)
-        assert len(commit_order) == 3
-        # All 3 guías processed
-        assert set(commit_order) == {"g1", "g2", "g3"}
-        # errored_guias should now be empty (all recovered)
+        assert sum(1 for r in results if r.recovered) == N
+        assert len(order) == N
+        assert set(order) == {f"g{i}" for i in range(N)}
+        # The commit lock was acquired once per commit (proves the `async with`
+        # is present and reached) and never held by two coroutines at once.
+        assert _CountingLock.acquired == N, (
+            f"commit lock acquired {_CountingLock.acquired}x, expected {N} — "
+            "the commit ran without `async with self._get_commit_lock()`"
+        )
+        assert _CountingLock.max_held == 1, "two coroutines held the commit lock at once"
         assert len(review_service.errored_guias) == 0

@@ -28,7 +28,6 @@ def _make_config(
     **kwargs: Any,
 ) -> AppConfig:
     return AppConfig(
-        pdf_path=Path("/tmp/fake.pdf"),
         output_dir=Path("/tmp/out"),
         sunat={"enabled": sunat_enabled},
         vision={"enabled": vision_enabled},
@@ -167,7 +166,6 @@ class TestBuildReprocessServiceDecoupled:
         )
 
         config = AppConfig(
-            pdf_path=Path("/tmp/fake.pdf"),
             output_dir=Path("/tmp/out"),
             sunat={"enabled": False},
             vision={"enabled": True, "reprocess_max_concurrency": 5},

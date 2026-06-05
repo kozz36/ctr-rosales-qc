@@ -446,6 +446,17 @@ class ReviewService:
         Returns:
             Updated list of reconciliation rows after re-reconcile.
         """
+        # Fail-closed guard (FIX #5): the auto-reject invariant — recovered lines
+        # ALWAYS requires_review=True (reconciliation validation gate) — must not
+        # rest solely on callers.  Reject any line that would bypass review.
+        bad = [ln for ln in guia.lines if ln.requires_review is not True]
+        if bad:
+            raise ValueError(
+                f"add_recovered_guia: guía {guia.guia_id!r} has "
+                f"{len(bad)} line(s) with requires_review!=True — recovered guías "
+                "must always be flagged for review (reconciliation validation gate)."
+            )
+
         # Resolve the existing guía with this guia_id (if any).
         existing_idx: int | None = next(
             (i for i, g in enumerate(self._guias) if g.guia_id == guia.guia_id),

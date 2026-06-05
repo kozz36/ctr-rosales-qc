@@ -69,19 +69,10 @@ describe('ErroredGuiasPanel', () => {
     expect(wrapper.text()).toContain('8')
   })
 
-  it('does NOT render REINTENTAR button', () => {
+  it('does NOT render Reprocesar button (PR#3 scope)', () => {
+    // REINTENTAR is PR#2 scope; Reprocesar-con-IA is PR#3 scope.
     const wrapper = mount(ErroredGuiasPanel, {
-      props: { erroredGuias: [makeErrored()] },
-    })
-    const buttons = wrapper.findAll('button').filter(
-      (b) => b.text().toLowerCase().includes('reintentar'),
-    )
-    expect(buttons).toHaveLength(0)
-  })
-
-  it('does NOT render Reprocesar button', () => {
-    const wrapper = mount(ErroredGuiasPanel, {
-      props: { erroredGuias: [makeErrored()] },
+      props: { erroredGuias: [makeErrored()], runId: 'run-123' },
     })
     const buttons = wrapper.findAll('button').filter(
       (b) => b.text().toLowerCase().includes('reprocesar'),
@@ -89,13 +80,24 @@ describe('ErroredGuiasPanel', () => {
     expect(buttons).toHaveLength(0)
   })
 
-  it('only the collapsible toggle button exists (no action buttons)', () => {
+  it('renders REINTENTAR button per guía item (PR#2 scope)', () => {
+    // PR#1 was read-only; PR#2 adds REINTENTAR button.
     const wrapper = mount(ErroredGuiasPanel, {
-      props: { erroredGuias: [makeErrored(), makeErrored({ guia_id: 'T009-0002' })] },
+      props: { erroredGuias: [makeErrored(), makeErrored({ guia_id: 'T009-0002' })], runId: 'run-123' },
     })
-    // Only button should be the panel header toggle
+    const reintentarButtons = wrapper.findAll('button').filter(
+      (b) => b.text().toUpperCase().includes('REINTENTAR'),
+    )
+    expect(reintentarButtons).toHaveLength(2)
+  })
+
+  it('has collapsible header button plus one REINTENTAR per item', () => {
+    const wrapper = mount(ErroredGuiasPanel, {
+      props: { erroredGuias: [makeErrored(), makeErrored({ guia_id: 'T009-0002' })], runId: 'run-123' },
+    })
+    // 1 header + 2 REINTENTAR = 3 total
     const buttons = wrapper.findAll('button')
-    expect(buttons).toHaveLength(1)
+    expect(buttons.length).toBeGreaterThanOrEqual(3)
     expect(buttons[0].classes()).toContain('errored-panel__header')
   })
 

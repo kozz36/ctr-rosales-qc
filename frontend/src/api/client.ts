@@ -19,6 +19,8 @@ import type {
   ReassignRequest,
   ReassignResponse,
   ReconciliationTableResponse,
+  RetryBatchResponse,
+  RetryGuiaResponse,
   RowEditRequest,
   RowEditResponse,
   RunCreateResponse,
@@ -138,6 +140,34 @@ export async function exportRun(runId: string, fmt: ExportFormat): Promise<Blob>
 
 export async function getAuditTrail(runId: string): Promise<AuditTrailResponse> {
   const { data } = await http.get<AuditTrailResponse>(`/runs/${runId}/audit`)
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// POST /runs/{run_id}/errored-guias/{guia_id}/retry  — REINTENTAR single guía (T-8)
+// ---------------------------------------------------------------------------
+
+export async function retryGuia(
+  runId: string,
+  guiaId: string,
+): Promise<RetryGuiaResponse> {
+  const { data } = await http.post<RetryGuiaResponse>(
+    `/runs/${runId}/errored-guias/${encodeURIComponent(guiaId)}/retry`,
+  )
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// POST /runs/{run_id}/registros/{registro}/retry  — REINTENTAR per-Registro batch (T-8)
+// ---------------------------------------------------------------------------
+
+export async function retryRegistro(
+  runId: string,
+  registro: string,
+): Promise<RetryBatchResponse> {
+  const { data } = await http.post<RetryBatchResponse>(
+    `/runs/${runId}/registros/${encodeURIComponent(registro)}/retry`,
+  )
   return data
 }
 

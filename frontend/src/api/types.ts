@@ -174,11 +174,40 @@ export interface UnresolvedGuiaResponse {
  * grid and NEVER affects MATCH/MISMATCH logic.  Rendered in ErroredGuiasPanel.
  *
  * Mirrors backend ErroredGuiaResponse (schemas.py).
+ *
+ * T-8 / REV-R09: retry_attempted is set when a REINTENTAR attempt was made
+ * (regardless of success/failure).  When true, the REINTENTAR button is disabled
+ * and "SUNAT no disponible" is shown (gates PR#3 Reprocesar button).
+ * Default false for backward compatibility with cached/older runs.
  */
 export interface ErroredGuiaResponse {
   registro: string | null
   guia_id: string
   source_pages: number[]
+  /** T-8/REV-R09: true when a REINTENTAR attempt has been made for this guía. */
+  retry_attempted?: boolean
+}
+
+// ---------------------------------------------------------------------------
+// REINTENTAR (T-7 / REV-R08)
+// ---------------------------------------------------------------------------
+
+/** POST /runs/{run_id}/errored-guias/{guia_id}/retry → 200 */
+export interface RetryGuiaResponse {
+  run_id: string
+  guia_id: string
+  recovered: boolean
+  reason: string | null
+  rows: ReconciliationRowResponse[]
+  errored_guias: ErroredGuiaResponse[]
+}
+
+/** POST /runs/{run_id}/registros/{registro}/retry → 202 */
+export interface RetryBatchResponse {
+  run_id: string
+  registro: string
+  count: number
+  task: string
 }
 
 /** GET /runs/{run_id}/table */

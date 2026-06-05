@@ -165,6 +165,58 @@ class TestReprocessEndpoint:
         resp = client.post("/api/v1/runs/test-run/errored-guias/T227-0001/reprocess")
         assert resp.status_code == 503
 
+    def test_returns_503_vision_disabled_when_null_vision_adapter(
+        self, client: TestClient
+    ) -> None:
+        """vision.enabled=False (NullVisionAdapter injected) → 503 vision_disabled.
+
+        REV-R16-S03 / REV-R17-S03: a service whose vision port is a
+        NullVisionAdapter MUST surface 503 vision_disabled, NOT 200 vision_empty —
+        the disabled state must not be masked as an empty read.
+        """
+        from reconciliation.adapters.vision.null_vision import (  # noqa: PLC0415
+            NullVisionAdapter,
+        )
+
+        fake_service = MagicMock()
+        fake_service._vision = NullVisionAdapter()
+        # apply_reprocess must NOT be awaited — the gate fires before it.
+        fake_service.apply_reprocess = AsyncMock(
+            return_value=ReprocessResult(
+                recovered=False, guia_id="T227-0001", reason="vision_empty"
+            )
+        )
+        _seed_run(client, "test-run", fake_service, [_make_errored()])
+
+        resp = client.post("/api/v1/runs/test-run/errored-guias/T227-0001/reprocess")
+        assert resp.status_code == 503
+        assert "vision_disabled" in resp.json()["detail"]
+        fake_service.apply_reprocess.assert_not_awaited()
+
+    def test_vision_enabled_empty_still_200_vision_empty(
+        self, client: TestClient
+    ) -> None:
+        """Regression guard: vision ENABLED but returns [] → STILL 200 vision_empty.
+
+        REV-R16-S02: vision-disabled (503) and vision-enabled-empty-result
+        (200 vision_empty) MUST stay distinct. A real (non-Null) vision adapter
+        that yields no lines is a legitimate empty read, not a disabled state.
+        """
+        fake_service = MagicMock()
+        fake_service._vision = MagicMock()  # a real (non-Null) vision port
+        fake_service.apply_reprocess = AsyncMock(
+            return_value=ReprocessResult(
+                recovered=False, guia_id="T227-0001", reason="vision_empty"
+            )
+        )
+        _seed_run(client, "test-run", fake_service, [_make_errored()])
+
+        resp = client.post("/api/v1/runs/test-run/errored-guias/T227-0001/reprocess")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["recovered"] is False
+        assert data["reason"] == "vision_empty"
+
     def test_returns_404_when_run_not_found(self, client: TestClient) -> None:
         """Unknown run_id → 404."""
         resp = client.post("/api/v1/runs/no-such-run/errored-guias/T227-0001/reprocess")

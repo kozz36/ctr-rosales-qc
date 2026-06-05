@@ -535,7 +535,7 @@ class ReprocessService:
             # Step 5: call vision in executor (sync blocking call; non-blocking here).
             vision_lines: list[MaterialLine] = []
             if rendered and self._vision is not None:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 try:
                     vision_lines = await loop.run_in_executor(
                         None,

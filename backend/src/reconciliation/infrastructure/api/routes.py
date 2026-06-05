@@ -198,6 +198,35 @@ def _require_sunat_on_service(reprocess_service: Any, run_id: str) -> None:
         )
 
 
+def _require_vision_on_service(reprocess_service: Any, run_id: str) -> None:
+    """Raise 503 vision_disabled if the ReprocessService has no usable vision port.
+
+    Reprocesar con IA (apply_reprocess) requires a real vision adapter.  When
+    vision.enabled=False the container injects a NullVisionAdapter, which returns
+    [] from read_material_table — without this guard apply_reprocess would resolve
+    to 200 recovered=False reason="vision_empty", masking the disabled state.
+
+    REV-R16-S03 / REV-R17-S03: vision DISABLED → 503 "vision_disabled".  This is
+    distinct from vision ENABLED but returning no lines (REV-R16-S02), which stays
+    200 "vision_empty" — a real empty read, not a disabled service.  Mirrors the
+    _require_sunat_on_service pattern used by REINTENTAR.
+    """
+    from reconciliation.adapters.vision.null_vision import (  # noqa: PLC0415
+        NullVisionAdapter,
+    )
+
+    vision = getattr(reprocess_service, "_vision", None)
+    if vision is None or isinstance(vision, NullVisionAdapter):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Reprocesar con IA not available for run '{run_id}': "
+                "vision is disabled (vision.enabled=False). reason=vision_disabled. "
+                "Enable vision in config to use Reprocesar con IA."
+            ),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Background pipeline runner
 # ---------------------------------------------------------------------------
@@ -1024,10 +1053,14 @@ async def reprocess_guia(
 
     Errors:
         404 — run_id unknown, or guia_id not in errored_guias.
-        503 — both vision and SUNAT disabled (reprocess_service is None).
+        503 — both vision and SUNAT disabled (reprocess_service is None), OR
+              vision disabled (NullVisionAdapter) → reason=vision_disabled
+              (REV-R16-S03; distinct from 200 vision_empty when vision is on).
     """
     entry = _require_run(registry, run_id)
     reprocess_service = _require_reprocess_service(entry, run_id)
+    # Reprocesar con IA requires a real vision adapter (NOT NullVisionAdapter).
+    _require_vision_on_service(reprocess_service, run_id)
     review_service = _require_review_service(entry, run_id)
 
     # Verify guia_id is in errored_guias.

@@ -81,7 +81,7 @@ export interface GuiaContributionResponse {
   cantidad: string // Decimal serialised as string
   unidad: string
   confidence: number
-  identity_source: 'qr' | 'ocr_fallback'
+  identity_source: 'qr' | 'ocr_fallback' | 'vision'
   /**
    * Rev-3 D5 (REC-C07): true when the year component of this guía's reception
    * date was reconstructed via bounded inference (EXT-021), not read directly
@@ -162,7 +162,7 @@ export interface ReconciliationRowResponse {
  */
 export interface UnresolvedGuiaResponse {
   guia_id: string // serie-numero, e.g. "T009-0741770"
-  identity_source: 'qr' | 'ocr_fallback'
+  identity_source: 'qr' | 'ocr_fallback' | 'vision'
   source_pages: number[]
   first_page: number | null
 }

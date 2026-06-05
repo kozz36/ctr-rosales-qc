@@ -83,6 +83,7 @@ from reconciliation.domain.classifier import PageClassifier
 from reconciliation.domain.date_floor import apply_delivery_floor
 from reconciliation.domain.date_inference import infer_reception_year
 from reconciliation.domain.models import (
+    ErroredGuia,
     GuiaDeRemision,
     GuiaIdentity,
     MaterialLine,
@@ -225,6 +226,7 @@ class PipelineResult:
     rows: list[ReconciliationRow]
     vision_calls_made: int = 0
     warnings: list[str] = field(default_factory=list)
+    errored_guias: list[ErroredGuia] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +371,18 @@ class ReconciliationPipeline:
         # sunat_fetch_map maps guia_id → OfficialGre; empty when disabled (air-gap).
         sunat_fetch_map = self._stage_sunat_fetch(blocks, ctx=ctx, stage_total=_stage_total)
 
+        # REC-EG-001/003: collect 0-line blocks as visible omission (not silent).
+        # Additive side-channel — NEVER touches reconciliation key/status/delta/qty.
+        errored_guias: list[ErroredGuia] = [
+            ErroredGuia(
+                registro=block.registro,
+                guia_id=block.guia_id,
+                source_pages=list(block.source_pages),
+            )
+            for block in blocks
+            if len(block.lines) == 0
+        ]
+
         # Stage 6: extract vision dates (handwritten) — one call per block (first page).
         # D4: feeds the stamp-region crop (lower-right quadrant default) or >=300dpi
         # full-page fallback when cropping is disabled (EXT-020).
@@ -436,6 +450,7 @@ class ReconciliationPipeline:
             rows=rows,
             vision_calls_made=vision_calls_made,
             warnings=declared_date_warnings + ocr_warnings + warnings,
+            errored_guias=errored_guias,
         )
 
     # ------------------------------------------------------------------

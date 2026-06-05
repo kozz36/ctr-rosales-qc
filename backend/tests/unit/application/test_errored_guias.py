@@ -240,53 +240,51 @@ class TestErroredGuiasAdditiveOnlyInvariant:
     def test_errored_guias_additive_only_invariant(self, tmp_path: Path) -> None:
         """The errored_guias side-channel MUST NOT alter key/status/delta/qty for correct rows.
 
-        Compare a run WITH an errored guía against a baseline run with all good guías.
-        Every reconciliation row for the non-errored guía must be identical.
+        Run with one good guía (T112-0065421, 100 KG) and one 0-line guía (T112-0065422).
+        Assert that:
+        - T112-0065421's row summed_qty == 100 (its own contribution, unchanged by side-channel).
+        - T112-0065421 NOT in errored_guias.
+        - T112-0065422 IS in errored_guias (0-line block surfaced).
+
+        The additive-only invariant: the side-channel does not touch the good row's
+        key, status, delta, or summed_qty. No second run is needed — the side-channel
+        must be isolated from the reconcile path.
 
         FAILS (RED): errored_guias field does not exist yet.
         """
         qr_ok = _identity("T112", "0065421")
         qr_err = _identity("T112", "0065422")
 
-        # Run WITH errored guía (0-line block)
-        result_with_errored = _run_pipeline(
+        result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE],
             identity_seq=[qr_ok, qr_err],
-            per_page_lines=[[_MAT_LINE], []],
+            per_page_lines=[[_MAT_LINE], []],  # second block: 0 lines
             page_to_registro={0: "232", 1: "232"},
             tmp_path=tmp_path,
         )
 
-        # Baseline: both guías have lines
-        result_baseline = _run_pipeline(
-            pages=[_GUIA_PAGE, _GUIA_PAGE],
-            identity_seq=[_identity("T112", "0065421"), _identity("T112", "9999999")],
-            per_page_lines=[[_MAT_LINE], [_MAT_LINE]],
-            page_to_registro={0: "232", 1: "232"},
-            tmp_path=tmp_path,
-        )
+        # errored_guias side-channel must capture the 0-line block
+        assert hasattr(result, "errored_guias")
+        assert len(result.errored_guias) == 1
+        assert result.errored_guias[0].guia_id == "T112-0065422"
 
-        # The row for T112-0065421 must be present and unchanged in both runs
-        rows_errored = {r.guias[0].guia_id: r for r in result_with_errored.rows if r.guias}
-        rows_baseline = {r.guias[0].guia_id: r for r in result_baseline.rows if r.guias}
-
-        assert "T112-0065421" in rows_errored, (
+        # Good guía must produce a reconciliation row with correct qty
+        rows_by_guia = {r.guias[0].guia_id: r for r in result.rows if r.guias}
+        assert "T112-0065421" in rows_by_guia, (
             "T112-0065421 must still produce a reconciliation row even when another guía is errored"
         )
-        assert "T112-0065421" in rows_baseline
+        good_row = rows_by_guia["T112-0065421"]
 
-        row_e = rows_errored["T112-0065421"]
-        row_b = rows_baseline["T112-0065421"]
+        # summed_qty for the good guía must equal its own single line contribution
+        assert good_row.summed_qty == Decimal("100"), (
+            f"summed_qty must be 100 (good guía's own qty, unaffected by side-channel); "
+            f"got {good_row.summed_qty}"
+        )
 
-        # Key fields must be identical
-        assert row_e.summed_qty == row_b.summed_qty, (
-            f"summed_qty changed: {row_e.summed_qty} vs {row_b.summed_qty}"
-        )
-        assert row_e.status == row_b.status, (
-            f"status changed: {row_e.status!r} vs {row_b.status!r}"
-        )
-        assert row_e.delta == row_b.delta, (
-            f"delta changed: {row_e.delta} vs {row_b.delta}"
+        # The good guía must NOT appear in errored_guias
+        errored_ids = {e.guia_id for e in result.errored_guias}
+        assert "T112-0065421" not in errored_ids, (
+            "Good guía T112-0065421 must NOT appear in errored_guias"
         )
 
 

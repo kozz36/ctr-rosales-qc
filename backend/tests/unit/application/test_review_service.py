@@ -753,3 +753,131 @@ class TestReviewServiceErroredGuias:
         service, _ = _build_service(tmp_path)
         # Verify rows still accessible — other tests depend on this shape
         assert isinstance(service.rows, list)
+
+
+# ---------------------------------------------------------------------------
+# T-3: add_recovered_guia (REV-R05)
+# ---------------------------------------------------------------------------
+
+
+class TestAddRecoveredGuia:
+    """T-3: ReviewService.add_recovered_guia — append, drop from errored, re-reconcile, idempotent."""
+
+    def _make_errored(self, guia_id: str = "errored-g1", registro: str = "R001") -> ErroredGuia:
+        return ErroredGuia(registro=registro, guia_id=guia_id, source_pages=[3])
+
+    def _make_recovered_guia(
+        self,
+        guia_id: str = "errored-g1",
+        registro: str = "R001",
+        desc: str = "acero corrugado",
+        qty: str = "30",
+    ) -> GuiaDeRemision:
+        return GuiaDeRemision(
+            guia_id=guia_id,
+            registro=registro,
+            fecha=date(2026, 5, 28),
+            lines=[_make_line(desc=desc, qty=qty, confidence=1.0)],
+            source_pages=[3],
+        )
+
+    def test_add_recovered_appends_to_guias(self, tmp_path: Path) -> None:
+        """Recovered guía must be added to the service's guía list."""
+        guias = [_make_guia()]
+        declared = [_make_registro()]
+        errored = [self._make_errored()]
+        service, _ = _build_service(tmp_path, guias=guias, declared=declared)
+        service._errored_guias = errored  # inject for this test
+
+        recovered = self._make_recovered_guia()
+        service.add_recovered_guia(recovered)
+
+        guia_ids = {g.guia_id for g in service.guias}
+        assert "errored-g1" in guia_ids
+
+    def test_add_recovered_removes_from_errored_guias(self, tmp_path: Path) -> None:
+        """Guía_id must be removed from errored_guias list after recovery."""
+        guias = [_make_guia()]
+        declared = [_make_registro()]
+        errored = [self._make_errored("errored-g1"), self._make_errored("errored-g2")]
+        service, _ = _build_service(tmp_path, guias=guias, declared=declared)
+        service._errored_guias = list(errored)
+
+        recovered = self._make_recovered_guia("errored-g1")
+        service.add_recovered_guia(recovered)
+
+        remaining_ids = {e.guia_id for e in service.errored_guias}
+        assert "errored-g1" not in remaining_ids
+        assert "errored-g2" in remaining_ids  # additive isolation: other entries unaffected
+
+    def test_add_recovered_triggers_re_reconcile(self, tmp_path: Path) -> None:
+        """Re-reconcile must run after adding; rows must update (no stale state)."""
+        declared_line = _make_line(desc="acero corrugado", qty="60")
+        registro = _make_registro(numero="R001", lines=[declared_line])
+        guia = _make_guia(guia_id="g-existing", registro="R001", lines=[_make_line(qty="30")])
+        reconciler = ReconciliationService()
+        rows_before = reconciler.reconcile([registro], [guia])
+        service, _ = _build_service(tmp_path, guias=[guia], declared=[registro], rows=rows_before)
+
+        # Inject a recovered guía contributing the missing 30 KG
+        recovered = GuiaDeRemision(
+            guia_id="errored-g1",
+            registro="R001",
+            fecha=date(2026, 5, 28),
+            lines=[_make_line(desc="acero corrugado", qty="30", confidence=1.0)],
+            source_pages=[3],
+        )
+        updated_rows = service.add_recovered_guia(recovered)
+
+        # After adding, the R001/acero corrugado/KG group should now have summed_qty=60
+        target = next(
+            (r for r in updated_rows if r.registro == "R001" and "acero corrugado" in r.material_canonical),
+            None,
+        )
+        assert target is not None, "Expected a reconciliation row for R001/acero corrugado"
+        assert target.summed_qty == Decimal("60"), (
+            f"Expected summed_qty=60 after recovery; got {target.summed_qty}"
+        )
+
+    def test_add_recovered_idempotent(self, tmp_path: Path) -> None:
+        """Calling add_recovered_guia twice with the same guia_id must be idempotent."""
+        guias = [_make_guia()]
+        declared = [_make_registro()]
+        errored = [self._make_errored()]
+        service, _ = _build_service(tmp_path, guias=guias, declared=declared)
+        service._errored_guias = list(errored)
+
+        recovered = self._make_recovered_guia()
+        service.add_recovered_guia(recovered)
+        service.add_recovered_guia(recovered)  # second call — should NOT add duplicate
+
+        # Should only appear once
+        count = sum(1 for g in service.guias if g.guia_id == "errored-g1")
+        assert count == 1, f"Expected exactly 1 recovered guía; found {count}"
+
+    def test_add_recovered_other_registros_unaffected(self, tmp_path: Path) -> None:
+        """Adding a guía to R001 must NOT change rows for R002."""
+        line_r001 = _make_line(desc="acero corrugado", qty="30")
+        line_r002 = _make_line(desc="acero corrugado", qty="50")
+        reg001 = _make_registro(numero="R001", lines=[line_r001])
+        reg002 = _make_registro(numero="R002", lines=[line_r002])
+        guia_r001 = _make_guia(guia_id="g-r001", registro="R001")
+        guia_r002 = _make_guia(guia_id="g-r002", registro="R002")
+
+        reconciler = ReconciliationService()
+        initial_rows = reconciler.reconcile([reg001, reg002], [guia_r001, guia_r002])
+        r002_before = next(r for r in initial_rows if r.registro == "R002")
+
+        service, _ = _build_service(
+            tmp_path,
+            guias=[guia_r001, guia_r002],
+            declared=[reg001, reg002],
+            rows=initial_rows,
+        )
+        recovered = self._make_recovered_guia("errored-g1", registro="R001")
+        updated = service.add_recovered_guia(recovered)
+
+        r002_after = next(r for r in updated if r.registro == "R002")
+        assert r002_after.summed_qty == r002_before.summed_qty, (
+            "Additive isolation: R002 summed_qty must be unchanged"
+        )

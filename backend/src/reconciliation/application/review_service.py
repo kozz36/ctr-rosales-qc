@@ -414,6 +414,64 @@ class ReviewService:
 
         return list(self._rows)
 
+    def add_recovered_guia(
+        self,
+        guia: GuiaDeRemision,
+    ) -> list[ReconciliationRow]:
+        """Append a recovered guía and remove its ErroredGuia entry; re-reconcile.
+
+        T-3 / REV-R05: this is the SOLE ReviewService mutation hook for REINTENTAR
+        recovery.  Only accepts guías whose lines all have ``requires_review=True``
+        (invariant — reconciliation validation gate; recovered guías are never
+        auto-accepted).
+
+        Sequence:
+          1. Idempotency check: if guia_id already in _guias, return current rows
+             with no side-effects (no audit event, no double-add).
+          2. Append guia to _guias.
+          3. Drop matching guia_id from _errored_guias.
+          4. Re-reconcile via _reconciler.reconcile with current _delivery_dates().
+          5. Emit ``recovered_guia`` EditEvent to the audit trail.
+          6. _persist().
+
+        Args:
+            guia: A GuiaDeRemision built by ReprocessService (all lines requires_review=True).
+
+        Returns:
+            Updated list of reconciliation rows after re-reconcile.
+        """
+        # Idempotency: guia_id already in guía list → no mutation.
+        if any(g.guia_id == guia.guia_id for g in self._guias):
+            return list(self._rows)
+
+        # Append recovered guía.
+        new_guias = list(self._guias)
+        new_guias.append(guia)
+        self._guias = new_guias
+
+        # Remove from errored_guias.
+        self._errored_guias = [
+            e for e in self._errored_guias if e.guia_id != guia.guia_id
+        ]
+
+        # Re-reconcile with the updated guía list.
+        self._rows = self._reconciler.reconcile(
+            self._declared, self._guias, delivery_dates=self._delivery_dates()
+        )
+
+        # Audit event (new kind: "recovered_guia").
+        event = EditEvent(
+            kind="recovered_guia",
+            target={"guia_id": guia.guia_id},
+            field=None,
+            old_value=None,
+            new_value=guia.model_dump(mode="json"),
+        )
+        self._audit_trail.append(event)
+        self._persist()
+
+        return list(self._rows)
+
     # ------------------------------------------------------------------
     # Resumability: restore from sidecar
     # ------------------------------------------------------------------
@@ -505,6 +563,20 @@ class ReviewService:
                 try:
                     service.apply_reassignment(guia_id, new_registro, new_fecha)
                 except (ValueError, ReconciliationError):
+                    pass
+
+            elif kind == "recovered_guia":
+                # T-4 (REV-R06): replay a recovered_guia event — re-adds the fully
+                # normalized GuiaDeRemision from sidecar JSON without re-fetching.
+                # new_value is the model_dump(mode="json") dict written at persist time.
+                raw_guia = edit.get("new_value")
+                if not isinstance(raw_guia, dict):
+                    continue
+                try:
+                    guia = GuiaDeRemision.model_validate(raw_guia)
+                    service.add_recovered_guia(guia)
+                except (ValueError, ReconciliationError, Exception):  # noqa: BLE001
+                    # Tolerate replay errors; log and continue.
                     pass
 
         return service

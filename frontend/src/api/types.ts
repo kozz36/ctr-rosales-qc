@@ -167,12 +167,28 @@ export interface UnresolvedGuiaResponse {
   first_page: number | null
 }
 
+/**
+ * A guía that resolved to 0 material lines during extraction (REV-E04).
+ *
+ * Additive read-only side-channel — MUST NOT appear in the main reconciliation
+ * grid and NEVER affects MATCH/MISMATCH logic.  Rendered in ErroredGuiasPanel.
+ *
+ * Mirrors backend ErroredGuiaResponse (schemas.py).
+ */
+export interface ErroredGuiaResponse {
+  registro: string | null
+  guia_id: string
+  source_pages: number[]
+}
+
 /** GET /runs/{run_id}/table */
 export interface ReconciliationTableResponse {
   run_id: string
   rows: ReconciliationRowResponse[]
   /** Rev-2: guías whose registro could not be determined (REV-C04 / REC-C05). */
   unresolved_guias: UnresolvedGuiaResponse[]
+  /** Rev-3 (REV-E04): guías that resolved to 0 material lines — read-only surface. */
+  errored_guias: ErroredGuiaResponse[]
 }
 
 // ---------------------------------------------------------------------------

@@ -426,13 +426,19 @@ class ReviewService:
         auto-accepted).
 
         Sequence:
-          1. Idempotency check: if guia_id already in _guias, return current rows
-             with no side-effects (no audit event, no double-add).
-          2. Append guia to _guias.
-          3. Drop matching guia_id from _errored_guias.
-          4. Re-reconcile via _reconciler.reconcile with current _delivery_dates().
-          5. Emit ``recovered_guia`` EditEvent to the audit trail.
-          6. _persist().
+          1. Resolve replace-vs-idempotent-vs-append against the REAL precondition.
+             The pipeline persists each errored block as a 0-line GuiaDeRemision that
+             IS already in ``_guias`` (``errored_guias`` is a PARALLEL side-channel for
+             the same guia_id).  So a guia_id match does NOT imply genuine idempotency:
+               - existing guía already recovered (``len(lines) > 0``)  → TRUE idempotency,
+                 no-op, return current rows (no audit event, no double-add).
+               - existing guía is the 0-line PLACEHOLDER (``len(lines) == 0``) → REPLACE
+                 it with the with-lines recovered guía.
+               - no existing guía with that guia_id → append (transient-error path).
+          2. Drop matching guia_id from _errored_guias.
+          3. Re-reconcile via _reconciler.reconcile with current _delivery_dates().
+          4. Emit ``recovered_guia`` EditEvent to the audit trail.
+          5. _persist().
 
         Args:
             guia: A GuiaDeRemision built by ReprocessService (all lines requires_review=True).
@@ -440,13 +446,25 @@ class ReviewService:
         Returns:
             Updated list of reconciliation rows after re-reconcile.
         """
-        # Idempotency: guia_id already in guía list → no mutation.
-        if any(g.guia_id == guia.guia_id for g in self._guias):
+        # Resolve the existing guía with this guia_id (if any).
+        existing_idx: int | None = next(
+            (i for i, g in enumerate(self._guias) if g.guia_id == guia.guia_id),
+            None,
+        )
+
+        if existing_idx is not None and len(self._guias[existing_idx].lines) > 0:
+            # TRUE idempotency: a with-lines guía already exists → no mutation.
             return list(self._rows)
 
-        # Append recovered guía.
         new_guias = list(self._guias)
-        new_guias.append(guia)
+        if existing_idx is not None:
+            # PLACEHOLDER (0-line) case: REPLACE in place so we never duplicate
+            # the guia_id and the with-lines version wins for re-reconcile.
+            new_guias[existing_idx] = guia
+        else:
+            # Transient-error path: the errored guía was never a 0-line placeholder
+            # in _guias → append.
+            new_guias.append(guia)
         self._guias = new_guias
 
         # Remove from errored_guias.

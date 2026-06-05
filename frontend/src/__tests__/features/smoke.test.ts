@@ -71,6 +71,7 @@ const { MOCK_TABLE, MOCK_STATUS } = vi.hoisted(() => {
       makeRow('104', 'DECLARED_MISSING'),
     ],
     unresolved_guias: [],
+    errored_guias: [],
   }
 
   const MOCK_STATUS: RunStatusResponse = {

@@ -94,6 +94,7 @@ const { MOCK_TABLE_DATA, MOCK_STATUS } = vi.hoisted(() => {
     run_id: 'smoke-run-123',
     rows: [ROW_MISMATCH_1, ROW_MISMATCH_2],
     unresolved_guias: [UNRESOLVED],
+    errored_guias: [],
   }
 
   const MOCK_STATUS: RunStatusResponse = {

@@ -950,13 +950,30 @@ class ReconciliationPipeline:
                     identity_confidence=page_identity_confidence,
                 )
             else:
-                # Continuation page: append lines; identity propagated from first page.
+                # Continuation page: apply positional gate (EXT-019 rev-2 / EXT-S19a..e).
+                # A heuristic-only Condition-B page (FORMA_HEADER_HEURISTIC, identity=None)
+                # is absorbed ONLY when the open block was started by a real QR identity
+                # AND the registro matches. Otherwise dropped — not absorbed, not a new block.
                 assert current_block is not None
-                current_block.source_pages.append(raw.source_page)
-                current_block.lines.extend(raw.lines)
-                # Rev-3 D2: propagate hashqr_url — first non-null across the block.
-                if current_block.gre_hashqr_url is None and page_hashqr_url is not None:
-                    current_block.gre_hashqr_url = page_hashqr_url
+                page_cls = next(
+                    (c for c in classifications if c.page == raw.source_page), None
+                )
+                is_heuristic_only = (
+                    page_cls is not None
+                    and page_cls.title_matched == "FORMA_HEADER_HEURISTIC"
+                    and identity is None
+                )
+                absorb = not is_heuristic_only or (
+                    current_block.identity_source == "qr"
+                    and raw.registro == current_block.registro
+                )
+                if absorb:
+                    current_block.source_pages.append(raw.source_page)
+                    current_block.lines.extend(raw.lines)
+                    # Rev-3 D2: propagate hashqr_url — first non-null across the block.
+                    if current_block.gre_hashqr_url is None and page_hashqr_url is not None:
+                        current_block.gre_hashqr_url = page_hashqr_url
+                # else: non-guía image page dropped — NOT absorbed, NOT a new block
 
             logger.debug(
                 "assemble_blocks: page %d → block guia_id=%r, source=%r, start_new=%s",

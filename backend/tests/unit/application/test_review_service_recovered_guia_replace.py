@@ -171,6 +171,25 @@ class TestAddRecoveredGuiaReplace:
         assert len(recovered.lines) == 1, "the with-lines version must replace the placeholder"
         assert all(line.requires_review for line in recovered.lines)
 
+    def test_recovered_guia_inherits_placeholder_registro(self, tmp_path: Path) -> None:
+        """REAL apply_retry builds the recovered guía with registro=None (SUNAT has no
+        registro). It MUST inherit the placeholder's authoritative registro so the
+        material reconciles INTO the registro instead of landing in unresolved."""
+        service, _ = _build_service(tmp_path)
+        # registro=None mirrors ReprocessService.apply_retry production behavior.
+        service.add_recovered_guia(_make_recovered_guia(registro=None))  # type: ignore[arg-type]
+
+        recovered = next(g for g in service.guias if g.guia_id == "T009-0741770")
+        assert recovered.registro == "232", "recovered guía must inherit placeholder registro"
+        # And it must reconcile INTO registro 232, not appear as unresolved (registro None).
+        assert not any(g.registro is None for g in service.guias)
+        row = next(
+            r for r in service.rows
+            if r.registro == "232" and r.unidad == "TN" and r.material_canonical == _DESC
+        )
+        assert row.summed_qty == Decimal("4.124")
+        assert row.status == "MATCH"
+
 
 # ---------------------------------------------------------------------------
 # Test 2 — TRUE idempotency: a SECOND call when already recovered is a no-op

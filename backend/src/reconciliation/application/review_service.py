@@ -460,6 +460,13 @@ class ReviewService:
         if existing_idx is not None:
             # PLACEHOLDER (0-line) case: REPLACE in place so we never duplicate
             # the guia_id and the with-lines version wins for re-reconcile.
+            # The placeholder carries the AUTHORITATIVE registro from pipeline
+            # assembly (Protocolo linkage); SUNAT-recovered guías have registro=None
+            # → inherit it so the recovered material reconciles INTO the registro
+            # instead of landing in unresolved (registro=None).
+            placeholder = self._guias[existing_idx]
+            if guia.registro is None and placeholder.registro is not None:
+                guia = guia.model_copy(update={"registro": placeholder.registro})
             new_guias[existing_idx] = guia
         else:
             # Transient-error path: the errored guía was never a 0-line placeholder

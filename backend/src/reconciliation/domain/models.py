@@ -392,8 +392,12 @@ class ErroredGuia(BaseModel):
     Additive side-channel only — NEVER alters grouping key, status,
     delta, qty, or any correctly-processed guía. (REC-EG-001/002/003)
 
-    BaseModel (the domain convention here) so it serialises to the extraction
-    cache and the API DTO and round-trips on cache load.
+    BaseModel (the domain convention here) so it serialises to the API DTO
+    (surfaced from the in-memory run registry on RunStatusResponse) and is
+    persisted to the extraction cache for forward durability. NOTE: the cache
+    persist is forward-looking — the current restart/cache-load path
+    (build_review_service) does NOT yet rebuild errored_guias; the consuming
+    read side is wired in change #3 (staged REINTENTAR / review-table flow).
     """
 
     registro: str | None

@@ -1535,8 +1535,10 @@ class ReconciliationPipeline:
         Also appends the vision audit record collected in stage 6.
 
         ``errored_guias`` (REC-EG-001/003) is persisted as an additive
-        side-channel so the 0-line blocks survive a cache load and reach the
-        boundary — it NEVER touches the reconciliation key/status/delta/qty.
+        side-channel for forward durability — it NEVER touches the
+        reconciliation key/status/delta/qty. The live boundary surfaces it from
+        the in-memory run registry (RunStatusResponse); the cache-load read side
+        (build_review_service) is wired in change #3.
         """
         if not ctx.has_extraction_cache():
             cache_data: dict[str, Any] = {

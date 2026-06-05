@@ -377,7 +377,10 @@ class TestMultipleErroredGuiasAcrossRegistros:
 
 class TestErroredGuiasCacheRoundTrip:
     def test_errored_guias_persisted_and_round_trips(self, tmp_path: Path) -> None:
-        """The extraction cache MUST persist errored_guias so it survives a cache load.
+        """The extraction cache MUST persist errored_guias for forward durability.
+
+        Asserts the JSON key is written and the entries re-parse via
+        model_validate (forward-looking; the cache-load consumer is #3).
 
         RED before _stage_persist writes errored_guias: the cache dict has no
         'errored_guias' key, so the persisted JSON can never round-trip the

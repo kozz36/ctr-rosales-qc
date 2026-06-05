@@ -1149,3 +1149,103 @@ class TestRetryErroredGuia:
         resp = client.post(f"/api/v1/runs/{run_id}/errored-guias/T009-0741770/retry")
 
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# FIX 1: retry_attempted wired end-to-end (failure-path UX)
+# Real ReviewService (NOT a mock) so the flag actually flips on a failed retry.
+# ---------------------------------------------------------------------------
+
+
+class TestRetryAttemptedEndToEnd:
+    """A FAILED retry must surface retry_attempted=True on the DTO, durably."""
+
+    def _seed_real_review(
+        self,
+        client: TestClient,
+        run_id: str,
+        tmp_path: Path,
+        reprocess_svc: Any,
+        guia_id: str = "T009-0741770",
+    ) -> None:
+        from reconciliation.application.review_service import ReviewService  # noqa: PLC0415
+        from reconciliation.application.run_context import RunContext  # noqa: PLC0415
+        from reconciliation.domain.models import ErroredGuia  # noqa: PLC0415
+
+        ctx = RunContext(
+            pdf_path=tmp_path / "input.pdf",
+            output_base=tmp_path / "runs",
+            run_id=run_id,
+        )
+        ctx.write_review_sidecar({"edits": [], "audit_trail": []})
+
+        errored = ErroredGuia(registro="232", guia_id=guia_id, source_pages=[4])
+        review_svc = ReviewService(
+            declared=[], guias=[], rows=[], ctx=ctx, errored_guias=[errored]
+        )
+
+        registry = client.app.state.run_registry  # type: ignore[attr-defined]
+        registry[run_id] = {
+            "status": "review",
+            "review_service": review_svc,
+            "reprocess_service": reprocess_svc,
+            "ctx": ctx,
+            "result": None,
+            "vision_calls_made": 0,
+            "warnings": [],
+            "errored_guias": [errored],
+            "error": None,
+        }
+
+    def test_failed_retry_marks_remaining_errored_attempted(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from reconciliation.application.reprocess_service import RetryResult  # noqa: PLC0415
+
+        run_id = str(uuid.uuid4())
+        mock_reprocess = MagicMock()
+        mock_reprocess.apply_retry.return_value = RetryResult(
+            recovered=False, guia_id="T009-0741770", reason="no_hashqr_url"
+        )
+        self._seed_real_review(client, run_id, tmp_path, mock_reprocess)
+
+        resp = client.post(f"/api/v1/runs/{run_id}/errored-guias/T009-0741770/retry")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["recovered"] is False
+        # The remaining_errored list on the retry response surfaces the flag.
+        assert len(body["errored_guias"]) == 1
+        assert body["errored_guias"][0]["retry_attempted"] is True
+
+    def test_failed_retry_then_table_shows_attempted(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from reconciliation.application.reprocess_service import RetryResult  # noqa: PLC0415
+
+        run_id = str(uuid.uuid4())
+        mock_reprocess = MagicMock()
+        mock_reprocess.apply_retry.return_value = RetryResult(
+            recovered=False, guia_id="T009-0741770", reason="sunat_none"
+        )
+        self._seed_real_review(client, run_id, tmp_path, mock_reprocess)
+
+        client.post(f"/api/v1/runs/{run_id}/errored-guias/T009-0741770/retry")
+
+        # A subsequent GET /table must also show retry_attempted=True.
+        table = client.get(f"/api/v1/runs/{run_id}/table")
+        assert table.status_code == 200
+        errored = table.json()["errored_guias"]
+        assert len(errored) == 1
+        assert errored[0]["guia_id"] == "T009-0741770"
+        assert errored[0]["retry_attempted"] is True
+
+    def test_never_retried_guia_shows_false(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        run_id = str(uuid.uuid4())
+        self._seed_real_review(client, run_id, tmp_path, reprocess_svc=MagicMock())
+
+        table = client.get(f"/api/v1/runs/{run_id}/table")
+        assert table.status_code == 200
+        errored = table.json()["errored_guias"]
+        assert errored[0]["retry_attempted"] is False

@@ -365,6 +365,7 @@ def get_run_status(run_id: str, registry: RunRegistry) -> RunStatusResponse:
             registro=eg.registro,
             guia_id=eg.guia_id,
             source_pages=list(eg.source_pages),
+            retry_attempted=eg.retry_attempted,
         )
         for eg in entry.get("errored_guias", [])
     ]
@@ -420,6 +421,7 @@ def get_table(run_id: str, registry: RunRegistry) -> ReconciliationTableResponse
             registro=eg.registro,
             guia_id=eg.guia_id,
             source_pages=eg.source_pages,
+            retry_attempted=eg.retry_attempted,
         )
         for eg in review_service.errored_guias
     ]
@@ -871,6 +873,12 @@ def retry_errored_guia(
         source_pages=list(errored_entry.source_pages),
     )
 
+    # FIX 1: on a FAILED retry the guía stays errored — durably mark it so the
+    # frontend gates the REINTENTAR button + shows the "SUNAT no disponible" hint.
+    # On SUCCESS the guía leaves errored entirely (no flag needed).
+    if result.recovered is False:
+        review_service.mark_retry_attempted(guia_id)
+
     # Map updated rows to response DTOs.
     updated_rows = [_row_to_response(r) for r in result.rows] if result.rows else []
 
@@ -880,6 +888,7 @@ def retry_errored_guia(
             registro=eg.registro,
             guia_id=eg.guia_id,
             source_pages=list(eg.source_pages),
+            retry_attempted=eg.retry_attempted,
         )
         for eg in review_service.errored_guias
     ]

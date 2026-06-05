@@ -497,6 +497,45 @@ class ReviewService:
 
         return list(self._rows)
 
+    def mark_retry_attempted(self, guia_id: str) -> None:
+        """Durably flag a FAILED REINTENTAR on the matching errored guía (FIX 1).
+
+        When ``ReprocessService.apply_retry`` returns ``recovered=False`` the guía
+        stays errored.  Flipping ``ErroredGuia.retry_attempted`` to ``True`` is the
+        SOLE signal the frontend uses to gate the REINTENTAR button + show the
+        "SUNAT no disponible" hint (and, downstream, the "Reprocesar con IA" button).
+
+        ``ErroredGuia`` is a pydantic model → replaced via ``model_copy`` (immutable
+        update).  A ``retry_attempted`` sidecar event is emitted and replayed in
+        ``restore_from_sidecar`` so the flag survives a restart.  This is an additive
+        UX side-channel — it NEVER touches the group key, status, delta, or qty of any
+        reconciliation row.  Unknown ``guia_id`` is a no-op.
+        """
+        idx = next(
+            (i for i, e in enumerate(self._errored_guias) if e.guia_id == guia_id),
+            None,
+        )
+        if idx is None:
+            return  # no-op: guia_id already recovered or never errored
+
+        if self._errored_guias[idx].retry_attempted:
+            # Idempotent: already flagged → no duplicate event/persist.
+            return
+
+        updated = list(self._errored_guias)
+        updated[idx] = updated[idx].model_copy(update={"retry_attempted": True})
+        self._errored_guias = updated
+
+        event = EditEvent(
+            kind="retry_attempted",
+            target={"guia_id": guia_id},
+            field=None,
+            old_value=None,
+            new_value=None,
+        )
+        self._audit_trail.append(event)
+        self._persist()
+
     # ------------------------------------------------------------------
     # Resumability: restore from sidecar
     # ------------------------------------------------------------------
@@ -600,8 +639,15 @@ class ReviewService:
                 try:
                     guia = GuiaDeRemision.model_validate(raw_guia)
                     service.add_recovered_guia(guia)
-                except (ValueError, ReconciliationError, Exception):  # noqa: BLE001
-                    # Tolerate replay errors; log and continue.
+                except (ValueError, ReconciliationError):
+                    # Tolerate replay errors; continue.
+                    pass
+
+            elif kind == "retry_attempted":
+                # FIX 1: replay the failed-retry flag so it survives a restart.
+                try:
+                    service.mark_retry_attempted(guia_id)
+                except (ValueError, ReconciliationError):
                     pass
 
         return service

@@ -150,6 +150,14 @@ class ErroredGuiaResponse(BaseModel):
     source_pages: list[int] = Field(
         description="Physical page indices contributing to this 0-line guía."
     )
+    retry_attempted: bool = Field(
+        default=False,
+        description=(
+            "True once a REINTENTAR (SUNAT recovery) was attempted and FAILED for "
+            "this guía. Gates the frontend REINTENTAR button + 'SUNAT no disponible' "
+            "hint. Additive UX flag — never alters qty/status/delta of any row."
+        ),
+    )
 
 
 class RunStatusResponse(BaseModel):

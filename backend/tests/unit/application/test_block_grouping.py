@@ -275,16 +275,16 @@ class TestEXTS17SectionBoundary:
     def test_section_boundary_starts_new_block(self, tmp_path: Path) -> None:
         """Pages 0+1 in registro '232'; page 2 in registro '231'.
 
-        Rev-5 (FIX 1 / QR-evidence guard): every page is a non-QR page with NO QR
+        Rev-6 (INVARIANT QR-evidence guard): every page is a non-QR page with NO QR
         evidence at all (no compact QR and — via this fake's non-cache path — no URL
         ``hashqr=`` QR).  A page with material but no QR evidence is NOT a guía: its
-        OCR "lines" are a spurious table.  p0 still opens a block at run-start
-        (condition a), p1 is DROPPED (no QR evidence, same registro), and p2 opens a
-        new block via the section boundary (registro 231 ≠ 232).  Two blocks total,
-        spanning both registros.
+        OCR "lines" are a spurious table.  The guard is now positional-independent:
+        NO page opens a block — not at run-start (p0), not at the section boundary
+        (p2), not as a continuation (p1).  ZERO blocks total.
+
+        INVERTED from rev-5 (which let p0 open at run-start and p2 open at the
+        section boundary → 2 phantom blocks).  RED against the rev-5 code.
         """
-        # No QR on any page and no URL evidence: spurious tables.  Only run-start
-        # (p0) and the section-boundary page (p2) open blocks; p1 is dropped.
         result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE, _GUIA_PAGE],
             identity_seq=[None, None, None],
@@ -292,17 +292,18 @@ class TestEXTS17SectionBoundary:
             page_to_registro={0: "232", 1: "232", 2: "231"},
             tmp_path=tmp_path,
         )
-        assert len(result.guias) == 2, (
-            f"Expected 2 blocks (p1 dropped — no QR evidence; section boundary keeps p2); "
+        assert len(result.guias) == 0, (
+            f"Expected 0 blocks (no QR evidence on any page — guard is invariant "
+            f"across run-start/section-boundary/continuation); "
             f"got {len(result.guias)}: {[(g.guia_id, g.registro) for g in result.guias]}"
         )
-        registros = {g.registro for g in result.guias}
-        assert registros == {"232", "231"}
 
     def test_section_232_no_qr_evidence_second_page_dropped(self, tmp_path: Path) -> None:
-        """Rev-5 (FIX 1): reg 232 has two non-QR material pages with NO QR evidence →
-        only ONE block (p0 via run-start); p1 is DROPPED (no QR evidence), NOT opened
-        as a phantom ocr_fallback guía and NOT absorbed."""
+        """Rev-6 (INVARIANT guard): reg 232 has two non-QR material pages with NO QR
+        evidence → ZERO blocks for reg 232.  p0 (run-start) no longer opens a phantom
+        block; p1 is dropped too.
+
+        INVERTED from rev-5 (which let p0 open at run-start → 1 block)."""
         result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE, _GUIA_PAGE],
             identity_seq=[None, None, None],
@@ -311,12 +312,9 @@ class TestEXTS17SectionBoundary:
             tmp_path=tmp_path,
         )
         blocks_232 = [g for g in result.guias if g.registro == "232"]
-        assert len(blocks_232) == 1, (
-            f"reg 232: only p0 opens a block (p1 dropped — no QR evidence); "
-            f"got {[(g.guia_id, g.source_pages) for g in blocks_232]}"
-        )
-        assert blocks_232[0].source_pages == [0], (
-            f"reg-232 block must be p0 only (p1 dropped); got {blocks_232[0].source_pages}"
+        assert len(blocks_232) == 0, (
+            f"reg 232: NO block opens (no QR evidence on either page — invariant "
+            f"guard); got {[(g.guia_id, g.source_pages) for g in blocks_232]}"
         )
 
 
@@ -363,16 +361,23 @@ class TestEXTS18NoGuiaPagePattern:
 
 
 class TestOcrFallback:
-    def test_none_decode_sets_ocr_fallback(self, tmp_path: Path) -> None:
-        """When decode_identity returns None → identity_source='ocr_fallback'."""
+    def test_none_decode_no_qr_evidence_page_dropped(self, tmp_path: Path) -> None:
+        """Rev-6 (INVARIANT guard): a single non-QR material page with NO QR evidence
+        (this fake's non-cache path yields hashqr_url None) is DROPPED — it does NOT
+        open a phantom ocr_fallback block.
+
+        INVERTED from the prior assertion (1 block, identity_source='ocr_fallback')
+        which codified the phantom-block behavior. RED against the rev-5 code."""
         result = _run_pipeline(
             pages=[_GUIA_PAGE],
             identity_seq=[None],
             per_page_lines=[[_MAT_LINE]],
             tmp_path=tmp_path,
         )
-        assert len(result.guias) == 1
-        assert result.guias[0].identity_source == "ocr_fallback"
+        assert len(result.guias) == 0, (
+            f"No-QR-evidence material page must be DROPPED (invariant guard); "
+            f"got {len(result.guias)}: {[g.guia_id for g in result.guias]}"
+        )
 
     def test_qr_decode_sets_qr_source(self, tmp_path: Path) -> None:
         """When decode_identity returns a GuiaIdentity → identity_source='qr'."""
@@ -386,28 +391,40 @@ class TestOcrFallback:
         assert result.guias[0].identity_source == "qr"
         assert result.guias[0].guia_id == "T009-0741770"
 
-    def test_no_identity_adapter_uses_fallback(self, tmp_path: Path) -> None:
-        """When no identity adapter is wired → OCR fallback (identity_source='ocr_fallback')."""
+    def test_no_identity_adapter_no_qr_evidence_page_dropped(self, tmp_path: Path) -> None:
+        """Rev-6 (INVARIANT guard): when no identity adapter is wired, a material page
+        still has NO QR evidence (hashqr_url None) → DROPPED.
+
+        INVERTED from the prior assertion (1 block, identity_source='ocr_fallback')."""
         result = _run_pipeline(
             pages=[_GUIA_PAGE],
             identity_seq=None,  # no adapter
             per_page_lines=[[_MAT_LINE]],
             tmp_path=tmp_path,
         )
-        assert result.guias[0].identity_source == "ocr_fallback"
+        assert len(result.guias) == 0, (
+            f"No-QR-evidence material page (no adapter) must be DROPPED; "
+            f"got {len(result.guias)}: {[g.guia_id for g in result.guias]}"
+        )
 
-    def test_ocr_fallback_guia_id_unique_per_page_without_qr(self, tmp_path: Path) -> None:
-        """Two pages with None decode but different registros → two separate blocks with unique ids."""
+    def test_no_qr_evidence_pages_across_section_boundary_dropped(self, tmp_path: Path) -> None:
+        """Rev-6 (INVARIANT guard): two non-QR material pages with NO QR evidence in
+        different registros (section boundary) → ZERO blocks.  Neither run-start nor
+        the section boundary opens a phantom block.
+
+        INVERTED from the prior assertion (2 blocks, unique ids) which codified the
+        unguarded section-boundary behavior. RED against the rev-5 code."""
         result = _run_pipeline(
             pages=[_GUIA_PAGE, _GUIA_PAGE],
             identity_seq=[None, None],
             per_page_lines=[[_MAT_LINE], [_MAT_LINE]],
-            page_to_registro={0: "232", 1: "231"},  # section boundary → 2 blocks
+            page_to_registro={0: "232", 1: "231"},  # section boundary
             tmp_path=tmp_path,
         )
-        assert len(result.guias) == 2
-        ids = [g.guia_id for g in result.guias]
-        assert len(set(ids)) == 2, f"Expected unique guia_ids; got {ids}"
+        assert len(result.guias) == 0, (
+            f"No-QR-evidence pages must be DROPPED at run-start AND section boundary; "
+            f"got {len(result.guias)}: {[(g.guia_id, g.registro) for g in result.guias]}"
+        )
 
 
 # ---------------------------------------------------------------------------

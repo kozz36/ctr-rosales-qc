@@ -151,27 +151,32 @@ class TestEXTS19aConditionBNoQrBlockNotAbsorbed:
     """EXT-S19a: a FORMA_HEADER_HEURISTIC page with no preceding QR block must be dropped."""
 
     def test_no_open_block_condition_b_produces_no_guia(self) -> None:
-        """Condition-B continuation, ocr_fallback anchor, same registro → NOT absorbed.
+        """Condition-B continuation, QR anchor, same registro → NOT absorbed.
 
-        p0 opens a block with identity_source="ocr_fallback" (no QR). p1 is a
-        FORMA_HEADER_HEURISTIC page in the SAME registro. The positional gate
-        MUST prevent absorption because the anchor's identity_source != "qr".
+        p0 opens a QR block. p1 is a FORMA_HEADER_HEURISTIC page in the SAME
+        registro with NO QR evidence (no compact QR, no URL QR) and 0 lines.
+        The continuation gate MUST drop p1 (identity is None).
+
+        rev-6: the anchor (p0) carries a QR identity — a no-QR-evidence page can
+        no longer open a block at run-start (invariant guard), so the anchor is
+        modelled as a genuine QR guía to keep exercising the continuation gate.
         """
+        qr0 = _identity("T112", "0001")
         classifications = [
             _cls(0, "QR_IDENTITY"),
             _cls(1, "FORMA_HEADER_HEURISTIC"),
         ]
 
-        p0_ocr = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[_MAT_LINE], registro="232")
+        p0_qr = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[_MAT_LINE], registro="232")
         p1_heur = _RawGuia(guia_id="", source_page=1, image=_PNG, lines=[], registro="232")
 
         decode_map = {
-            0: _decode_no_qr(),
+            0: _decode_qr(qr0),
             1: _decode_no_qr(),
         }
         pipeline = _make_pipeline()
         blocks = pipeline._stage_assemble_blocks(
-            [p0_ocr, p1_heur], classifications, decode_map=decode_map
+            [p0_qr, p1_heur], classifications, decode_map=decode_map
         )
 
         assert len(blocks) == 1, (
@@ -183,16 +188,21 @@ class TestEXTS19aConditionBNoQrBlockNotAbsorbed:
         )
 
     def test_condition_b_same_registro_ocr_fallback_anchor_not_absorbed(self) -> None:
-        """Condition-B page same registro, preceding block is ocr_fallback → gate drops it."""
+        """Condition-B page same registro, preceding block is a QR guía → gate drops it.
+
+        rev-6: the anchor carries a QR identity (a no-QR-evidence page can no longer
+        open a block at run-start under the invariant guard).
+        """
+        qr0 = _identity("T112", "0001")
         p0 = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[_MAT_LINE], registro="232")
         p1 = _RawGuia(guia_id="", source_page=1, image=_PNG, lines=[], registro="232")
 
         classifications = [
-            _cls(0, "GUIA DE REMISION"),   # Condition C — text title
+            _cls(0, "QR_IDENTITY"),   # QR anchor opens the block
             _cls(1, "FORMA_HEADER_HEURISTIC"),  # Condition B — no identity
         ]
         decode_map = {
-            0: _decode_no_qr(),
+            0: _decode_qr(qr0),
             1: _decode_no_qr(),
         }
         pipeline = _make_pipeline()
@@ -203,7 +213,7 @@ class TestEXTS19aConditionBNoQrBlockNotAbsorbed:
         assert len(blocks) == 1
         # p1 dropped by positional gate (no QR anchor)
         assert 1 not in blocks[0].source_pages, (
-            f"Condition-B page must NOT be absorbed into an ocr_fallback block: {blocks[0].source_pages}"
+            f"Condition-B page must NOT be absorbed into a QR block: {blocks[0].source_pages}"
         )
 
 
@@ -229,7 +239,13 @@ class TestConditionCContinuationAbsorbed:
     """
 
     def test_text_title_continuation_ocr_anchor_same_registro_dropped(self) -> None:
-        """ocr_fallback block + text-title GUIA continuation, same registro → DROPPED (source_pages=[0])."""
+        """QR block + text-title GUIA continuation, same registro → DROPPED (source_pages=[0]).
+
+        rev-6: the anchor (p0) carries a QR identity (a no-QR-evidence page can no
+        longer open a block at run-start under the invariant guard); the text-title
+        non-QR continuation p1 (identity None) is still DROPPED by the gate.
+        """
+        qr0 = _identity("T112", "0001")
         p0 = _RawGuia(
             guia_id="", source_page=0, image=_PNG, lines=[_MAT_LINE], registro="232"
         )
@@ -239,11 +255,11 @@ class TestConditionCContinuationAbsorbed:
         )
 
         classifications = [
-            _cls(0, "GUIA DE REMISION"),  # Condition C — text title opens an ocr_fallback block
+            _cls(0, "QR_IDENTITY"),  # QR anchor opens the block
             _cls(1, "GUIA DE REMISION"),  # Condition C — text-title continuation (identity None)
         ]
         decode_map = {
-            0: _decode_no_qr(),
+            0: _decode_qr(qr0),
             1: _decode_no_qr(),
         }
 
@@ -733,6 +749,127 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         )
         assert blocks[0].source_pages == [0], (
             f"No-QR-evidence page must be DROPPED; source_pages={blocks[0].source_pages}"
+        )
+
+    # -----------------------------------------------------------------------
+    # rev-6 — QR-evidence guard is INVARIANT across ALL start_new_block positions
+    # (run-start condition a, section-boundary condition b, continuation condition d).
+    #
+    # Both blind judges (round 5): the rev-5 guard was applied ONLY in the
+    # continuation path (condition d).  A no-QR-evidence material page landing at
+    # run-start or a section boundary opened a PHANTOM block UNFLAGGED (its lines
+    # were admitted with requires_review=False) → silent bogus material in the
+    # registro total.  The guard must be positional-independent: a page with NO QR
+    # evidence (identity None AND hashqr_url None) NEVER opens or extends a block,
+    # at ANY position.
+    # -----------------------------------------------------------------------
+
+    def test_no_qr_evidence_material_page_at_run_start_dropped(self) -> None:
+        """rev-6: a no-QR-evidence material page as the FIRST page of the run is
+        DROPPED — it must NOT open a phantom block at run-start (condition a).
+
+        RED against the rev-5 code (guard only in condition d): run-start opened a
+        block unconditionally regardless of QR evidence.
+        """
+        line_a = _MAT_LINE.model_copy(update={"cantidad": Decimal("150")})
+        qr_b = _identity("T112", "0002")
+        line_b = _MAT_LINE.model_copy(update={"cantidad": Decimal("100")})
+
+        # p0: spurious non-materials table, NO compact QR, NO URL QR — at RUN START.
+        p_a = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[line_a], registro="232")
+        p_b = _RawGuia(guia_id="", source_page=1, image=_PNG, lines=[line_b], registro="232")
+
+        classifications = [
+            _cls(0, "FORMA_HEADER_HEURISTIC"),
+            _cls(1, "QR_IDENTITY"),
+        ]
+        decode_map = {
+            0: _decode_no_qr(hashqr_url=None),  # NO QR evidence at run-start
+            1: _decode_qr(qr_b),
+        }
+
+        pipeline = _make_pipeline()
+        blocks = pipeline._stage_assemble_blocks(
+            [p_a, p_b], classifications, decode_map=decode_map
+        )
+
+        assert len(blocks) == 1, (
+            "A no-QR-evidence material page at run-start must NOT open a phantom "
+            f"block; got {len(blocks)}: {[(b.guia_id, b.source_pages) for b in blocks]}"
+        )
+        assert blocks[0].guia_id == "T112-0002", (
+            f"Only the QR guía must survive; got {blocks[0].guia_id!r}"
+        )
+        assert 0 not in blocks[0].source_pages, (
+            f"run-start no-evidence page must be DROPPED; source_pages={blocks[0].source_pages}"
+        )
+
+    def test_no_qr_evidence_material_page_at_section_boundary_dropped(self) -> None:
+        """rev-6: a no-QR-evidence material page at a SECTION BOUNDARY (registro
+        change) is DROPPED — it must NOT open a phantom block (condition b).
+
+        RED against the rev-5 code (guard only in condition d): a section-boundary
+        page opened a block unconditionally regardless of QR evidence.
+        """
+        qr_a = _identity("T112", "0001")
+        line_a = _MAT_LINE.model_copy(update={"cantidad": Decimal("100")})
+        # p1: spurious table at a section boundary (registro 231 ≠ 232), NO QR evidence.
+        line_b = _MAT_LINE.model_copy(update={"cantidad": Decimal("150")})
+
+        p_a = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[line_a], registro="232")
+        p_b = _RawGuia(guia_id="", source_page=1, image=_PNG, lines=[line_b], registro="231")
+
+        classifications = [
+            _cls(0, "QR_IDENTITY"),
+            _cls(1, "FORMA_HEADER_HEURISTIC"),
+        ]
+        decode_map = {
+            0: _decode_qr(qr_a),
+            1: _decode_no_qr(hashqr_url=None),  # NO QR evidence at section boundary
+        }
+
+        pipeline = _make_pipeline()
+        blocks = pipeline._stage_assemble_blocks(
+            [p_a, p_b], classifications, decode_map=decode_map
+        )
+
+        assert len(blocks) == 1, (
+            "A no-QR-evidence material page at a section boundary must NOT open a "
+            f"phantom block; got {len(blocks)}: {[(b.guia_id, b.source_pages) for b in blocks]}"
+        )
+        assert blocks[0].guia_id == "T112-0001"
+        assert blocks[0].registro == "232", (
+            f"Only the QR guía (reg 232) must survive; got registro {blocks[0].registro!r}"
+        )
+
+    def test_ocr_fallback_material_at_run_start_opens_block_and_flags(self) -> None:
+        """rev-6: an ocr_fallback material page (identity None, lines>0, hashqr_url
+        PRESENT) as the FIRST page of the run opens its own block AND its lines are
+        flagged requires_review — the invariant guard passes with QR evidence, and
+        the requires_review flagging applies at run-start (not just continuation).
+        """
+        line_a = _MAT_LINE.model_copy(update={"cantidad": Decimal("150")})
+        p_a = _RawGuia(guia_id="", source_page=0, image=_PNG, lines=[line_a], registro="232")
+
+        classifications = [_cls(0, "FORMA_HEADER_HEURISTIC")]
+        decode_map = {
+            0: _decode_no_qr(hashqr_url="https://e-factura.sunat.gob.pe/v1/?hashqr=AAA"),
+        }
+
+        pipeline = _make_pipeline()
+        blocks = pipeline._stage_assemble_blocks(
+            [p_a], classifications, decode_map=decode_map
+        )
+
+        assert len(blocks) == 1, (
+            "An ocr_fallback material page WITH URL QR evidence at run-start must "
+            f"open its own block; got {len(blocks)}"
+        )
+        block = blocks[0]
+        assert block.identity_source == "ocr_fallback"
+        assert block.source_pages == [0]
+        assert all(line.requires_review for line in block.lines), (
+            "run-start ocr_fallback material lines MUST be flagged requires_review"
         )
 
     def test_url_qr_evidence_material_page_opens_own_block(self) -> None:

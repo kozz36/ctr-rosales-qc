@@ -960,6 +960,26 @@ class ReconciliationPipeline:
                 and page_hashqr_url is not None
             )
 
+            # INVARIANT QR-evidence gate (rev-6): a page is a guía ONLY when it
+            # carries QR evidence — either a decoded compact identity QR
+            # (`identity is not None`) or, when the compact QR failed, the URL
+            # `hashqr=` QR (`is_ocr_fallback_material`, which requires
+            # `page_hashqr_url is not None`).  A page with NO QR evidence (a photo,
+            # or a no-QR sheet whose OCR emitted a spurious non-materials table)
+            # NEVER opens or extends a block, at ANY position — run-start,
+            # section-boundary, or continuation.  Dropped uniformly.  (rev-6: the
+            # guard is invariant, not positional — previously it was applied only
+            # in the continuation path, so a no-evidence page landing at run-start
+            # or a section boundary opened a PHANTOM block and admitted its lines
+            # UNFLAGGED → silent bogus material in the registro total.)
+            has_guia_evidence = identity is not None or is_ocr_fallback_material
+            if not has_guia_evidence:
+                logger.debug(
+                    "assemble_blocks: dropped non-guía page %d (no QR evidence)",
+                    raw.source_page,
+                )
+                continue
+
             # Determine whether to start a new block
             start_new_block = current_block is None  # (a) run-start
 
@@ -1179,7 +1199,7 @@ class ReconciliationPipeline:
         for an ocr_fallback block carry ``requires_review=True``; QR-identified
         blocks stay ``False``.
         """
-        preserve_review = getattr(block, "identity_source", None) == "ocr_fallback"
+        preserve_review = block.identity_source == "ocr_fallback"
         sunat_lines = []
         for item in official.lines:
             normalized = _normalize_sunat_unit(item.unidad)

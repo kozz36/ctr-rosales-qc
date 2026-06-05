@@ -268,10 +268,13 @@ class TestPipelineStageSequencing:
         assert len(result.declared) == 1
 
     def test_guia_page_creates_guia(self, tmp_path: Path) -> None:
+        # rev-6: a GUIA page must carry QR evidence to open a block (invariant
+        # QR-evidence guard).  FakeIdentityPerPage supplies a decoded QR identity.
         pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
         line = _make_line()
         pipeline, ctx = _build_pipeline(
-            pages=pages, table_lines=[line], tmp_path=tmp_path
+            pages=pages, table_lines=[line], tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         result = pipeline.run(ctx)
         assert result.classifications[0].kind == "GUIA"
@@ -293,8 +296,10 @@ class TestPipelineStageSequencing:
         vision = FakeVisionSerial(
             results=[VisionResult(date=date(2024, 3, 10), confidence=0.99, raw="10/03/2024")]
         )
+        # rev-6: QR evidence required to open the block (invariant guard).
         pipeline, ctx = _build_pipeline(
-            pages=pages, table_lines=[line], vision=vision, tmp_path=tmp_path
+            pages=pages, table_lines=[line], vision=vision, tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         result = pipeline.run(ctx)
         # Year-fix: vision returned 2024-03-10 but inference reconstructs to the most
@@ -423,8 +428,10 @@ class TestVisionCostCap:
         """Cap=0 means NO vision calls; pipeline completes, guía fecha=None."""
         pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
         line = _make_line()
+        # rev-6: QR evidence required to open the block (invariant guard).
         pipeline, ctx = _build_pipeline(
-            pages=pages, table_lines=[line], max_vision_calls=0, tmp_path=tmp_path
+            pages=pages, table_lines=[line], max_vision_calls=0, tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         result = pipeline.run(ctx)  # must NOT raise
         assert result.vision_calls_made == 0
@@ -712,6 +719,7 @@ def _build_pipeline_with_registro_extractor(
     page_to_registro: dict[int, str] | None = None,
     vision: VisionLLMPort | None = None,
     tmp_path: Path | None = None,
+    identity: Any | None = None,
 ) -> tuple[ReconciliationPipeline, RunContext]:
     cfg = AppConfig()
     doc = FakeDocumentSource(pages)
@@ -722,6 +730,7 @@ def _build_pipeline_with_registro_extractor(
         vision=vis,
         config=cfg,
         page_to_registro=page_to_registro or {},
+        identity=identity,
     )
     base = tmp_path or Path(".")
     ctx = RunContext(pdf_path=base / "input.pdf", output_base=base / "runs")
@@ -839,11 +848,13 @@ class TestPageToRegistroWiring:
         pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]  # page 0 is GUIA
         extractor = FakeExtractor(table_lines=[_make_line()])
         page_to_registro = {0: "232"}
+        # rev-6: QR evidence required to open the block (invariant guard).
         pipeline, ctx = _build_pipeline_with_registro_extractor(
             pages=pages,
             extractor=extractor,  # type: ignore[arg-type]
             page_to_registro=page_to_registro,
             tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         result = pipeline.run(ctx)
         assert len(result.guias) == 1
@@ -853,11 +864,13 @@ class TestPageToRegistroWiring:
         """GUIA page not in map → guia.registro remains None (surfaces as UNCLASSIFIED)."""
         pages = [{"text": _GUIA_TEXT, "image": b"\x89PNG"}]
         extractor = FakeExtractor(table_lines=[_make_line()])
+        # rev-6: QR evidence required to open the block (invariant guard).
         pipeline, ctx = _build_pipeline_with_registro_extractor(
             pages=pages,
             extractor=extractor,  # type: ignore[arg-type]
             page_to_registro={},
             tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         result = pipeline.run(ctx)
         assert result.guias[0].registro is None
@@ -904,12 +917,14 @@ class TestPageToRegistroWiring:
             results=[VisionResult(date=_FECHA, confidence=0.99, raw="28/05/2026")]
         )
 
+        # rev-6: QR evidence required to open the GUIA block (invariant guard).
         pipeline, ctx = _build_pipeline_with_registro_extractor(
             pages=pages,
             extractor=extractor,
             page_to_registro=page_to_registro,
             vision=vision,
             tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         result = pipeline.run(ctx)
 
@@ -1189,6 +1204,7 @@ class TestOcrDisabledPipelineStage:
         self,
         pages: list[dict],
         tmp_path: Path,
+        identity: Any | None = None,
     ) -> tuple[ReconciliationPipeline, RunContext]:
         cfg = AppConfig(ocr=OcrConfig(enabled=False))
         doc = FakeDocumentSource(pages)
@@ -1201,6 +1217,7 @@ class TestOcrDisabledPipelineStage:
             vision=vision,
             config=cfg,
             deskew=None,  # explicitly no deskew (mirrors what build_pipeline wires)
+            identity=identity,
         )
         ctx = RunContext(pdf_path=tmp_path / "input.pdf", output_base=tmp_path / "runs")
         return pipeline, ctx
@@ -1258,10 +1275,16 @@ class TestOcrDisabledPipelineStage:
     ) -> None:
         """End-to-end run with ocr.enabled=False: GUIA page produces a guía with
         empty lines and no OCR warnings in the result.
+
+        rev-6: in OCR-disabled (SUNAT-authoritative) mode the guía is identified by
+        its QR (which also drives the SUNAT fetch).  A real guía therefore carries
+        QR evidence; the invariant guard admits it even with 0 OCR lines (identity
+        is not None → has_guia_evidence True).  FakeIdentityPerPage models that QR.
         """
         pipeline, ctx = self._build_ocr_disabled_pipeline(
             pages=[{"text": _GUIA_TEXT, "image": b"\x89PNG\r\n"}],
             tmp_path=tmp_path,
+            identity=FakeIdentityPerPage(),
         )
         result = pipeline.run(ctx)
         assert result.classifications[0].kind == "GUIA"

@@ -6,6 +6,7 @@ Covers:
   - audit trail accumulation
   - sidecar round-trip (write → read → verify)
   - restore_from_sidecar (restart/resumability)
+  - errored_guias constructor state + read-only property (REV-E03)
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import pytest
 from reconciliation.application.review_service import ReviewService, _parse_date
 from reconciliation.application.run_context import RunContext
 from reconciliation.domain.models import (
+    ErroredGuia,
     GuiaDeRemision,
     MaterialLine,
     ReconciliationRow,
@@ -624,3 +626,130 @@ class TestParseDate:
     def test_invalid_type_raises(self) -> None:
         with pytest.raises(ValueError, match="Expected date"):
             _parse_date(12345)
+
+
+# ---------------------------------------------------------------------------
+# errored_guias constructor state + read-only property (REV-E03)
+# ---------------------------------------------------------------------------
+
+
+def _make_errored_guia(
+    guia_id: str = "eg1",
+    registro: str | None = "R001",
+    source_pages: list[int] | None = None,
+) -> ErroredGuia:
+    return ErroredGuia(
+        guia_id=guia_id,
+        registro=registro,
+        source_pages=source_pages or [5],
+    )
+
+
+class TestReviewServiceErroredGuias:
+    """ReviewService holds errored_guias as read-only constructor state (REV-E03)."""
+
+    def test_defaults_to_empty_list_when_none_passed(self, tmp_path: Path) -> None:
+        """No errored_guias arg → .errored_guias returns []."""
+        service, _ = _build_service(tmp_path)
+        assert service.errored_guias == []
+
+    def test_stores_supplied_list(self, tmp_path: Path) -> None:
+        """errored_guias passed to __init__ are accessible via property."""
+        eg = _make_errored_guia()
+        ctx = RunContext(
+            pdf_path=tmp_path / "in.pdf",
+            output_base=tmp_path / "runs",
+            run_id="eg-test",
+        )
+        ctx.write_review_sidecar({"edits": [], "audit_trail": []})
+        guias = [_make_guia()]
+        declared = [_make_registro()]
+        reconciler = ReconciliationService()
+        rows = reconciler.reconcile(declared, guias)
+        service = ReviewService(
+            declared=declared,
+            guias=guias,
+            rows=rows,
+            ctx=ctx,
+            errored_guias=[eg],
+        )
+        assert len(service.errored_guias) == 1
+        assert service.errored_guias[0].guia_id == "eg1"
+
+    def test_property_returns_copy_not_mutating_original(self, tmp_path: Path) -> None:
+        """Property must return an independent copy so callers cannot mutate internal state."""
+        eg = _make_errored_guia()
+        ctx = RunContext(
+            pdf_path=tmp_path / "in.pdf",
+            output_base=tmp_path / "runs",
+            run_id="eg-copy-test",
+        )
+        ctx.write_review_sidecar({"edits": [], "audit_trail": []})
+        guias = [_make_guia()]
+        declared = [_make_registro()]
+        reconciler = ReconciliationService()
+        rows = reconciler.reconcile(declared, guias)
+        service = ReviewService(
+            declared=declared,
+            guias=guias,
+            rows=rows,
+            ctx=ctx,
+            errored_guias=[eg],
+        )
+        retrieved = service.errored_guias
+        retrieved.clear()
+        # Internal list must be unchanged
+        assert len(service.errored_guias) == 1
+
+    def test_restore_from_sidecar_preserves_errored_guias(self, tmp_path: Path) -> None:
+        """restore_from_sidecar with errored_guias param preserves the list (REV-E03 restart)."""
+        eg1 = _make_errored_guia("eg1")
+        eg2 = _make_errored_guia("eg2", source_pages=[11])
+        ctx = RunContext(
+            pdf_path=tmp_path / "in.pdf",
+            output_base=tmp_path / "runs",
+            run_id="eg-restart-test",
+        )
+        ctx.write_review_sidecar({"edits": [], "audit_trail": []})
+        guias = [_make_guia()]
+        declared = [_make_registro()]
+        reconciler = ReconciliationService()
+        rows = reconciler.reconcile(declared, guias)
+
+        service = ReviewService.restore_from_sidecar(
+            declared=declared,
+            guias=guias,
+            rows=rows,
+            ctx=ctx,
+            errored_guias=[eg1, eg2],
+        )
+        assert len(service.errored_guias) == 2
+        ids = {eg.guia_id for eg in service.errored_guias}
+        assert ids == {"eg1", "eg2"}
+
+    def test_restore_from_sidecar_defaults_empty_when_not_passed(self, tmp_path: Path) -> None:
+        """restore_from_sidecar without errored_guias arg yields []."""
+        ctx = RunContext(
+            pdf_path=tmp_path / "in.pdf",
+            output_base=tmp_path / "runs",
+            run_id="eg-empty-test",
+        )
+        ctx.write_review_sidecar({"edits": [], "audit_trail": []})
+        guias = [_make_guia()]
+        declared = [_make_registro()]
+        reconciler = ReconciliationService()
+        rows = reconciler.reconcile(declared, guias)
+
+        service = ReviewService.restore_from_sidecar(
+            declared=declared,
+            guias=guias,
+            rows=rows,
+            ctx=ctx,
+        )
+        assert service.errored_guias == []
+
+    def test_existing_init_signature_unchanged(self, tmp_path: Path) -> None:
+        """4-arg __init__ still works without errored_guias (backward-compat)."""
+        service, _ = _build_service(tmp_path)
+        # Verify rows still accessible — other tests depend on this shape
+        assert isinstance(service.rows, list)

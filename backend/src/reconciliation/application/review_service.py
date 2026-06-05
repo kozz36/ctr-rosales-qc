@@ -28,6 +28,7 @@ from typing import Any
 
 from reconciliation.domain.errors import ReconciliationError
 from reconciliation.domain.models import (
+    ErroredGuia,
     GuiaDeRemision,
     ReconciliationRow,
     Registro,
@@ -113,6 +114,7 @@ class ReviewService:
         guias: list[GuiaDeRemision],
         rows: list[ReconciliationRow],
         ctx: RunContext,
+        errored_guias: list[ErroredGuia] | None = None,
     ) -> None:
         self._declared: list[Registro] = list(declared)
         self._guias: list[GuiaDeRemision] = list(guias)
@@ -120,6 +122,7 @@ class ReviewService:
         self._ctx = ctx
         self._reconciler = ReconciliationService()
         self._audit_trail: list[EditEvent] = []
+        self._errored_guias: list[ErroredGuia] = list(errored_guias) if errored_guias else []
 
     # ------------------------------------------------------------------
     # Read-only accessors
@@ -134,6 +137,14 @@ class ReviewService:
     def guias(self) -> list[GuiaDeRemision]:
         """Current guías (after all applied reassignments)."""
         return list(self._guias)
+
+    @property
+    def errored_guias(self) -> list[ErroredGuia]:
+        """Guías that resolved to 0 material lines (REV-E03).
+
+        Read-only constructor state — never modified by edit/reassign events.
+        """
+        return list(self._errored_guias)
 
     def get_audit_trail(self) -> list[dict[str, Any]]:
         """Return the ordered list of edit events as serialisable dicts."""
@@ -414,6 +425,7 @@ class ReviewService:
         guias: list[GuiaDeRemision],
         rows: list[ReconciliationRow],
         ctx: RunContext,
+        errored_guias: list[ErroredGuia] | None = None,
     ) -> "ReviewService":
         """Reconstruct a ReviewService by replaying edits from the sidecar.
 
@@ -424,15 +436,24 @@ class ReviewService:
         ReviewService is returned.
 
         Args:
-            declared: Registro list from the extraction cache.
-            guias:    GuiaDeRemision list from the extraction cache.
-            rows:     Initial ReconciliationRow list.
-            ctx:      RunContext with the sidecar path.
+            declared:      Registro list from the extraction cache.
+            guias:         GuiaDeRemision list from the extraction cache.
+            rows:          Initial ReconciliationRow list.
+            ctx:           RunContext with the sidecar path.
+            errored_guias: Guías that resolved to 0 lines (REV-E03).  Hydrated
+                           from the extraction cache by build_review_service;
+                           constructor state, NOT replayed as edit events.
 
         Returns:
             A ReviewService with all prior edits already applied.
         """
-        service = cls(declared=declared, guias=guias, rows=rows, ctx=ctx)
+        service = cls(
+            declared=declared,
+            guias=guias,
+            rows=rows,
+            ctx=ctx,
+            errored_guias=errored_guias,
+        )
         sidecar = ctx.read_review_sidecar()
         edits: list[dict[str, Any]] = sidecar.get("edits", [])
 

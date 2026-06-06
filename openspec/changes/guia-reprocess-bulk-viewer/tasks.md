@@ -59,19 +59,19 @@ Chain strategy: pending
 ## Phase 4 — Frontend: types, client, and F3 tab shell
 *REV-R21, REV-R23 | D3, D7 | PR-B | frontend-visual (opus)*
 
-- [ ] 4.1 **RED** — `frontend/src/features/review/__tests__/ReviewPage.spec.ts` (create/extend): test that `ReviewPage` renders two tabs ("Reconciliación", "Pendientes por procesar"); default active is "Reconciliación"; Pendientes badge shows `erroredGuias.length`. Test MUST fail.
-- [ ] 4.2 **GREEN** — `frontend/src/api/types.ts`: add `ReprocessBatchResponse` interface (`runId, registro, count, task`); add optional `assignMaterialCanonical?: string` to `GuiaLineEditRequest`.
-- [ ] 4.3 **GREEN** — `frontend/src/api/client.ts`: implement `reprocessRegistroBatch(runId, registro): Promise<ReprocessBatchResponse>` calling `POST /runs/{runId}/registros/{registro}/reprocess`.
-- [ ] 4.4 **GREEN** — `frontend/src/features/review/ReviewPage.vue`: add `activeTab` ref (`'reconciliacion' | 'pendientes'`); render tab bar; wire Pendientes badge to `erroredGuias.length`; mount `<PendientesPorProcesarTab>` when tab is `'pendientes'` (component can be a stub here). Test 4.1 turns green.
-- [ ] 4.5 **COMMIT** — `feat(review): tab bar Reconciliación / Pendientes with errored count badge` — conventional commit.
+- [x] 4.1 **RED** — `frontend/src/__tests__/features/ReviewPage.tabs.test.ts` (created): two tabs ("Reconciliación", "Pendientes por procesar"); default active "Reconciliación"; Pendientes badge = `erroredGuias.length`; ARIA tablist/tab/tabpanel/aria-selected. RED confirmed.
+- [x] 4.2 **GREEN** — `frontend/src/api/types.ts`: added `ReprocessBatchResponse` interface (`run_id, registro, count, task` — matches MERGED backend DTO, NOT runId/total/recovered/failed). Added optional `assign_material_canonical?: string | null` to `GuiaLineEditRequest` (snake_case to mirror the backend body posted verbatim — see SA-2 note).
+- [x] 4.3 **GREEN** — `frontend/src/api/client.ts`: implemented `reprocessRegistroBatch(runId, registro): Promise<ReprocessBatchResponse>` → `POST /runs/{runId}/registros/{encoded registro}/reprocess`.
+- [x] 4.4 **GREEN** — `frontend/src/features/review/ReviewPage.vue`: added `activeTab` ref (`'reconciliacion' | 'pendientes'`); ARIA tab bar; Pendientes badge = `erroredCount`; Reconciliación tab (grid + unresolved panel, v-show keeps state) / Pendientes tab mounts `<PendientesPorProcesarTab>` (v-if). Test 4.1 green.
+- [x] 4.5 **COMMIT** — `feat(review): tab bar Reconciliación / Pendientes with errored count badge`.
 
 ## Phase 5 — Frontend: F1 bulk reprocess (confirm + live polling + summary)
 *REV-R21-S01..S04 | D3, D4 | PR-B | frontend-visual (opus)*
 
-- [ ] 5.1 **RED** — `frontend/src/features/review/__tests__/PendientesPorProcesarTab.spec.ts` (create): test confirm dialog shows call count (N guías = N calls); button disabled in-flight; table refetch triggered after 202; "N recuperadas / M fallaron" displayed on terminal poll. Tests MUST fail.
-- [ ] 5.2 **GREEN** — `frontend/src/features/review/PendientesPorProcesarTab.vue` (create): host `<ErroredGuiasPanel>`; add per-Registro "Procesar todos con IA" button; confirm dialog with call count; on confirm call `reprocessRegistroBatch`; set in-flight state; poll `tableQuery.refetch()` on interval until `erroredGuias` stops shrinking; display "N recuperadas / M fallaron" on completion.
-- [ ] 5.3 **GREEN** — `frontend/src/features/review/ErroredGuiasPanel.vue`: integrate per-Registro bulk button props/emits (or accept bulk action from parent); disable during in-flight. Tests 5.1 turn green.
-- [ ] 5.4 **COMMIT** — `feat(review): bulk per-registro AI reprocess confirm + live progress + N/M summary` — conventional commit.
+- [x] 5.1 **RED** — `frontend/src/__tests__/features/PendientesPorProcesarTab.test.ts` (created): per-Registro bulk button; confirm dialog shows call count (N guías = N llamadas); button disabled + "Procesando…" in-flight; `refetch` emitted on poll interval after 202; "N recuperadas / M fallaron" derived from list delta on terminal poll. RED confirmed.
+- [x] 5.2 **GREEN** — `frontend/src/features/review/PendientesPorProcesarTab.vue` (created): hosts `<ErroredGuiasPanel>` for per-guía actions; per-Registro "Procesar todos con IA" button grouped by registro; ARIA confirm dialog (role=dialog, focus-to-confirm, Esc/backdrop cancel) with call count; on confirm calls `reprocessRegistroBatch`; in-flight state per registro; emits `refetch` on `setInterval` until the registro's remaining count stops shrinking; derives + shows "N recuperadas / M fallaron"; 503 → friendly vision-disabled message.
+- [x] 5.3 **GREEN** — `frontend/src/features/review/ErroredGuiasPanel.vue`: UNCHANGED (per-guía retry/reprocess wiring reused as-is; bulk lives in the parent tab's group headers per D7 — see SA-2 deviation note). Tests 5.1 green.
+- [x] 5.4 **COMMIT** — `feat(review): bulk per-registro AI reprocess confirm + live progress + N/M summary`.
 
 ## Phase 6 — Frontend: F2 SourcePages drop-in viewer
 *REV-R22-S01, S02 | D6 | PR-C | frontend-visual (opus)*

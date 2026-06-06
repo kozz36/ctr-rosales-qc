@@ -41,27 +41,44 @@ _SPEC_FAMILY_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
-# Grade-number detector → canonical grade level.  Order: explicit "grado N",
-# "gr N", "g-N", "gN", with N ∈ {60, 42, 75}.  Bare A615 (no grade token) → 60
-# (G60 is the standard / default for the A615/A706 dual cert).
-# NOTE on the leading \b: it prevents an OCR-misread grade like ``660`` / ``580``
-# from matching the trailing ``60`` inside it (``660`` has no word boundary
-# before its final ``60``).  Such illegible grades correctly fail here → parse()
-# returns None → the Tier-2 grade-tolerant reconciliation pass takes over.
-_GRADE_NUMBER_PATTERNS: Final[list[tuple[re.Pattern[str], str]]] = [
-    (re.compile(r"\bg(?:rado|r)?\s*[-\s]?\s*60\b", re.IGNORECASE), "60"),
-    (re.compile(r"\bg(?:rado|r)?\s*[-\s]?\s*42\b", re.IGNORECASE), "42"),
-    (re.compile(r"\bg(?:rado|r)?\s*[-\s]?\s*75\b", re.IGNORECASE), "75"),
-]
+# Valid canonical grade levels (Aceros Arequipa A615/A706 dual cert).
+# G60 is the standard; G42 and G75 are valid and MUST stay distinct (never
+# collapsed into G60).  Any token positioned as a grade whose value is NOT in
+# this set is an ILLEGIBLE/INVALID grade → parse() returns None → Tier-2.
+_VALID_GRADE_LEVELS: Final[frozenset[str]] = frozenset({"60", "42", "75"})
 
-# Detects a standalone 2-3 digit token that looks like a grade but is NOT a valid
-# grade (60/42/75).  Used to distinguish "A615 with an ILLEGIBLE grade" (e.g.
-# ``a615a706 580 3/4"`` — bail to None, Tier-2 takes over) from "bare A615 with
-# NO grade token at all" (default to the standard G60).  Diameters are fractions
-# (``3/4``) or ``8mm`` or a bare ``1`` — none is a free-standing 2-3 digit run,
-# so this never false-fires on a diameter.
-_UNRECOGNIZED_GRADE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
-    r"\b(?!a?g?615\b)(?!a706\b)\d{3}\b", re.IGNORECASE
+# Grade-context token detectors.  A "grade-like token" is anchored to a grade
+# CONTEXT, NOT a whole-string scan — this is the JD FIX #1 core change:
+#
+#   1. ``_G_PREFIXED_GRADE_RE`` — a ``g`` / ``gr`` / ``grado`` prefix followed by
+#      the grade payload.  OCR glue is tolerated: there may be NO boundary
+#      between the ``g`` and the digits (``g660``), and the payload may carry
+#      alpha-noise (``g7s``, ``g6o``).  The payload (``[a-z0-9]+``) is captured
+#      and validated against ``_VALID_GRADE_LEVELS`` by the caller.  This catches
+#      g-glued, 2-digit, 4-digit, and alpha-noise invalid grades that the old
+#      ``\d{3}`` guard silently let default to G60.
+#
+#   2. ``_POST_FAMILY_NUMERIC_GRADE_RE`` — a standalone numeric token positioned
+#      AS the grade: immediately after the spec family (``a615`` / ``a706``),
+#      separated only by whitespace.  This is the legacy space-separated misread
+#      form (``a615a706 580 ...``) and must still bail.  Anchoring to the family
+#      boundary is what prevents an INCIDENTAL number elsewhere (lot ``250``,
+#      ``lote 119``) from being mistaken for a grade.
+#
+# Both capture group 1 = the grade payload string the caller validates.
+_G_PREFIXED_GRADE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bg(?:rado|r)?[-\s]*([a-z0-9]+)",
+    re.IGNORECASE,
+)
+# NOTE: the captured digit run must NOT be the leading whole of a diameter
+# fraction (``3/4"`` → ``3``) nor a millimetre diameter (``8mm`` → ``8``); a
+# trailing ``/`` or ``mm`` negative-lookahead excludes those so a bare-A615 line
+# whose next token is the diameter does not spuriously read the diameter as a
+# grade.  ``8mm`` is the only mm diameter and ``8`` is not a valid grade, so the
+# guard matters.
+_POST_FAMILY_NUMERIC_GRADE_RE: Final[re.Pattern[str]] = re.compile(
+    r"a(?:615|706)\s+(\d+)(?!\s*/)(?!\s*mm)\b",
+    re.IGNORECASE,
 )
 
 # ---------------------------------------------------------------------------
@@ -222,23 +239,46 @@ class MaterialKeyNormalizer:
     def _extract_grado(self, cleaned: str) -> str | None:
         """Extract the canonical grade ``A615 G{n}``.
 
-        Requires BOTH the A615 spec family AND a recognizable grade number.
-        The grade number (60/42/75) is kept distinct (G42/G75 are valid grades,
-        never collapsed into G60).  Bare A615 with no grade token defaults to
-        G60 (the standard for the A615/A706 dual cert).  An OCR-misread grade
-        (e.g. ``580``/``680``/``660``) matches no grade-number pattern → returns
-        None so the caller can hand the line to the Tier-2 grade-tolerant pass.
+        Requires the A615 spec family.  Grade detection is ANCHORED to a grade
+        CONTEXT (a ``g``/``gr``/``grado`` prefix, or a numeric token positioned
+        immediately after the spec family) — NOT a whole-string ``\\d{3}`` scan.
+        This is the JD FIX #1 core: an incidental lot/qty number elsewhere in
+        the string (``lote 119``, ``... dob 250``) is NOT a grade context and
+        must NOT trigger a bail, while a g-glued / 2-digit / 4-digit / alpha-
+        noise invalid grade (``g660``, ``g50``, ``g6042``, ``g7s``) IS a grade
+        context and MUST bail to None.
+
+        Resolution rules (after the spec-family gate):
+          1. Collect every grade-context token and validate each against
+             ``_VALID_GRADE_LEVELS`` (60/42/75).
+          2. If ANY grade-context token is INVALID → None (Tier-2 / requires_review).
+             Invalid grades must never silently default to G60.
+          3. If >1 DISTINCT valid grade is present (e.g. ``g 60`` AND ``g 75``)
+             → None (hand to Tier-2/LLM, never arbitrarily pick the first).
+          4. Exactly one distinct valid grade → ``A615 G{n}`` (kept distinct).
+          5. No grade-context token at all (clean bare A615, incidental numbers
+             allowed) → standard G60 default.
         """
         if not _SPEC_FAMILY_RE.search(cleaned):
             return None
-        for pattern, level in _GRADE_NUMBER_PATTERNS:
-            if pattern.search(cleaned):
-                return f"A615 G{level}"
-        # Spec family present but no grade token at all → standard G60.
-        # A615 with an UNRECOGNIZED grade token (digits not matching 60/42/75)
-        # must NOT default — detect a bare numeric grade token and bail to None.
-        if _UNRECOGNIZED_GRADE_TOKEN_RE.search(cleaned):
+
+        valid_levels: set[str] = set()
+        for token_re in (_G_PREFIXED_GRADE_RE, _POST_FAMILY_NUMERIC_GRADE_RE):
+            for match in token_re.finditer(cleaned):
+                payload = match.group(1).lower()
+                if payload in _VALID_GRADE_LEVELS:
+                    valid_levels.add(payload)
+                else:
+                    # Grade context present but value is not a valid grade →
+                    # illegible/invalid grade.  Never default to G60.
+                    return None
+
+        if len(valid_levels) > 1:
+            # Contradictory legible grades → ambiguous, hand to Tier-2/LLM.
             return None
+        if len(valid_levels) == 1:
+            return f"A615 G{next(iter(valid_levels))}"
+        # No grade-context token at all → clean bare A615 → standard G60.
         return "A615 G60"
 
     def _extract_diametro(self, cleaned: str) -> str | None:

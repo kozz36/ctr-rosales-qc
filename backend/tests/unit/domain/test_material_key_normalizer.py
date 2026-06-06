@@ -126,6 +126,96 @@ class TestValidGradeVariants:
         assert g75.grado != g60.grado
 
 
+class TestIllegibleGradeContextDetection:
+    """Grade detection must be ANCHORED to a grade context (g/gr/grado prefix or
+    a numeric token positioned as the grade after the spec family), NOT a whole-
+    string ``\\d{3}`` scan.
+
+    JD FIX #1: the old ``\\b\\d{3}\\b`` guard was both TOO NARROW (g-glued/2-digit/
+    alpha-noise grades silently defaulted to G60 with requires_review=False — an
+    invariant breach) and TOO BROAD (an incidental lot/qty number forced a legit
+    bare-A615 line to UNRESOLVED).
+    """
+
+    # --- Category: MUST BAIL to None (invalid grade in grade context → Tier-2) ---
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            # g-glued invalid grades (no word boundary between g and digits)
+            'barra a615a706 g660 3/4" dob',
+            'barra a615a706 gr580 1/2" x 9m',
+            'barra a615a706 g680 3/4" dob',
+            'barra a615a706 g6042 3/4" dob',
+            # 2-digit invalid grades with g prefix
+            'barra a615 g50 3/4" dob',
+            'barra a615 g80 3/4" dob',
+            'barra a615 g90 3/4" dob',
+            # alpha-noise grade (plausible OCR misread of G75)
+            'barra a615 g7s 3/4" dob',
+        ],
+    )
+    def test_invalid_grade_in_context_bails_to_none(
+        self, normalizer: MaterialKeyNormalizer, raw: str
+    ) -> None:
+        assert normalizer.parse(raw, "TN") is None, (
+            f"Expected None (→ Tier-2/requires_review) for {raw!r}"
+        )
+
+    def test_contradictory_valid_grades_bail_to_none(
+        self, normalizer: MaterialKeyNormalizer
+    ) -> None:
+        """Two DISTINCT valid grade tokens → None (never arbitrarily pick first)."""
+        assert normalizer.parse('barra a615a706 g 60 g 75 3/4" dob', "TN") is None
+
+    # --- Category: space-separated misreads MUST STILL bail (regression) ---
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            'barra a615a706 680 3/4" dob',
+            'barra a6151a706 580 3/4" dob',
+            'barra a615a706 660 1/2" dob',
+        ],
+    )
+    def test_space_separated_misread_still_bails(
+        self, normalizer: MaterialKeyNormalizer, raw: str
+    ) -> None:
+        assert normalizer.parse(raw, "TN") is None
+
+    # --- Category: MUST PARSE (valid grade in context) ---
+    @pytest.mark.parametrize(
+        "raw,expected_grado",
+        [
+            ('barra a615 g60 3/4" dob', "A615 G60"),
+            ('barra a615/a706 g60 3/4" dob', "A615 G60"),
+            ('barra a615a706 g60 3/4" dob', "A615 G60"),
+            ('barra a615 g75 3/4" dob', "A615 G75"),
+            ('barra a615 g42 3/4" dob', "A615 G42"),
+        ],
+    )
+    def test_valid_grade_in_context_parses(
+        self, normalizer: MaterialKeyNormalizer, raw: str, expected_grado: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None for {raw!r}"
+        assert result.grado == expected_grado, f"got {result.grado!r} for {raw!r}"
+
+    # --- Category: incidental number must NOT bail (bare-A615 default G60) ---
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            'barra a615 3/4" dob 250',
+            'barra a615a706 3/4" dob lote 119',
+            'barra a615 3/4" dob',
+        ],
+    )
+    def test_incidental_number_defaults_to_g60(
+        self, normalizer: MaterialKeyNormalizer, raw: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None (bare-A615 → G60) for {raw!r}"
+        assert result.grado == "A615 G60", f"got {result.grado!r} for {raw!r}"
+
+
 class TestDiameterNormalization:
     """MAT-S02: compound fraction detected before simple fraction."""
 

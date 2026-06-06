@@ -48,6 +48,84 @@ class TestGradeNormalization:
         assert result is None
 
 
+class TestDualSpecConcatenatedGrade:
+    """Category A (real corpus): the physical guía writes the dual cert WITHOUT a
+    slash — ``a615a706`` (and the OCR-noise variant ``a6151a706``) — which the
+    original ``\\ba615\\b`` pattern could not match (``a706`` immediately follows).
+    These MUST canonicalize deterministically to ``A615 G60``.
+    """
+
+    @pytest.mark.parametrize(
+        "raw,expected_diam",
+        [
+            ('barra a615a706 g60 3/8" dob apl', '3/8"'),
+            ('barra a615a706 g60 3/4" dob apl', '3/4"'),
+            ('barra a615a706 g60 1/2" dob apl', '1/2"'),
+            ('barra a6151a706 g60 3/8" dob apl', '3/8"'),
+            ('barra a615-a706 g60 5/8" dob', '5/8"'),
+            ('barra a615 a706 g60 1" dob', '1"'),
+        ],
+    )
+    def test_concatenated_dual_spec_resolves(
+        self, normalizer: MaterialKeyNormalizer, raw: str, expected_diam: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None for {raw!r}"
+        assert result.grado == "A615 G60", f"got {result.grado!r} for {raw!r}"
+        assert result.diametro == expected_diam
+        assert result.presentacion == "DOB"
+        assert result.method == "deterministic"
+
+    def test_concatenated_equals_slash_form(self, normalizer: MaterialKeyNormalizer) -> None:
+        """The Category-A guía form must produce the SAME key as the declared slash form."""
+        guia = normalizer.parse('barra a615a706 g60 3/4" dob apl', "TN")
+        declared = normalizer.parse('BARRA A615/A706 G60 3/4" DOB', "TN")
+        assert guia is not None and declared is not None
+        assert guia == declared
+
+
+class TestValidGradeVariants:
+    """G60 is the standard but G42 and G75 are VALID grades that CAN appear.
+    Each must be kept DISTINCT — never collapsed into G60.
+    """
+
+    @pytest.mark.parametrize(
+        "raw,expected_grado",
+        [
+            ('barra a615 g60 1/2" dob', "A615 G60"),
+            ('barra a615 gr60 1/2" dob', "A615 G60"),
+            ('barra a615 grado 60 1/2" dob', "A615 G60"),
+            ('barra a615 g-60 1/2" dob', "A615 G60"),
+            ('barra a615 g 60 1/2" dob', "A615 G60"),
+            ('barra a615 g42 1/2" dob', "A615 G42"),
+            ('barra a615 gr42 1/2" dob', "A615 G42"),
+            ('barra a615 grado 42 1/2" dob', "A615 G42"),
+            ('barra a615 g75 1/2" dob', "A615 G75"),
+            ('barra a615 gr75 1/2" dob', "A615 G75"),
+            ('barra a615 grado 75 1/2" dob', "A615 G75"),
+        ],
+    )
+    def test_grade_variant_kept_distinct(
+        self, normalizer: MaterialKeyNormalizer, raw: str, expected_grado: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None for {raw!r}"
+        assert result.grado == expected_grado, f"got {result.grado!r} for {raw!r}"
+
+    def test_g42_not_collapsed_to_g60(self, normalizer: MaterialKeyNormalizer) -> None:
+        g42 = normalizer.parse('barra a615 g42 1/2" dob', "TN")
+        g60 = normalizer.parse('barra a615 g60 1/2" dob', "TN")
+        assert g42 is not None and g60 is not None
+        assert g42.grado != g60.grado
+        assert g42 != g60
+
+    def test_g75_not_collapsed_to_g60(self, normalizer: MaterialKeyNormalizer) -> None:
+        g75 = normalizer.parse('barra a615 g75 1/2" dob', "TN")
+        g60 = normalizer.parse('barra a615 g60 1/2" dob', "TN")
+        assert g75 is not None and g60 is not None
+        assert g75.grado != g60.grado
+
+
 class TestDiameterNormalization:
     """MAT-S02: compound fraction detected before simple fraction."""
 
@@ -237,6 +315,32 @@ class TestRealPairs:
             result = normalizer.parse(raw, "TN")
             assert result is not None
             assert result.method == "deterministic"
+
+
+class TestParsePartial:
+    """parse_partial() extracts the NON-grade attributes (familia, diámetro,
+    presentación) even when the grade token is unrecognized/illegible — the
+    primitive the Tier-2 grade-tolerant reconciliation pass relies on.
+    """
+
+    def test_partial_on_grade_misread(self, normalizer: MaterialKeyNormalizer) -> None:
+        """OCR misread grade '580' → parse() returns None, but the non-grade
+        attributes are still extractable."""
+        assert normalizer.parse('barra a6151a706 580 3/4" dob apl', "TN") is None
+        partial = normalizer.parse_partial('barra a6151a706 580 3/4" dob apl')
+        assert partial == ("BARRA", '3/4"', "DOB")
+
+    def test_partial_full_resolvable(self, normalizer: MaterialKeyNormalizer) -> None:
+        partial = normalizer.parse_partial('barra a615 g60 1/2" dob')
+        assert partial == ("BARRA", '1/2"', "DOB")
+
+    def test_partial_missing_attribute_returns_none(
+        self, normalizer: MaterialKeyNormalizer
+    ) -> None:
+        """If familia / diámetro / presentación is itself missing → None
+        (Tier-2 cannot match on grade alone)."""
+        assert normalizer.parse_partial('barra 580 3/4"') is None  # no presentación
+        assert normalizer.parse_partial('580 3/4" dob') is None  # no familia
 
 
 class TestFamilia:

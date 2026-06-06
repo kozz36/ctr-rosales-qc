@@ -22,21 +22,47 @@ from reconciliation.domain.normalizer import MaterialNormalizer
 
 # ---------------------------------------------------------------------------
 # Grade patterns (MAT-003)
-# All known dual-grade variants → "A615 G60" (Aceros Arequipa rebar)
-# Order matters: more-specific patterns first.
+# The spec family is the Aceros Arequipa dual cert A615/A706 (≡ bare A615).
+# The grade NUMBER (60/42/75) is captured SEPARATELY so valid grades stay
+# distinct: G60 is the standard, but G42 and G75 are valid and MUST NOT be
+# collapsed into G60.  Canonical grade = "A615 G{n}".
 # Applied AFTER NFC + lowercase.
 # ---------------------------------------------------------------------------
 
-_GRADE_PATTERNS: Final[list[tuple[re.Pattern[str], str]]] = [
-    # "ag615/a706 g60" and "a615/a706 g60" — slash-separated dual grade
-    (re.compile(r"ag?615/a706\s*g?60", re.IGNORECASE), "A615 G60"),
-    # "a a615-g60" — space-separated with hyphen
-    (re.compile(r"a\s+a615[-\s]g?60", re.IGNORECASE), "A615 G60"),
-    # "a615 g60" — space-separated (also handles "a615 g 60" with extra space)
-    (re.compile(r"a615\s+g?60", re.IGNORECASE), "A615 G60"),
-    # "a615" last-resort — bare grade with no G60 qualifier
-    (re.compile(r"\ba615\b", re.IGNORECASE), "A615 G60"),
+# Spec-family detector: matches the A615 dual-cert family in all real-corpus
+# spellings — bare ``a615``, slash dual ``a615/a706`` / ``ag615/a706``, and the
+# physical-guía concatenations WITHOUT a slash: ``a615a706``, ``a6151a706``
+# (stray OCR "1" between 615 and a706), ``a615-a706``, ``a615 a706``.
+# A leading optional "a " (as in "a a615-g60") is tolerated by the \b anchor.
+_SPEC_FAMILY_RE: Final[re.Pattern[str]] = re.compile(
+    r"\ba?g?615"          # bare 615 / ag615 / a615
+    r"(?:\s*[/\-\s]?\s*"   # optional separator: slash / hyphen / space / concat
+    r"\d?\s*a706)?",       # optional a706 dual cert (with optional stray OCR digit)
+    re.IGNORECASE,
+)
+
+# Grade-number detector → canonical grade level.  Order: explicit "grado N",
+# "gr N", "g-N", "gN", with N ∈ {60, 42, 75}.  Bare A615 (no grade token) → 60
+# (G60 is the standard / default for the A615/A706 dual cert).
+# NOTE on the leading \b: it prevents an OCR-misread grade like ``660`` / ``580``
+# from matching the trailing ``60`` inside it (``660`` has no word boundary
+# before its final ``60``).  Such illegible grades correctly fail here → parse()
+# returns None → the Tier-2 grade-tolerant reconciliation pass takes over.
+_GRADE_NUMBER_PATTERNS: Final[list[tuple[re.Pattern[str], str]]] = [
+    (re.compile(r"\bg(?:rado|r)?\s*[-\s]?\s*60\b", re.IGNORECASE), "60"),
+    (re.compile(r"\bg(?:rado|r)?\s*[-\s]?\s*42\b", re.IGNORECASE), "42"),
+    (re.compile(r"\bg(?:rado|r)?\s*[-\s]?\s*75\b", re.IGNORECASE), "75"),
 ]
+
+# Detects a standalone 2-3 digit token that looks like a grade but is NOT a valid
+# grade (60/42/75).  Used to distinguish "A615 with an ILLEGIBLE grade" (e.g.
+# ``a615a706 580 3/4"`` — bail to None, Tier-2 takes over) from "bare A615 with
+# NO grade token at all" (default to the standard G60).  Diameters are fractions
+# (``3/4``) or ``8mm`` or a bare ``1`` — none is a free-standing 2-3 digit run,
+# so this never false-fires on a diameter.
+_UNRECOGNIZED_GRADE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?!a?g?615\b)(?!a706\b)\d{3}\b", re.IGNORECASE
+)
 
 # ---------------------------------------------------------------------------
 # Diameter table (MAT-004)
@@ -162,6 +188,27 @@ class MaterialKeyNormalizer:
             raw=raw,
         )
 
+    def parse_partial(self, raw: str) -> tuple[str, str, str] | None:
+        """Extract the NON-grade attributes ``(familia, diámetro, presentación)``.
+
+        The Tier-2 grade-tolerant reconciliation primitive: when ``parse()``
+        fails ONLY because the grade token is illegible (OCR misread), the
+        remaining three attributes still identify the declared item. Returns
+        the triple when all three are extractable, else ``None`` (a missing
+        familia/diámetro/presentación means the line cannot be matched on grade
+        alone — never guess).
+
+        Pure: no grade is inferred here; grade adoption happens in the
+        reconciliation layer against a UNIQUE same-registro declared item.
+        """
+        cleaned = self._pre_clean.canonicalize(raw)
+        familia = self._extract_familia(cleaned)
+        diametro = self._extract_diametro(cleaned)
+        presentacion = self._extract_presentacion(cleaned)
+        if familia is None or diametro is None or presentacion is None:
+            return None
+        return (familia, diametro, presentacion)
+
     # ------------------------------------------------------------------
     # Private extraction helpers
     # ------------------------------------------------------------------
@@ -173,10 +220,26 @@ class MaterialKeyNormalizer:
         return None
 
     def _extract_grado(self, cleaned: str) -> str | None:
-        for pattern, canonical in _GRADE_PATTERNS:
+        """Extract the canonical grade ``A615 G{n}``.
+
+        Requires BOTH the A615 spec family AND a recognizable grade number.
+        The grade number (60/42/75) is kept distinct (G42/G75 are valid grades,
+        never collapsed into G60).  Bare A615 with no grade token defaults to
+        G60 (the standard for the A615/A706 dual cert).  An OCR-misread grade
+        (e.g. ``580``/``680``/``660``) matches no grade-number pattern → returns
+        None so the caller can hand the line to the Tier-2 grade-tolerant pass.
+        """
+        if not _SPEC_FAMILY_RE.search(cleaned):
+            return None
+        for pattern, level in _GRADE_NUMBER_PATTERNS:
             if pattern.search(cleaned):
-                return canonical
-        return None
+                return f"A615 G{level}"
+        # Spec family present but no grade token at all → standard G60.
+        # A615 with an UNRECOGNIZED grade token (digits not matching 60/42/75)
+        # must NOT default — detect a bare numeric grade token and bail to None.
+        if _UNRECOGNIZED_GRADE_TOKEN_RE.search(cleaned):
+            return None
+        return "A615 G60"
 
     def _extract_diametro(self, cleaned: str) -> str | None:
         for pattern, canonical in _DIAMETER_TABLE:

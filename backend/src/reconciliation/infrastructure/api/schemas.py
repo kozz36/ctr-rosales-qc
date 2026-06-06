@@ -251,11 +251,16 @@ class ReconciliationRowResponse(BaseModel):
         ),
     )
     # R8.12 (MAT-008, ADR-5): read-only provenance field (no POST/PATCH accepts it).
-    match_method: Literal["deterministic", "llm_inferred", "unresolved"] = Field(
+    match_method: Literal[
+        "deterministic", "grade_tolerant", "llm_inferred", "codigo_sunat", "unresolved"
+    ] = Field(
         default="deterministic",
         description=(
-            "How the canonical material key was derived: "
-            "'deterministic' (regex), 'llm_inferred' (Ollama), or 'unresolved' (fallback)."
+            "How the canonical material key was derived (mirrors domain MatchMethod): "
+            "'deterministic' (regex), 'grade_tolerant' (matched on familia+diámetro+"
+            "presentación with an illegible/misread grade adopted from the unique declared "
+            "item — always requires_review), 'llm_inferred' (Ollama), 'codigo_sunat' "
+            "(reserved), or 'unresolved' (fallback)."
         ),
     )
     # R9.6 (FDR-008, ADR-5): group-level divergence indicator (derived from guías).

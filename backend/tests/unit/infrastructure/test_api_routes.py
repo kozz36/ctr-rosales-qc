@@ -931,6 +931,19 @@ class TestMatchMethodInTableResponse:
         result_rows = self._get_table_response_rows(rows, client, run_id)
         assert result_rows[0]["match_method"] == "llm_inferred"
 
+    def test_grade_tolerant_match_method_in_response(self, client: TestClient) -> None:
+        """A grade_tolerant row must serialize through the table DTO, not 500.
+
+        Regression: the domain MatchMethod gained 'grade_tolerant' but the API
+        Literal was not widened, so any grade_tolerant row raised a Pydantic
+        literal_error → 500 on GET /runs/{id}/table (caught at runtime, not by
+        the domain unit suite).
+        """
+        run_id = str(uuid.uuid4())
+        rows = [self._make_row_with_method("grade_tolerant")]
+        result_rows = self._get_table_response_rows(rows, client, run_id)
+        assert result_rows[0]["match_method"] == "grade_tolerant"
+
     def test_backward_compat_model_validate_no_match_method(self) -> None:
         """Old response dict without match_method → defaults to deterministic."""
         from reconciliation.infrastructure.api.schemas import ReconciliationRowResponse

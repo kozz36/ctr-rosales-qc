@@ -51,6 +51,10 @@
       :run-id="id"
       @retry="void tableQuery.refetch()"
       @retry-success="void tableQuery.refetch()"
+      @retry-settled="void tableQuery.refetch()"
+      @reprocess="void tableQuery.refetch()"
+      @reprocess-success="void tableQuery.refetch()"
+      @reprocess-settled="void tableQuery.refetch()"
     />
 
     <!-- Review grid (only when ready) -->

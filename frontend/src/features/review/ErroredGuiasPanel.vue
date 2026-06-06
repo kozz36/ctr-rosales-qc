@@ -128,10 +128,14 @@ const emit = defineEmits<{
   (e: 'retry-success', payload: { guiaId: string; erroredGuias: ErroredGuiaResponse[] }): void
   /** Emitted when a retry attempt completes (success or failure). */
   (e: 'retry', guiaId: string): void
+  /** Emitted when a retry attempt settles (success, recovered=false, or error). */
+  (e: 'retry-settled', guiaId: string): void
   /** Emitted when a guía is successfully recovered via Reprocesar con IA. */
   (e: 'reprocess-success', payload: { guiaId: string; erroredGuias: ErroredGuiaResponse[] }): void
   /** Emitted when a reprocess attempt starts. */
   (e: 'reprocess', guiaId: string): void
+  /** Emitted when a reprocess attempt settles (success, recovered=false, or error). */
+  (e: 'reprocess-settled', guiaId: string): void
 }>()
 
 const isOpen = ref(true)
@@ -167,9 +171,10 @@ async function handleRetry(guia: ErroredGuiaResponse): Promise<void> {
     }
   } catch {
     // Failure is non-blocking — the button will remain in its current state.
-    // The parent/TanStack re-fetch on the next polling cycle will update state.
+    // The parent refetches via retry-settled so the new backend state is visible.
   } finally {
     retryingId.value = null
+    emit('retry-settled', guia.guia_id)
   }
 }
 
@@ -188,9 +193,10 @@ async function handleReprocess(guia: ErroredGuiaResponse): Promise<void> {
       })
     }
   } catch {
-    // Non-blocking — parent re-polls on next cycle.
+    // Non-blocking — parent refetches via reprocess-settled so new backend state is visible.
   } finally {
     reprocessingIds.delete(guia.guia_id)
+    emit('reprocess-settled', guia.guia_id)
   }
 }
 </script>

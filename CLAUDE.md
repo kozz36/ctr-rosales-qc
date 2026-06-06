@@ -70,6 +70,17 @@ Flags mismatches, lets the engineer reassign misfiled guías, exports xlsx/csv.
   (business key, group by this) ≠ QR `serie-numero` (deterministic guía id from rev-2).
 - Input PDF is **read-only**; each run writes its own isolated output dir. **Local-first**:
   QR decode is local; SUNAT fetch (deferred) would break the air-gap and is opt-in/off.
+- **Dual-spec normalization + grade-tolerant recovery (feat/guia-reprocess-reprocesar-ia, JD-APPROVED)**:
+  `A615/A706` ≡ `A615A706` (no-slash, physical guía) ≡ `A6151A706` (OCR digit noise) ≡ `A615-A706` ≡
+  `A615 A706` — all normalize to the same canonical grade `A615 G{n}`. Grade detection is
+  **context-anchored** (g-prefix tokens or post-family numeric `{2,3}` digits); incidental numbers
+  (`lote 119`) and diameter leads (`1"`, `1 3/8"`) are NEVER misread as grades. Valid grades are
+  DISTINCT: G60 / G42 / G75 — **NEVER collapse G42/G75 into G60**. An illegible grade token (OCR
+  misread like `580`/`680`) → `parse()` returns **None**, triggering **Tier-2 grade-tolerant recovery**:
+  `_apply_grade_tolerant_recovery` (pre-pass before grouping) adopts the UNIQUE same-registro declared
+  item's grade; zero or >1 declared match → stays UNRESOLVED. Sets `match_method="grade_tolerant"` +
+  `requires_review=True` — never a silent auto-accept. See `.claude/skills/material-canonical-matching`
+  for full algorithm.
 
 ## Working agreements
 
@@ -136,26 +147,16 @@ Hard anti-pattern checklist the implementation sub-agent AND the reviewer enforc
 
 ## Status & next steps
 
-**Close-out COMPLETE — branch `feat/rev2-identity-domain` ready to push.** All gates passed:
-sdd-verify (R8/R9/r10 + base material-reconciliation, PASS-WITH-WARNINGS) → Judgment-Day
-core R8+R9+r10 (APPROVED after 3 rounds; fixed C1 stale gate test, C2-A/B cross-registro
-pollution + ISO date parse, KI-1 graceful vision-cap degrade, dead-code W1, racy W2-A/B) →
-Judgment-Day base rev-2 areas (APPROVED after 2 rounds; recovered dead guía line-edit HTTP
-422, stopped restart data-loss, section-ID-as-Registro guard, idempotent reassign) → KI-4
-faithful e2e captured (TestR9RealPDFGate 5/5 PASS, 6:05, pages 1-25 subset, real cloud
-vision, #4252 1/2"×9M = 4.124 TN MATCH deterministic + R9 divergence confirmed) → sdd-archive
-(8 capability specs → `openspec/specs/`, 4 changes → `openspec/changes/archive/`) → visual
-validation via Playwright (review table, R8 MATCH "Conforme" 4.124 TN, R9 badges + page-refs,
-filters, drill-down, XLSX+CSV export 13 cols — 0 console errors). Only step remaining: push.
+**Branch `feat/guia-reprocess-reprocesar-ia` — ALL gates passed, push DEFERRED pending vision quantity-accuracy eval.**
 
-**Test counts**: 886 backend unit/targeted passing (targeted paths only — monolithic `pytest
--q` hangs on paddle import) + 188 frontend vitest. Real-PDF gates pass on the subset.
+PR#3 (Reprocesar con IA) + canonical-matching fix VALIDATED:
+- sdd-verify PR#3 (PASS-WITH-WARNINGS, 0 CRITICAL, 272 backend + 272 frontend vitest green, vue-tsc clean).
+- **Canonical-matching fix**: dual-spec normalization (Tier 1) + grade-tolerant recovery (Tier 2) — JD-APPROVED after 3 rounds. Fixes 11 real UNRESOLVED → 3 deterministic + 8 grade_tolerant+requires_review (OCR misreads 580/680/660). JD CRITICAL fixes: illegible-grade guard context-anchored (not whole-string scan); `{2,3}` digit quantifier excludes diameter leads (`1"`, `1 3/8"`) — data-corrupting regression caught by JD that the green suite masked.
+- SA-5 Playwright runtime validation COMPLETE: grade_tolerant rows render in UI with requires_review badges; reprocess button gated on retry_attempted; table invalidation on reprocess-success.
 
-**KI-1 FIXED** (ba3b0c5, graceful vision-cap degrade). **KI-4 CAPTURED** (R9 gate 5/5 on
-pages 1-25 subset; recipe in `docs/HANDOFF.md` §known-open-rev3b). **KI-2** (cloud
-throttling) and **KI-3** (SUNAT under load) remain open environment limitations — the subset
-sidesteps them. Three post-merge follow-ups deferred (see HANDOFF §follow-ups): disable_thinking
-perf lever, determinate progress bar UX, date-read variance verify.
+**Push deferred**: `kimi-k2.5:cloud` is fastest for table reads but **quantity accuracy unverified** — observed read 0.091 vs guía 191. `requires_review=True` is the safety net; a qwen-vs-kimi quantity-accuracy eval is the **TOP backlog item** before prod use. **Vision model findings**: kimi-k2.5:cloud fastest+reliable (avg 6-10s); qwen3.5:397b-cloud reliable but slower (9-14s, needs `DEADLINE_S≥45`); qwen3.5:9b TOO WEAK for table extraction (returns generic `ACERO DIMENSIONADO`, no quantities). Config for reprocess: `provider=ollama, OLLAMA__MODEL=kimi-k2.5:cloud, DEADLINE_S=60`. **Deadline-guard follow-up**: under throttle the abandoned in-flight request is still billed (thread not cancelled); in the long-running server context the httpx request should be cancelled instead of abandoned (not blocking PR#3).
+
+**Test counts**: 886+ backend targeted + 188+ frontend vitest passing (monolithic `pytest -q` still hangs on paddle import — targeted paths only). Real-PDF gates pass on the subset.
 
 `ocr.enabled=false` is a config escape hatch (NullOcrExtractor → ZERO paddle) for machines
 where the paddle runtime is broken; SUNAT then supplies quantities. `vision.enabled=false`

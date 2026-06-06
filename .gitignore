@@ -54,3 +54,6 @@ Thumbs.db
 
 # stray local-command transcript dumps (never commit)
 2026-*-local-command-*.txt
+
+# KDE Dolphin folder metadata
+.directory

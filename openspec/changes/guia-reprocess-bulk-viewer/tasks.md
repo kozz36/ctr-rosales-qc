@@ -76,18 +76,18 @@ Chain strategy: pending
 ## Phase 6 — Frontend: F2 SourcePages drop-in viewer
 *REV-R22-S01, S02 | D6 | PR-C | frontend-visual (opus)*
 
-- [ ] 6.1 **RED** — `frontend/src/features/review/__tests__/GuiaDrillDown.spec.ts`: test that Páginas cell renders `<SourcePages>` chips; `pageClick` emits with `{page, pages: guia.source_pages}`; expansion state unchanged. Test MUST fail.
-- [ ] 6.2 **GREEN** — `frontend/src/features/review/GuiaDrillDown.vue`: replace plain `<span>{{ source_pages.join(',') }}</span>` Páginas cell with `<SourcePages :pages="guia.source_pages" :run-id="runId" @page-click="onPageClick" />`; emit `pageClick` upward. COLSPAN=11 UNCHANGED.
-- [ ] 6.3 **GREEN** — `frontend/src/features/review/ReconciliationRow.vue`: forward `pageClick` from `<GuiaDrillDown>` to parent (mirror existing pattern). Test 6.1 turns green.
-- [ ] 6.4 **COMMIT** — `feat(review): SourcePages chips in GuiaDrillDown bubble pageClick to PageSheetViewer` — conventional commit.
+- [x] 6.1 **RED** — `frontend/src/__tests__/features/GuiaDrillDown.viewer.test.ts` (existing-convention path, NOT `features/review/__tests__/`): Páginas cell renders `<SourcePages>` chips; chip click emits `pageClick(page)`; serie-número click emits `pageClick(source_pages[0])`; affordance on ALL rows. RED confirmed (14 failed first).
+- [x] 6.2 **GREEN** — `frontend/src/features/review/GuiaDrillDown.vue`: replaced plain Páginas `<span>` with `<SourcePages :pages="guia.source_pages" :run-id="runId" @page-click="emit('pageClick', $event)" />`; serie-número is now a `<button>` emitting `pageClick(guia.source_pages[0])` (F2 refinement #3012); COLSPAN=11 UNCHANGED (cell-content swap).
+- [x] 6.3 **GREEN** — `frontend/src/features/review/ReconciliationRow.vue` + `ReviewGrid.vue` + `ReviewPage.onPageClick`: forward `pageClick` drill-down → row → grid → page; `viewerRowPages` prefers the owning guía's own `source_pages`. Tests green.
+- [x] 6.4 **COMMIT** — `feat(review): SourcePages chips + serie-número click in GuiaDrillDown open PageSheetViewer`.
 
 ## Phase 7 — Frontend: F4 Acciones menu + Corregir manual dialog
 *REV-R24, REV-R25 | D8, D9 | PR-C | frontend-visual (opus)*
 
-- [ ] 7.1 **RED** — `frontend/src/features/review/__tests__/GuiaDrillDown.spec.ts`: add tests that `[Acciones]` menu renders three items (Reasignar, Reprocesar, Corregir manual); Reasignar emits `reassign`; Reprocesar calls existing `reprocessGuia`; Corregir manual opens dialog. Test MUST fail.
-- [ ] 7.2 **RED** — same spec file: test that Corregir-manual dialog dropdown sources materials from `rows.filter(r => r.registro === guia.registro)` only (NOT other registros); cantidad is editable; submit calls PATCH with `assignMaterialCanonical` + cantidad; `requires_review` true in payload. Test MUST fail.
-- [ ] 7.3 **GREEN** — `frontend/src/features/review/GuiaDrillDown.vue`: replace `[Reasignar]` with `[Acciones]` disclosure menu — Reasignar (existing `emit('reassign')`), Reprocesar (call `reprocessGuia`), Corregir manual (opens local dialog). Dialog: material dropdown from `props.tableRows.filter(r => r.registro === guia.registro)`; cantidad input; on submit call `editGuiaLine({ assignMaterialCanonical, cantidad })`. Tests 7.1 and 7.2 turn green.
-- [ ] 7.4 **COMMIT** — `feat(review): [Acciones] menu + Corregir manual dialog (operator-assigned canonical)` — conventional commit.
+- [x] 7.1 **RED** — `frontend/src/__tests__/features/GuiaDrillDown.acciones.test.ts`: `[Acciones]` (role=menu, aria-haspopup) renders 3 items; Reasignar emits `reassign`; Reprocesar calls `reprocessGuia(runId, guiaId)`; Corregir manual opens dialog. RED confirmed.
+- [x] 7.2 **RED** — same file: Corregir-manual dialog dropdown sources materials from `tableRows.filter(r => r.registro === props.registro)` ONLY (registro 230's material excluded); cantidad editable; submit calls `mutate` with `assign_material_canonical` + `cantidad`; guard blocks empty material. RED confirmed.
+- [x] 7.3 **GREEN** — `frontend/src/features/review/GuiaDrillDown.vue`: `[Reasignar]` button replaced by `[Acciones]` WAI-ARIA disclosure menu (roving focus, Esc/Tab close, focus restore) — Reasignar (`emit('reassign')`), Reprocesar (`reprocessGuia` + in-flight state), Corregir manual (Teleport dialog, focus-trap+restore, declared-material `<select>` scoped to `props.registro` via new `tableRows` prop threaded ReviewPage→ReviewGrid→ReconciliationRow→GuiaDrillDown). Submit → `mutate({ assign_material_canonical, cantidad })`; backend sets `match_method="operator"`+`requires_review=True`. Tests green.
+- [x] 7.4 **COMMIT** — `feat(review): [Acciones] menu + Corregir manual dialog (operator-assigned canonical)`.
 
 ## Phase 8 — SA-5 Playwright runtime validation
 *REV-R21, REV-R22, REV-R23, REV-R24, REV-R25 | SA-5 MANDATORY | PR-C*

@@ -42,6 +42,7 @@
       <div class="review-page__tabs" role="tablist" aria-label="Vistas de revisión">
         <button
           id="tab-reconciliacion"
+          ref="reconTabEl"
           class="review-page__tab"
           :class="{ 'review-page__tab--active': activeTab === 'reconciliacion' }"
           role="tab"
@@ -50,11 +51,13 @@
           :tabindex="activeTab === 'reconciliacion' ? 0 : -1"
           aria-controls="tabpanel-reconciliacion"
           @click="activeTab = 'reconciliacion'"
+          @keydown="onTabKeydown($event, 'reconciliacion')"
         >
           Reconciliación
         </button>
         <button
           id="tab-pendientes"
+          ref="pendientesTabEl"
           class="review-page__tab"
           :class="{ 'review-page__tab--active': activeTab === 'pendientes' }"
           role="tab"
@@ -63,6 +66,7 @@
           :tabindex="activeTab === 'pendientes' ? 0 : -1"
           aria-controls="tabpanel-pendientes"
           @click="activeTab = 'pendientes'"
+          @keydown="onTabKeydown($event, 'pendientes')"
         >
           Pendientes por procesar
           <span
@@ -160,7 +164,7 @@
  * Reassign flow: submit → POST reassign → invalidate table query → close dialog
  */
 
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useReconciliationStore } from '@/stores/reconciliation'
 import { useTable, useReassignGuia, useExportRun, queryKeys } from '@/composables/useReconciliationApi'
 import { getRunStatus } from '@/api/client'
@@ -235,7 +239,48 @@ const erroredCount = computed<number>(() => erroredGuias.value.length)
 // Tabs (F3 / REV-R23 / D7) — local activeTab ref, no vue-router.
 // ---------------------------------------------------------------------------
 
-const activeTab = ref<'reconciliacion' | 'pendientes'>('reconciliacion')
+type TabKey = 'reconciliacion' | 'pendientes'
+
+const activeTab = ref<TabKey>('reconciliacion')
+
+// WAI-ARIA tabs pattern (W1): roving tabindex + arrow/Home/End keyboard nav.
+const TAB_ORDER: TabKey[] = ['reconciliacion', 'pendientes']
+const reconTabEl = ref<HTMLElement | null>(null)
+const pendientesTabEl = ref<HTMLElement | null>(null)
+
+function tabElFor(key: TabKey): HTMLElement | null {
+  return key === 'reconciliacion' ? reconTabEl.value : pendientesTabEl.value
+}
+
+function activateTab(key: TabKey): void {
+  activeTab.value = key
+  void nextTick(() => tabElFor(key)?.focus())
+}
+
+function onTabKeydown(event: KeyboardEvent, current: TabKey): void {
+  const idx = TAB_ORDER.indexOf(current)
+  let next: TabKey | null = null
+  switch (event.key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      next = TAB_ORDER[(idx + 1) % TAB_ORDER.length]
+      break
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      next = TAB_ORDER[(idx - 1 + TAB_ORDER.length) % TAB_ORDER.length]
+      break
+    case 'Home':
+      next = TAB_ORDER[0]
+      break
+    case 'End':
+      next = TAB_ORDER[TAB_ORDER.length - 1]
+      break
+    default:
+      return
+  }
+  event.preventDefault()
+  if (next) activateTab(next)
+}
 
 const tableError = computed<string | null>(() =>
   tableQuery.error.value ? String(tableQuery.error.value) : null,

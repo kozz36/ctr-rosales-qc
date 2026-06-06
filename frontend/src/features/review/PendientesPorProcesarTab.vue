@@ -148,20 +148,25 @@
  * Bulk flow (REV-R21):
  *   1. Click → confirm dialog showing the call count (N guías = N llamadas).
  *   2. Confirm → reprocessRegistroBatch(runId, registro) (202, background batch).
- *   3. Button disabled + "Procesando…" while in-flight (REV-R21-S04).
- *   4. Poll: emit 'refetch' on an interval so the parent re-feeds erroredGuias;
- *      recovered guías leave the prop list incrementally (REV-R21-S02).
- *   5. When the registro's remaining count stabilizes (no shrink across a poll),
- *      finalize: recovered = total - remaining, failed = remaining → show
- *      "N recuperadas / M fallaron" (REV-R21-S03). N + M = total.
+ *   3. Button disabled + "Procesando…" while !done (REV-R21-S04).
+ *   4. Poll GET /reprocess-status every interval until `done:true` — a REAL
+ *      backend completion signal, NOT a timing guess.
+ *   5. On `done`, show "N recuperadas / M fallaron" from the REAL backend counts
+ *      (REV-R21-S03) and do a final table `refetch` so the recovered rows + the
+ *      shrunken errored list are reflected.
  *
- * D3: the 202 ReprocessBatchResponse carries only `count` (guías queued); the
- * recovered/failed split is DERIVED from the errored-list delta via polling.
+ * SA-5 fix: the previous settlement was a TIME-HEURISTIC (elapsed-floor +
+ * observed-shrink + hard-cap polling GET /table) that GUESSED completion via
+ * timing.  On a real-latency batch (Semaphore(3) + 6-14s/guía + serialized
+ * commits) it plateaued and finalized "2 recuperadas / 22 fallaron" while the
+ * backend had actually recovered 17/24.  The backend now exposes a real
+ * {total, recovered, failed, done} record; the frontend polls THAT.  A generous
+ * hard-cap remains ONLY as a failsafe against a hung batch.
  */
 
 import { ref, reactive, computed, onBeforeUnmount, nextTick } from 'vue'
 import type { ErroredGuiaResponse, ReconciliationRowResponse } from '@/api/types'
-import { reprocessRegistroBatch } from '@/api/client'
+import { reprocessRegistroBatch, getReprocessBatchStatus } from '@/api/client'
 import ErroredGuiasPanel from './ErroredGuiasPanel.vue'
 
 const props = defineProps<{
@@ -187,16 +192,11 @@ const POLL_INTERVAL_MS = 2000
 const NULL_REGISTRO_KEY = '—'
 
 /**
- * Robust settlement constants (CRITICAL fix). Backend vision is 6-14s/guía,
- * bounded by Semaphore(3); a 2s poll plateaus on the first ticks while the
- * batch is still running. We therefore never finalize on a first-tick plateau:
- *   - elapsed floor ≈ ceil(N/3) * PER_GUIA_FLOOR_MS — a lower bound for a
- *     Semaphore(3) batch to produce its first result;
- *   - hard cap ≈ N * HARD_CAP_PER_GUIA_MS — avoids an infinite poll if the
- *     errored list never shrinks (all genuinely failed).
+ * Failsafe hard-cap per guía (SA-5 fix). The PRIMARY completion signal is the
+ * backend `done` flag from GET /reprocess-status; this cap ONLY guards against a
+ * hung batch that never reports done (generous: 30s/guía).
  */
-const PER_GUIA_FLOOR_MS = 10_000
-const HARD_CAP_PER_GUIA_MS = 20_000
+const HARD_CAP_PER_GUIA_MS = 30_000
 
 interface Group {
   registro: string
@@ -227,12 +227,8 @@ function remainingFor(registro: string): number {
 
 interface BatchState {
   total: number // guías queued at firing time
-  lastRemaining: number // remaining at the previous poll (stability detector)
-  minRemaining: number // smallest remaining ever observed (recovered floor)
-  observedShrink: boolean // have we seen ≥1 guía leave the list since firing?
-  startedAt: number // Date.now() when the batch fired (elapsed-floor anchor)
-  floorMs: number // elapsed floor before a plateau may finalize (∝ N)
-  capMs: number // hard cap on total poll duration (∝ N)
+  startedAt: number // Date.now() when the batch fired (failsafe-cap anchor)
+  capMs: number // failsafe hard cap on total poll duration (∝ N)
   timer: ReturnType<typeof setInterval> | null
 }
 
@@ -330,15 +326,9 @@ async function confirmReprocess(): Promise<void> {
   if (registro === null || isInFlight(registro)) return
 
   const total = remainingFor(registro)
-  // Elapsed floor ∝ N for a Semaphore(3) batch; hard cap ∝ N.
-  const lanes = Math.max(1, Math.ceil(total / 3))
   inFlight.set(registro, {
     total,
-    lastRemaining: total,
-    minRemaining: total,
-    observedShrink: false,
     startedAt: Date.now(),
-    floorMs: lanes * PER_GUIA_FLOOR_MS,
     capMs: Math.max(1, total) * HARD_CAP_PER_GUIA_MS,
     timer: null,
   })
@@ -359,10 +349,9 @@ async function confirmReprocess(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Live polling — emit refetch every interval so the parent re-feeds
-// erroredGuias; recovered guías leave the list incrementally (REV-R21-S02).
-// The batch is settled when the registro's remaining count stops shrinking
-// between two consecutive poll ticks (or reaches 0) → derive the N/M summary.
+// Live polling — REAL backend completion signal (SA-5 fix). Poll
+// GET /reprocess-status until `done:true`; drive the N/M summary from the real
+// {recovered, failed} counts. A generous failsafe cap guards a hung batch.
 // ---------------------------------------------------------------------------
 
 function startPolling(registro: string): void {
@@ -373,78 +362,66 @@ function startPolling(registro: string): void {
     void pollTick(registro)
   }, POLL_INTERVAL_MS)
 
-  // Kick off the first refetch immediately so progress starts without waiting
-  // a full interval (no sampling here — the tick samples after refetch resolves).
-  emit('refetch')
+  // Kick off the first poll immediately so progress starts without waiting a
+  // full interval.
+  void pollTick(registro)
 }
 
 /**
- * One poll tick. Robust settlement (CRITICAL fix):
- *   - Ask the parent to refetch, then sample remaining AFTER the async round
- *     trip resolves (await nextTick) so we never read a pre-fetch value.
- *   - remaining === 0 → finalize immediately (all recovered).
- *   - A first-tick plateau (remaining still full, no observed shrink, before the
- *     elapsed floor) must NOT finalize — the batch is still running.
- *   - Finalize when remaining is stable AND (observed ≥1 shrink OR elapsed floor
- *     reached), or when the hard cap elapses (avoids an infinite poll).
+ * One poll tick (SA-5 fix). Query the backend's real batch status:
+ *   - `done:false` → keep polling; the button stays disabled. A mid-batch
+ *     plateau NEVER finalizes early (the heuristic bug this replaces).
+ *   - `done:true` → finalize with the REAL recovered/failed counts and emit a
+ *     final table refetch so the recovery is reflected.
+ *   - failsafe hard cap → finalize with the last-known counts to avoid a hung
+ *     poll if the backend never reports done.
+ *   - network error → swallow and keep polling (transient); the cap still bounds it.
  */
 async function pollTick(registro: string): Promise<void> {
-  let state = inFlight.get(registro)
+  const state = inFlight.get(registro)
   if (!state) return
 
-  // Trigger a refresh and wait for the parent's prop update to settle before
-  // sampling (the poll must read AFTER refetch resolves, not before).
-  emit('refetch')
-  await nextTick()
-
-  state = inFlight.get(registro)
-  if (!state) return
-
-  const remaining = remainingFor(registro)
   const elapsed = Date.now() - state.startedAt
 
-  // All recovered → settle now.
-  if (remaining === 0) {
-    finalize(registro)
+  let status: { recovered: number; failed: number; done: boolean } | null = null
+  try {
+    status = await getReprocessBatchStatus(props.runId, registro)
+  } catch {
+    status = null // transient — keep polling until the cap.
+  }
+
+  // Re-read state: the component may have unmounted during the await.
+  const current = inFlight.get(registro)
+  if (!current) return
+
+  if (status?.done) {
+    finalize(registro, { recovered: status.recovered, failed: status.failed })
+    // Final table refresh so recovered rows + the shrunken errored list show.
+    emit('refetch')
     return
   }
 
-  // Track the smallest remaining we have observed and whether anything left.
-  if (remaining < state.minRemaining) {
-    state.minRemaining = remaining
-    state.observedShrink = true
+  // Failsafe: never poll forever if the backend never reports done.
+  if (elapsed >= current.capMs) {
+    finalize(registro, status ? { recovered: status.recovered, failed: status.failed } : null)
+    emit('refetch')
   }
-
-  const stable = remaining >= state.lastRemaining
-  state.lastRemaining = remaining
-
-  // Hard cap: never poll forever — finalize with whatever delta we observed.
-  if (elapsed >= state.capMs) {
-    finalize(registro)
-    return
-  }
-
-  // Plateau handling: only finalize on a stable read once we have EITHER seen a
-  // shrink OR crossed the elapsed floor. A first-tick full-plateau keeps polling.
-  if (stable && (state.observedShrink || elapsed >= state.floorMs)) {
-    finalize(registro)
-  }
-  // else: still progressing or too early — keep polling.
+  // else: still running — keep polling.
 }
 
-function finalize(registro: string): void {
+function finalize(
+  registro: string,
+  counts: { recovered: number; failed: number } | null,
+): void {
   const state = inFlight.get(registro)
   if (!state) return
   if (state.timer) clearInterval(state.timer)
 
-  // Use the smallest remaining ever observed so a guía that errors mid-batch
-  // (remaining > total) can never make recovered + failed misrepresent the run.
-  const remaining = Math.min(remainingFor(registro), state.minRemaining)
-  const recovered = Math.max(0, state.total - remaining)
-  summaries[registro] = {
-    recovered,
-    failed: Math.max(0, state.total - recovered),
-  }
+  const recovered = counts ? Math.max(0, counts.recovered) : 0
+  const failed = counts
+    ? Math.max(0, counts.failed)
+    : Math.max(0, state.total - recovered)
+  summaries[registro] = { recovered, failed }
   inFlight.delete(registro)
 }
 

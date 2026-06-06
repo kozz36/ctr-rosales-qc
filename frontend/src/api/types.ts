@@ -229,6 +229,28 @@ export interface ReprocessBatchResponse {
   task: string
 }
 
+/**
+ * GET /runs/{run_id}/registros/{registro}/reprocess-status (SA-5 fix).
+ *
+ * REAL backend completion signal for the bulk AI reprocess batch. The frontend
+ * polls this until `done` is true and drives the "N recuperadas / M fallaron"
+ * summary from the real `recovered` / `failed` counts — replacing the fragile
+ * time-heuristic that settled prematurely on real latency.
+ *
+ * Mirrors backend ReprocessBatchStatusResponse (schemas.py).
+ */
+export interface ReprocessBatchStatusResponse {
+  registro: string
+  /** Number of guías queued for the batch (0 when no batch fired). */
+  total: number
+  /** Guías recovered so far. */
+  recovered: number
+  /** Guías that failed so far. */
+  failed: number
+  /** True once the backend batch coroutine has finished. */
+  done: boolean
+}
+
 /** POST /runs/{run_id}/errored-guias/{guia_id}/reprocess → 200 (PR#3) */
 export interface ReprocessGuiaResponse {
   run_id: string

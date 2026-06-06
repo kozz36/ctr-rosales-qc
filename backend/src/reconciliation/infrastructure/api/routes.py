@@ -16,6 +16,7 @@ Background task strategy:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -38,6 +39,7 @@ from reconciliation.infrastructure.api.schemas import (
     ReassignResponse,
     ReconciliationRowResponse,
     ReconciliationTableResponse,
+    ReprocessBatchResponse,
     ReprocessGuiaResponse,
     RetryBatchResponse,
     RetryGuiaResponse,
@@ -564,6 +566,7 @@ def edit_guia_line(
             line_index=body.line_index,
             material_canonical=body.material_canonical,
             new_cantidad=new_cantidad,
+            assign_material_canonical=body.assign_material_canonical,
         )
     except ValueError as exc:
         detail = str(exc)
@@ -1002,10 +1005,14 @@ def retry_registro(
     def _retry_batch() -> None:
         for eg in target_guias:
             try:
-                reprocess_service.apply_retry(
+                result = reprocess_service.apply_retry(
                     guia_id=eg.guia_id,
                     source_pages=list(eg.source_pages),
                 )
+                # Fix #42 (REV-R26): mirror the per-guía retry path — mark the guía
+                # when apply_retry fails so the frontend gates REINTENTAR correctly.
+                if result.recovered is False:
+                    review_service.mark_retry_attempted(eg.guia_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "retry_registro: apply_retry failed for %r in run %r: %s",
@@ -1096,6 +1103,90 @@ async def reprocess_guia(
         reason=result.reason,
         rows=updated_rows,
         errored_guias=remaining_errored,
+    )
+
+
+@router.post(
+    "/runs/{run_id}/registros/{registro}/reprocess",
+    response_model=ReprocessBatchResponse,
+    status_code=202,
+    summary="Bulk AI reprocess of all errored guías for a registro (REV-R20).",
+)
+async def reprocess_registro(
+    run_id: str,
+    registro: str,
+    background_tasks: BackgroundTasks,
+    registry: RunRegistry,
+) -> ReprocessBatchResponse:
+    """Start a background async batch reprocess for all errored guías in a registro.
+
+    Spec: REV-R20.
+
+    Reuses the bounded apply_reprocess coroutine (existing Semaphore(3) concurrency cap)
+    via asyncio.gather(..., return_exceptions=True) so individual failures do not abort
+    the remaining guías.  No nested event loop (D1 / D2); no mark_retry_attempted (D5 —
+    that flag is SUNAT-only, not AI-reprocess).
+
+    Returns 202 immediately; client re-polls GET /table for updated rows.
+
+    Returns:
+        202 ReprocessBatchResponse with the count of guías queued.
+
+    Errors:
+        404 — run_id unknown or no errored guías for the registro.
+        503 — vision disabled (NullVisionAdapter) or reprocess_service is None.
+    """
+    entry = _require_run(registry, run_id)
+    reprocess_service = _require_reprocess_service(entry, run_id)
+    # Bulk AI reprocess requires a real vision adapter (NOT NullVisionAdapter).
+    _require_vision_on_service(reprocess_service, run_id)
+    review_service = _require_review_service(entry, run_id)
+
+    errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []
+    target_guias = [e for e in errored_list if e.registro == registro]
+
+    if not target_guias:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No errored guías found for registro='{registro}' in run '{run_id}'.",
+        )
+
+    async def _reprocess_batch() -> None:
+        """Run all per-guía apply_reprocess calls concurrently.
+
+        The existing Semaphore(3) inside ReprocessService.apply_reprocess is the SOLE
+        concurrency limiter — no second semaphore added here (D1 / KI-2).
+        asyncio.gather with return_exceptions=True ensures per-guía isolation: one
+        failure does NOT abort the remaining guías (REV-R20-S02/S03).
+
+        mark_retry_attempted is NOT called here (D5 / REV-R26): that flag gates the
+        SUNAT REINTENTAR button, not AI reprocess.  AI reprocess is stateless-retryable.
+        """
+        results = await asyncio.gather(
+            *[
+                reprocess_service.apply_reprocess(
+                    guia_id=eg.guia_id,
+                    source_pages=list(eg.source_pages),
+                )
+                for eg in target_guias
+            ],
+            return_exceptions=True,
+        )
+        for eg, result in zip(target_guias, results):
+            if isinstance(result, Exception):
+                logger.warning(
+                    "reprocess_registro: apply_reprocess raised for %r in run %r: %s",
+                    eg.guia_id,
+                    run_id,
+                    result,
+                )
+
+    background_tasks.add_task(_reprocess_batch)
+
+    return ReprocessBatchResponse(
+        run_id=run_id,
+        registro=registro,
+        count=len(target_guias),
     )
 
 

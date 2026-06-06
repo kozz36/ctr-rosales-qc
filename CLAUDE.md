@@ -147,16 +147,21 @@ Hard anti-pattern checklist the implementation sub-agent AND the reviewer enforc
 
 ## Status & next steps
 
-**Branch `feat/guia-reprocess-reprocesar-ia` — ALL gates passed, push DEFERRED pending vision quantity-accuracy eval.**
+**MERGED to main (2026-06-06): PR#3+canonical (#46), then the bulk-viewer feature chain (#47/#48/#49).**
 
-PR#3 (Reprocesar con IA) + canonical-matching fix VALIDATED:
-- sdd-verify PR#3 (PASS-WITH-WARNINGS, 0 CRITICAL, 272 backend + 272 frontend vitest green, vue-tsc clean).
-- **Canonical-matching fix**: dual-spec normalization (Tier 1) + grade-tolerant recovery (Tier 2) — JD-APPROVED after 3 rounds. Fixes 11 real UNRESOLVED → 3 deterministic + 8 grade_tolerant+requires_review (OCR misreads 580/680/660). JD CRITICAL fixes: illegible-grade guard context-anchored (not whole-string scan); `{2,3}` digit quantifier excludes diameter leads (`1"`, `1 3/8"`) — data-corrupting regression caught by JD that the green suite masked.
-- SA-5 Playwright runtime validation COMPLETE: grade_tolerant rows render in UI with requires_review badges; reprocess button gated on retry_attempted; table invalidation on reprocess-success.
+PR#3 (Reprocesar con IA) + canonical-matching fix — **MERGED #46** (single PR + `size:exception`; JD×2 + ctr-review + SA-5 all passed). Dual-spec normalization (Tier 1) + grade-tolerant recovery (Tier 2); illegible-grade guard context-anchored; `{2,3}` digit quantifier excludes diameter leads (`1"`, `1 3/8"`).
 
-**Push deferred**: `kimi-k2.5:cloud` is fastest for table reads but **quantity accuracy unverified** — observed read 0.091 vs guía 191. `requires_review=True` is the safety net; a qwen-vs-kimi quantity-accuracy eval is the **TOP backlog item** before prod use. **Vision model findings**: kimi-k2.5:cloud fastest+reliable (avg 6-10s); qwen3.5:397b-cloud reliable but slower (9-14s, needs `DEADLINE_S≥45`); qwen3.5:9b TOO WEAK for table extraction (returns generic `ACERO DIMENSIONADO`, no quantities). Config for reprocess: `provider=ollama, OLLAMA__MODEL=kimi-k2.5:cloud, DEADLINE_S=60`. **Deadline-guard follow-up**: under throttle the abandoned in-flight request is still billed (thread not cancelled); in the long-running server context the httpx request should be cancelled instead of abandoned (not blocking PR#3).
+**`guia-reprocess-bulk-viewer` (SDD, MERGED + archived)** — 4 UX features over 3 stacked-to-main PRs:
+- **#47 PR-A backend**: `POST /runs/{id}/registros/{registro}/reprocess` (202, async `_run_reprocess_batch` over the bounded `Semaphore(3)` `apply_reprocess`) + **batch-status signal** `GET .../reprocess-status` `{total,recovered,failed,done}` + operator-assign (`match_method="operator"`, requires_review) + #42 fix (`_retry_batch` mark_retry_attempted).
+- **#48 PR-B frontend**: tabs **Reconciliación | Pendientes por procesar** (count badge) + per-Registro **"Procesar todos con IA"** (confirm dialog w/ call count, live progress, N/M summary).
+- **#49 PR-C frontend**: drill-down **guía serie-número + Páginas chips → PageSheetViewer**; **[Acciones]** menu (Reasignar/Reprocesar/**Corregir manual** = operator picks a declared material of the registro + cantidad).
+- **SA-5 caught a real bug**: bulk live-progress settled PREMATURELY (UI 2/22 vs backend truth 17/24) — root cause: frontend time-heuristic guessing batch completion. Fix = backend done-signal; re-validated UI shows 18/6 EXACTLY matching backend. **Lesson: poll-based progress needs a real completion signal, never a timing heuristic.** Spec REV-R20–R26 merged into `openspec/specs/review/spec.md`.
 
-**Test counts**: 886+ backend targeted + 188+ frontend vitest passing (monolithic `pytest -q` still hangs on paddle import — targeted paths only). Real-PDF gates pass on the subset.
+**Vision model (reprocess) findings (#40 eval, CLOSED)**: N=5 quantity-accuracy — kimi-k2.5:cloud 83% > qwen3.5:397b-cloud 77%; **neither reliable alone** (kimi empty-returns ~20-40% some pages; qwen systematic single-value misreads). `requires_review=True` on every recovered/operator/grade_tolerant line is the **mandatory** safety net. Picked **kimi-k2.5:cloud** (faster+accurate when it answers). Accuracy-upgrade path = **cross-model consensus (#44)**. Config: `provider=ollama, OLLAMA__MODEL=kimi-k2.5:cloud, DEADLINE_S=60`.
+
+**Open follow-ups (issues)**: #44 cross-model consensus · #41 deadline-guard request-amplification (cancel in-flight) · #45 status endpoint stale errored-count after reprocess (use `/table`, the fresh source) · #43 3-map unit consolidation · #42 verify in batch.
+
+**Test counts**: ~1300+ backend targeted + 322 frontend vitest passing (monolithic `pytest -q` still hangs on paddle import — targeted paths only). SA-5 evidence in `docs/playwright/` (gitignored).
 
 `ocr.enabled=false` is a config escape hatch (NullOcrExtractor → ZERO paddle) for machines
 where the paddle runtime is broken; SUNAT then supplies quantities. `vision.enabled=false`

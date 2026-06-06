@@ -22,7 +22,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1262,3 +1262,110 @@ class TestRetryAttemptedEndToEnd:
         assert table.status_code == 200
         errored = table.json()["errored_guias"]
         assert errored[0]["retry_attempted"] is False
+
+
+# ---------------------------------------------------------------------------
+# Task 1.1 / 1.2 — POST /runs/{run_id}/registros/{registro}/reprocess (REV-R20)
+# ---------------------------------------------------------------------------
+
+
+class TestReprocessRegistroEndpoint:
+    """RED tests for the bulk per-registro AI reprocess endpoint (REV-R20).
+
+    Written FIRST (before the route exists) so they fail until implementation.
+    """
+
+    def _seed_bulk_run(
+        self,
+        client: TestClient,
+        run_id: str,
+        reprocess_service: object | None,
+        errored_guias: list[Any] | None = None,
+    ) -> MagicMock:
+        """Inject a run entry with a real review_service mock."""
+        from reconciliation.domain.models import ErroredGuia  # noqa: PLC0415
+
+        review_svc = MagicMock()
+        review_svc.errored_guias = errored_guias or []
+        review_svc.rows = []
+
+        registry = client.app.state.run_registry  # type: ignore[attr-defined]
+        registry[run_id] = {
+            "status": "review",
+            "review_service": review_svc,
+            "reprocess_service": reprocess_service,
+            "ctx": None,
+            "result": None,
+            "vision_calls_made": 0,
+            "warnings": [],
+            "errored_guias": errored_guias or [],
+        }
+        return review_svc
+
+    def test_returns_202_with_reprocess_batch_response(self, client: TestClient) -> None:
+        """REV-R20-S01: POST .../registros/{registro}/reprocess → 202 with ReprocessBatchResponse.
+
+        Task 1.1 RED: this MUST fail before the route is implemented.
+        """
+        from reconciliation.domain.models import ErroredGuia  # noqa: PLC0415
+
+        run_id = str(uuid.uuid4())
+        errored = [
+            ErroredGuia(registro="R001", guia_id="T009-0001", source_pages=[1]),
+            ErroredGuia(registro="R001", guia_id="T009-0002", source_pages=[2]),
+        ]
+        fake_service = MagicMock()
+        fake_service._vision = MagicMock()  # real (non-Null) vision adapter
+        fake_service.apply_reprocess = AsyncMock(return_value=MagicMock(recovered=True, rows=[]))
+        self._seed_bulk_run(client, run_id, fake_service, errored)
+
+        resp = client.post(f"/api/v1/runs/{run_id}/registros/R001/reprocess")
+        assert resp.status_code == 202
+        body = resp.json()
+        # ReprocessBatchResponse fields
+        assert body["run_id"] == run_id
+        assert body["registro"] == "R001"
+        assert "count" in body
+        assert body["count"] == 2
+        assert body.get("task") == "started"
+
+    def test_returns_503_when_vision_disabled(self, client: TestClient) -> None:
+        """REV-R20-S06: vision disabled → 503 vision_disabled (not silent no-op).
+
+        Task 1.2 RED: this MUST fail before the route is implemented.
+        """
+        from reconciliation.adapters.vision.null_vision import NullVisionAdapter  # noqa: PLC0415
+        from reconciliation.domain.models import ErroredGuia  # noqa: PLC0415
+
+        run_id = str(uuid.uuid4())
+        errored = [ErroredGuia(registro="R001", guia_id="T009-0001", source_pages=[1])]
+        fake_service = MagicMock()
+        fake_service._vision = NullVisionAdapter()
+        self._seed_bulk_run(client, run_id, fake_service, errored)
+
+        resp = client.post(f"/api/v1/runs/{run_id}/registros/R001/reprocess")
+        assert resp.status_code == 503
+        assert "vision_disabled" in resp.json()["detail"]
+
+    def test_returns_404_when_no_errored_guias_for_registro(
+        self, client: TestClient
+    ) -> None:
+        """REV-R20: 404 when no errored guías exist for the registro."""
+        run_id = str(uuid.uuid4())
+        fake_service = MagicMock()
+        fake_service._vision = MagicMock()
+        self._seed_bulk_run(client, run_id, fake_service, [])
+
+        resp = client.post(f"/api/v1/runs/{run_id}/registros/R999/reprocess")
+        assert resp.status_code == 404
+
+    def test_returns_503_when_reprocess_service_none(self, client: TestClient) -> None:
+        """reprocess_service is None (both disabled) → 503."""
+        from reconciliation.domain.models import ErroredGuia  # noqa: PLC0415
+
+        run_id = str(uuid.uuid4())
+        errored = [ErroredGuia(registro="R001", guia_id="T009-0001", source_pages=[1])]
+        self._seed_bulk_run(client, run_id, None, errored)
+
+        resp = client.post(f"/api/v1/runs/{run_id}/registros/R001/reprocess")
+        assert resp.status_code == 503

@@ -507,6 +507,19 @@ class RetryBatchResponse(BaseModel):
     task: str = Field(default="started", description="Task handle (always 'started').")
 
 
+class ReprocessBatchResponse(BaseModel):
+    """Response for POST /runs/{run_id}/registros/{registro}/reprocess → 202 Accepted.
+
+    Bulk per-registro AI reprocess (REV-R20 / D4).  Background task started;
+    client re-polls GET /table for updated rows as guías are recovered.
+    """
+
+    run_id: str
+    registro: str
+    count: int = Field(description="Number of errored guías queued for reprocess.")
+    task: str = Field(default="started", description="Task handle (always 'started').")
+
+
 class ReprocessGuiaResponse(BaseModel):
     """Response for POST /runs/{run_id}/errored-guias/{guia_id}/reprocess (PR#3).
 

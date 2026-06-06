@@ -283,3 +283,120 @@ class TestOperatorMatchMethodDTO:
         )
         serialized = row.model_dump()
         assert serialized["match_method"] == "operator"
+
+
+# ---------------------------------------------------------------------------
+# F4 sidecar round-trip: manual_correction replay after restart (RED first)
+# ---------------------------------------------------------------------------
+
+
+class TestManualCorrectionSidecarRoundTrip:
+    """Strict-TDD RED: manual_correction must survive a server restart.
+
+    Failure class: operator-assign audit event is emitted + persisted but
+    restore_from_sidecar has NO replay branch for 'manual_correction'.
+    On restart the line reverts to its pre-correction description_canonical
+    and match_method — silent data loss.
+
+    The persisted event must carry BOTH the operator-chosen canonical AND the
+    corrected cantidad so the replay produces the exact post-correction state.
+
+    These tests MUST FAIL against current code (no replay branch exists).
+    """
+
+    def _setup_and_apply(
+        self, tmp_path: Path
+    ) -> tuple["ReviewService", list, list, "RunContext"]:
+        """Shared setup: create svc, apply operator correction, return originals for restore."""
+        ctx = _make_ctx(tmp_path)
+        guia = _make_guia(lines=[_make_guia_line(desc="acero dimensionado", qty="2.0")])
+        declared = [_make_registro()]
+        rows = ReconciliationService().reconcile(declared, [guia])
+
+        svc = ReviewService(declared=declared, guias=[guia], rows=rows, ctx=ctx)
+        svc.apply_guia_line_edit(
+            guia_id="T009-0001",
+            line_index=0,
+            material_canonical="acero dimensionado",
+            new_cantidad=Decimal("3.5"),
+            assign_material_canonical="BARRA A615 G60 1/2 9M",
+        )
+        # Return originals so restore_from_sidecar starts fresh
+        fresh_guias = [_make_guia(lines=[_make_guia_line(desc="acero dimensionado", qty="2.0")])]
+        fresh_rows = ReconciliationService().reconcile(declared, fresh_guias)
+        return svc, declared, fresh_guias, fresh_rows, ctx
+
+    def test_sidecar_round_trip_restores_canonical(self, tmp_path: Path) -> None:
+        """manual_correction survives persist → fresh restore: description_canonical."""
+        _, declared, fresh_guias, fresh_rows, ctx = self._setup_and_apply(tmp_path)
+
+        # Simulate server restart: restore from sidecar into a fresh service.
+        restored = ReviewService.restore_from_sidecar(
+            declared=declared,
+            guias=fresh_guias,
+            rows=fresh_rows,
+            ctx=ctx,
+            errored_guias=[],
+        )
+
+        restored_guia = next(g for g in restored.guias if g.guia_id == "T009-0001")
+        line = restored_guia.lines[0]
+        assert line.description_canonical == "BARRA A615 G60 1/2 9M", (
+            f"Expected operator canonical after replay, got {line.description_canonical!r}"
+        )
+
+    def test_sidecar_round_trip_restores_match_method(self, tmp_path: Path) -> None:
+        """manual_correction survives persist → fresh restore: match_method='operator'."""
+        _, declared, fresh_guias, fresh_rows, ctx = self._setup_and_apply(tmp_path)
+
+        restored = ReviewService.restore_from_sidecar(
+            declared=declared,
+            guias=fresh_guias,
+            rows=fresh_rows,
+            ctx=ctx,
+            errored_guias=[],
+        )
+
+        restored_guia = next(g for g in restored.guias if g.guia_id == "T009-0001")
+        line = restored_guia.lines[0]
+        assert line.match_method == "operator", (
+            f"Expected match_method='operator' after replay, got {line.match_method!r}"
+        )
+
+    def test_sidecar_round_trip_preserves_requires_review(self, tmp_path: Path) -> None:
+        """manual_correction replay keeps requires_review=True."""
+        _, declared, fresh_guias, fresh_rows, ctx = self._setup_and_apply(tmp_path)
+
+        restored = ReviewService.restore_from_sidecar(
+            declared=declared,
+            guias=fresh_guias,
+            rows=fresh_rows,
+            ctx=ctx,
+            errored_guias=[],
+        )
+
+        restored_guia = next(g for g in restored.guias if g.guia_id == "T009-0001")
+        line = restored_guia.lines[0]
+        assert line.requires_review is True, "Replay must keep requires_review=True"
+
+    def test_sidecar_round_trip_restores_cantidad(self, tmp_path: Path) -> None:
+        """manual_correction replay restores the corrected cantidad (faithful replay).
+
+        The persisted event must store cantidad alongside canonical so the replay
+        reproduces the EXACT post-correction state — not just the canonical.
+        """
+        _, declared, fresh_guias, fresh_rows, ctx = self._setup_and_apply(tmp_path)
+
+        restored = ReviewService.restore_from_sidecar(
+            declared=declared,
+            guias=fresh_guias,
+            rows=fresh_rows,
+            ctx=ctx,
+            errored_guias=[],
+        )
+
+        restored_guia = next(g for g in restored.guias if g.guia_id == "T009-0001")
+        line = restored_guia.lines[0]
+        assert line.cantidad == Decimal("3.5"), (
+            f"Expected corrected cantidad=3.5 after replay, got {line.cantidad}"
+        )

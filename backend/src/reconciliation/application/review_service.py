@@ -344,7 +344,13 @@ class ReviewService:
                 },
                 field="description_canonical",
                 old_value=old_line.description_canonical,
-                new_value=assign_material_canonical,
+                # Store both canonical and cantidad so restore_from_sidecar can
+                # faithfully replay the exact post-correction state (canonical +
+                # cantidad) without silent partial-state loss on restart.
+                new_value={
+                    "assign_material_canonical": assign_material_canonical,
+                    "cantidad": str(new_cantidad),
+                },
             )
         else:
             # Original cantidad-only path (backward-compatible).
@@ -716,6 +722,44 @@ class ReviewService:
                 # FIX 1: replay the failed-retry flag so it survives a restart.
                 try:
                     service.mark_retry_attempted(guia_id)
+                except (ValueError, ReconciliationError):
+                    pass
+
+            elif kind == "manual_correction":
+                # F4: replay the operator-assigned canonical correction.
+                # new_value is a dict: {"assign_material_canonical": str, "cantidad": str}.
+                # Both fields are required for a faithful replay — canonical without
+                # cantidad would silently revert the corrected quantity on restart.
+                raw_new = edit.get("new_value")
+                if not isinstance(raw_new, dict):
+                    # Older event format stored only the canonical string; skip these
+                    # to avoid producing a partial state that masks the quantity mismatch.
+                    logger.warning(
+                        "restore_from_sidecar: manual_correction event for guia_id=%r "
+                        "has unexpected new_value format %r; skipping replay.",
+                        guia_id,
+                        raw_new,
+                    )
+                    continue
+                assign_canonical = raw_new.get("assign_material_canonical")
+                raw_cantidad = raw_new.get("cantidad")
+                if not assign_canonical or raw_cantidad is None:
+                    continue
+                line_index = target.get("line_index")
+                material_canonical = target.get("material_canonical")
+                try:
+                    from decimal import Decimal as _Decimal, InvalidOperation as _InvalidOp  # noqa: PLC0415
+                    replay_cantidad = _Decimal(str(raw_cantidad))
+                except (_InvalidOp, TypeError, ValueError):
+                    continue
+                try:
+                    service.apply_guia_line_edit(
+                        guia_id,
+                        line_index,
+                        material_canonical,
+                        replay_cantidad,
+                        assign_material_canonical=assign_canonical,
+                    )
                 except (ValueError, ReconciliationError):
                     pass
 

@@ -210,6 +210,25 @@ export interface RetryBatchResponse {
   task: string
 }
 
+/**
+ * POST /runs/{run_id}/registros/{registro}/reprocess → 202 (F1 / REV-R20).
+ *
+ * Bulk per-Registro AI reprocess. The 202 body reports the COUNT of guías
+ * queued for background vision reprocess — it does NOT carry recovered/failed.
+ * The "N recuperadas / M fallaron" summary is DERIVED frontend-side by polling
+ * GET /table and comparing the errored-list delta (design D3).
+ *
+ * Mirrors backend ReprocessBatchResponse (schemas.py).
+ */
+export interface ReprocessBatchResponse {
+  run_id: string
+  registro: string
+  /** Number of errored guías queued for reprocess. */
+  count: number
+  /** Task handle — always "started". */
+  task: string
+}
+
 /** POST /runs/{run_id}/errored-guias/{guia_id}/reprocess → 200 (PR#3) */
 export interface ReprocessGuiaResponse {
   run_id: string
@@ -257,6 +276,13 @@ export interface GuiaLineEditRequest {
   line_index: number | null
   material_canonical: string | null
   cantidad: number // numeric (not string) — backend expects float ge=0
+  /**
+   * F4 / REV-R25: operator-assigned canonical correction. When present the
+   * backend reassigns the guía line to this declared material, sets
+   * match_method="operator" and requires_review=True. snake_case to mirror the
+   * backend GuiaLineEditRequest body posted verbatim (consumed in PR-C).
+   */
+  assign_material_canonical?: string | null
 }
 
 /** The updated rows are returned, same shape as the table endpoint. */

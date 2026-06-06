@@ -19,6 +19,7 @@ import type {
   ReassignRequest,
   ReassignResponse,
   ReconciliationTableResponse,
+  ReprocessBatchResponse,
   ReprocessGuiaResponse,
   RetryBatchResponse,
   RetryGuiaResponse,
@@ -182,6 +183,22 @@ export async function reprocessGuia(
 ): Promise<ReprocessGuiaResponse> {
   const { data } = await http.post<ReprocessGuiaResponse>(
     `/runs/${runId}/errored-guias/${encodeURIComponent(guiaId)}/reprocess`,
+  )
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// POST /runs/{run_id}/registros/{registro}/reprocess — bulk per-Registro AI
+// reprocess (F1 / REV-R20). 202: background batch started; client polls
+// GET /table for the recovered/failed delta (D3).
+// ---------------------------------------------------------------------------
+
+export async function reprocessRegistroBatch(
+  runId: string,
+  registro: string,
+): Promise<ReprocessBatchResponse> {
+  const { data } = await http.post<ReprocessBatchResponse>(
+    `/runs/${runId}/registros/${encodeURIComponent(registro)}/reprocess`,
   )
   return data
 }

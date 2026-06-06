@@ -37,40 +37,94 @@
       <span v-if="runStatus?.error">: {{ runStatus.error }}</span>
     </div>
 
-    <!-- Unresolved guías bucket (REV-C04) — shown above the grid when guías exist -->
-    <UnresolvedGuiasPanel
-      v-if="isReady && unresolvedGuias.length > 0"
-      :unresolved-guias="unresolvedGuias"
-      @assign-guia="onAssignUnresolved"
-    />
+    <!-- Tabs: Reconciliación | Pendientes por procesar (F3 / REV-R23 / D7) -->
+    <template v-if="isReady">
+      <div class="review-page__tabs" role="tablist" aria-label="Vistas de revisión">
+        <button
+          id="tab-reconciliacion"
+          ref="reconTabEl"
+          class="review-page__tab"
+          :class="{ 'review-page__tab--active': activeTab === 'reconciliacion' }"
+          role="tab"
+          type="button"
+          :aria-selected="activeTab === 'reconciliacion'"
+          :tabindex="activeTab === 'reconciliacion' ? 0 : -1"
+          aria-controls="tabpanel-reconciliacion"
+          @click="activeTab = 'reconciliacion'"
+          @keydown="onTabKeydown($event, 'reconciliacion')"
+        >
+          Reconciliación
+        </button>
+        <button
+          id="tab-pendientes"
+          ref="pendientesTabEl"
+          class="review-page__tab"
+          :class="{ 'review-page__tab--active': activeTab === 'pendientes' }"
+          role="tab"
+          type="button"
+          :aria-selected="activeTab === 'pendientes'"
+          :tabindex="activeTab === 'pendientes' ? 0 : -1"
+          aria-controls="tabpanel-pendientes"
+          @click="activeTab = 'pendientes'"
+          @keydown="onTabKeydown($event, 'pendientes')"
+        >
+          Pendientes por procesar
+          <span
+            v-if="erroredCount > 0"
+            class="review-page__tab-badge"
+            :aria-label="`${erroredCount} guías con error pendientes`"
+          >
+            {{ erroredCount }}
+          </span>
+        </button>
+      </div>
 
-    <!-- Errored guías panel (REV-E05 + REV-R09 REINTENTAR) — shown above the grid when entries exist -->
-    <ErroredGuiasPanel
-      v-if="isReady && erroredGuias.length > 0"
-      :errored-guias="erroredGuias"
-      :run-id="id"
-      @retry="void tableQuery.refetch()"
-      @retry-success="void tableQuery.refetch()"
-      @retry-settled="void tableQuery.refetch()"
-      @reprocess="void tableQuery.refetch()"
-      @reprocess-success="void tableQuery.refetch()"
-      @reprocess-settled="void tableQuery.refetch()"
-    />
+      <!-- Reconciliación tab -->
+      <div
+        v-show="activeTab === 'reconciliacion'"
+        id="tabpanel-reconciliacion"
+        role="tabpanel"
+        aria-labelledby="tab-reconciliacion"
+        tabindex="0"
+      >
+        <!-- Unresolved guías bucket (REV-C04) — shown above the grid when guías exist -->
+        <UnresolvedGuiasPanel
+          v-if="unresolvedGuias.length > 0"
+          :unresolved-guias="unresolvedGuias"
+          @assign-guia="onAssignUnresolved"
+        />
 
-    <!-- Review grid (only when ready) -->
-    <ReviewGrid
-      v-if="isReady"
-      :rows="rows"
-      :run-id="id"
-      :is-loading="tableQuery.isFetching.value"
-      :error="tableError"
-      :pending-edits="reconciliationStore.pendingEdits"
-      :active-filter="reconciliationStore.statusFilter"
-      @open-reassign="onReassignRequest"
-      @page-click="onPageClick"
-      @filter-change="reconciliationStore.setFilter"
-      @retry="void tableQuery.refetch()"
-    />
+        <!-- Review grid -->
+        <ReviewGrid
+          :rows="rows"
+          :run-id="id"
+          :is-loading="tableQuery.isFetching.value"
+          :error="tableError"
+          :pending-edits="reconciliationStore.pendingEdits"
+          :active-filter="reconciliationStore.statusFilter"
+          @open-reassign="onReassignRequest"
+          @page-click="onPageClick"
+          @filter-change="reconciliationStore.setFilter"
+          @retry="void tableQuery.refetch()"
+        />
+      </div>
+
+      <!-- Pendientes por procesar tab (errored panel + per-Registro bulk reprocess) -->
+      <div
+        v-if="activeTab === 'pendientes'"
+        id="tabpanel-pendientes"
+        role="tabpanel"
+        aria-labelledby="tab-pendientes"
+        tabindex="0"
+      >
+        <PendientesPorProcesarTab
+          :errored-guias="erroredGuias"
+          :run-id="id"
+          :rows="rows"
+          @refetch="void tableQuery.refetch()"
+        />
+      </div>
+    </template>
 
     <!-- Reassign dialog (rev-2: uses guiaId instead of row_id proxy) -->
     <GuiaReassignDialog
@@ -110,7 +164,7 @@
  * Reassign flow: submit → POST reassign → invalidate table query → close dialog
  */
 
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useReconciliationStore } from '@/stores/reconciliation'
 import { useTable, useReassignGuia, useExportRun, queryKeys } from '@/composables/useReconciliationApi'
 import { getRunStatus } from '@/api/client'
@@ -120,7 +174,7 @@ import ReviewGrid from './ReviewGrid.vue'
 import GuiaReassignDialog from './GuiaReassignDialog.vue'
 import ExportButton from './ExportButton.vue'
 import UnresolvedGuiasPanel from './UnresolvedGuiasPanel.vue'
-import ErroredGuiasPanel from './ErroredGuiasPanel.vue'
+import PendientesPorProcesarTab from './PendientesPorProcesarTab.vue'
 import PageSheetViewer from './PageSheetViewer.vue'
 
 const props = defineProps<{
@@ -177,6 +231,56 @@ const unresolvedGuias = computed<UnresolvedGuiaResponse[]>(
 const erroredGuias = computed<ErroredGuiaResponse[]>(
   () => tableQuery.data.value?.errored_guias ?? [],
 )
+
+/** F3 / REV-R23: Pendientes tab badge count — updates as guías recover. */
+const erroredCount = computed<number>(() => erroredGuias.value.length)
+
+// ---------------------------------------------------------------------------
+// Tabs (F3 / REV-R23 / D7) — local activeTab ref, no vue-router.
+// ---------------------------------------------------------------------------
+
+type TabKey = 'reconciliacion' | 'pendientes'
+
+const activeTab = ref<TabKey>('reconciliacion')
+
+// WAI-ARIA tabs pattern (W1): roving tabindex + arrow/Home/End keyboard nav.
+const TAB_ORDER: TabKey[] = ['reconciliacion', 'pendientes']
+const reconTabEl = ref<HTMLElement | null>(null)
+const pendientesTabEl = ref<HTMLElement | null>(null)
+
+function tabElFor(key: TabKey): HTMLElement | null {
+  return key === 'reconciliacion' ? reconTabEl.value : pendientesTabEl.value
+}
+
+function activateTab(key: TabKey): void {
+  activeTab.value = key
+  void nextTick(() => tabElFor(key)?.focus())
+}
+
+function onTabKeydown(event: KeyboardEvent, current: TabKey): void {
+  const idx = TAB_ORDER.indexOf(current)
+  let next: TabKey | null = null
+  switch (event.key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      next = TAB_ORDER[(idx + 1) % TAB_ORDER.length]
+      break
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      next = TAB_ORDER[(idx - 1 + TAB_ORDER.length) % TAB_ORDER.length]
+      break
+    case 'Home':
+      next = TAB_ORDER[0]
+      break
+    case 'End':
+      next = TAB_ORDER[TAB_ORDER.length - 1]
+      break
+    default:
+      return
+  }
+  event.preventDefault()
+  if (next) activateTab(next)
+}
 
 const tableError = computed<string | null>(() =>
   tableQuery.error.value ? String(tableQuery.error.value) : null,
@@ -356,6 +460,59 @@ function onPageClick(page: number): void {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* Tabs (F3 / REV-R23) */
+.review-page__tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.review-page__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.review-page__tab:hover {
+  color: var(--text-primary);
+}
+
+.review-page__tab:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-radius: var(--radius-sm);
+}
+
+.review-page__tab--active {
+  color: var(--action-primary, var(--text-primary));
+  border-bottom-color: var(--action-primary, var(--text-primary));
+}
+
+.review-page__tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-pill);
+  background-color: var(--status-mismatch-bg, #fde8e8);
+  color: var(--status-mismatch-fg, #c0392b);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Error state */

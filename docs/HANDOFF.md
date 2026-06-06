@@ -4,10 +4,8 @@
 > original machine** and does NOT travel with the repo. This document (plus the other
 > files in `docs/`) is the versioned source of truth for continuing the work anywhere.
 
-Last session: **2026-06-03** (close-out session). All gates passed: sdd-verify → JD core
-(R8/R9/r10) → JD base (rev-2 areas) → KI-4 e2e captured → sdd-archive → visual validation.
-Branch `feat/rev2-identity-domain` — **READY TO PUSH** (not yet pushed). **Only action
-remaining: push + PRs (user-gated). See §3 REVISED — steps 1-5 all DONE.**
+Last session: **2026-06-06**. Current branch: `main`. All recent PRs merged.
+**Next action: start SDD#1 (deterministic OCR backend).** See §SDD-plan.
 
 ---
 
@@ -15,169 +13,141 @@ remaining: push + PRs (user-gated). See §3 REVISED — steps 1-5 all DONE.**
 
 A local-first QC tool for a civil-engineering quality engineer. It ingests a 493-page
 Autodesk Forma PDF export (`CTR-PLC01-FR001 Recepción de Materiales en Obra`) and
-reconciles, per **Registro N° + fecha de recepción**, the **declared** materials (digital
-text from the detail page Notes + Protocolo de Recepción) against the **summed** materials
-from the scanned **guías de remisión**. It flags mismatches, lets the engineer reassign
-misfiled guías, and exports the reconciled table to xlsx/csv.
+reconciles, per **Registro N°**, the **declared** materials (digital text from the detail
+page Notes + Protocolo de Recepción) against the **summed** materials from the scanned
+**guías de remisión**. It flags mismatches, lets the engineer reassign misfiled guías, and
+exports the reconciled table to xlsx/csv.
 
 Full domain context: `docs/DECISIONS.md`. Architecture: `docs/ARCHITECTURE.md`.
+Eval results: `docs/EVAL-RESULTS.md`.
 
-## 2. Current state (DAG)
+## 2. Current state (all merged to main as of 2026-06-06)
 
 ```
-proposal ✅  spec ✅(rev-2+rev-3 delta)  design ✅ rev-2  tasks ✅(98/98 complete)
-apply ✅ ALL COMPLETE — branch feat/rev2-identity-domain (NOT pushed)
-verify ✅   judgment-day ✅   archive ✅   visual-validation ✅
+PR #46  feat/guia-reprocess-reprocesar-ia   MERGED  Reprocesar con IA + canonical-matching fix
+PR #47  Backend: bulk endpoint + #42 fix    MERGED  guia-reprocess-bulk-viewer (PR-A)
+PR #48  Frontend: tabs + bulk UX            MERGED  guia-reprocess-bulk-viewer (PR-B)
+PR #49  Frontend: viewer + Acciones + SA-5  MERGED  guia-reprocess-bulk-viewer (PR-C)
 ```
 
-- **Backend**: 886 unit/targeted tests passing. Run targeted (not monolithic — paddle import
-  hangs `pytest -q` on this machine). Branch `feat/rev2-identity-domain`.
-  Runs: `cd backend && uvicorn reconciliation.infrastructure.api.main:app --reload`.
-- **Frontend**: 188 vitest passing, 0 TS errors. `cd frontend && npm install && npm run dev`.
-- **Heavy deps**: `pyzbar`, `zxing-cpp`, `pillow`, `numpy`, `paddleocr`, `openai` installed
-  in the dev venv (uv, Python 3.12) on the development machine.
-- **Ollama models pulled**: `qwen3.5:9b` (6.6GB, vision — local model); `qwen3.5:397b-cloud`
-  (Ollama cloud) used for the KI-4 e2e gate.
-- **PaddleOCR status**: paddle 3.3.1 + paddleocr 3.6.0 API compat fixed (R5); BUT
-  `predict()` raises `NotImplementedError` (oneDNN/PIR CPU bug on this machine). Graceful
-  degradation active — runs complete with OCR quantities empty + `_ocr_failed=True` warning.
-  See `docs/DECISIONS.md` §rev-3 R6–R7.
+- **Test counts**: ~1300+ backend targeted + 322 frontend vitest passing. Monolithic
+  `pytest -q` still hangs on paddle import — use targeted paths only.
+- **Backend**: `uvicorn reconciliation.infrastructure.api.main:app --reload` from `backend/`.
+- **Frontend**: `npm install && npm run dev` from `frontend/`.
+- **Vision model in use**: `kimi-k2.5:cloud` via `OpenAICompatibleVisionAdapter` (Ollama
+  cloud). Config: `provider=ollama, OLLAMA__MODEL=kimi-k2.5:cloud, DEADLINE_S=60`.
+- **OCR status**: `RECONCILIATION__OCR__ENABLED=false` (paddle excluded from runtime image).
+  This is the structural issue SDD#1 addresses.
 
-## 3. RESUME HERE — REVISED plan (user, 2026-06-03 close-out session)
+## 3. RESUME HERE — SDD plan (approved 2026-06-06)
 
-**ALL STEPS COMPLETE. Only action remaining: push + PRs (user-gated).**
+**Two sequential SDDs.** OCR backend FIRST (no UI changes), then the UI for dropped-guía
+recovery. SDD execution: **interactive · hybrid artifact store · ask-on-risk delivery ·
+stacked-to-main chains. Frontend-visual apply → opus model.**
 
-R8 (canonical matching), R9 (fecha-divergence), `ocr.enabled`, and r10 (containerized
-cloud-vision verification) were implemented + committed. Close-out proceeded:
+### SDD#1 — Deterministic OCR backend (NO UI)
 
-1. ✅ **sdd-verify** — PASS-WITH-WARNINGS (R8/R9/r10 + base material-reconciliation).
-2. ✅ **judgment-day core (R8+R9+r10)** — APPROVED after 3 rounds. Fixed: C1 stale gate
-   test, C2-A cross-registro match_method/requires_review pollution, C2-B ISO date y-m-d
-   parse order, KI-1 graceful vision-cap degrade (ba3b0c5), W1 dead-code concurrency shrink,
-   W2-A/B declared reads cap + racy SUNAT pacing. Commits 7e5f897..ba3b0c5, 596704f..182d72a, a3069ad.
-3. ✅ **judgment-day base (rev-2 areas)** — APPROVED after 2 rounds. Fixed: guía line-edit
-   dead feature (HTTP 422), restart data-loss (guia_line_edit not replayed; vision_audit
-   destroyed on first review mutation), section-ID-as-Registro guard, idempotent reassign.
-   Commits 010036c, ca65b0b, a0aeb99.
-4. ✅ **KI-4 faithful e2e captured** — `TestR9RealPDFGate` 5/5 PASS in 6:05 on pages 1-25
-   subset. See §known-open-rev3b for recipe.
-5. ✅ **sdd-archive** — 8 capability specs → `openspec/specs/`; 4 changes →
-   `openspec/changes/archive/`. Commit ef15a61.
-6. ✅ **Visual validation** (Playwright) — review table, R8 MATCH "Conforme" 4.124 TN, R9
-   divergence badges + requires_review + year-inferred + page-refs, filters, drill-down,
-   XLSX+CSV export 13 cols including Método/Revisión/Año-inferido — 0 console errors.
+**Goal**: re-enable deterministic OCR in the deployed (paddle-free) image. Make OCR the
+primary quantity extractor; reduce vision to date reads + illegible-page fallback.
 
-7. **Push + PRs** (user-gated). Branch is READY.
+**Key decisions** (from OCR engine eval — see `docs/EVAL-RESULTS.md` §2):
+1. **Engine**: RapidOCR (PP-OCRv5 server, ONNXRuntime). `pip install rapidocr onnxruntime`
+   (enums `OCRVersion.PPOCRV5`, `ModelType.SERVER`). ONNX — no paddlepaddle → fits the
+   runtime image.
+2. **Auto page-orientation/deskew BEFORE OCR** (critical — guías are scanned sideways).
+   Do NOT hardcode -90°; need page-level doc-orientation detection. Investigate: RapidOCR
+   doc-orientation model, or a lightweight 4-way scorer. RapidOCR `cls` is textline-level
+   only and does not solve this.
+3. **Layout-aware parser**: associate DETALLE + UNIDAD + CANTIDAD cells by bounding-box
+   y-center row; accept `TNE→TN`; pair `codigo` column. Replaces `_LINE_RE` (which expects
+   one-liner `<desc> <qty> <unit>` and produces 0 lines on columnar GRE tables). The PoC
+   box-associator in `docs/eval/ocr_compare.py` already works.
+4. **Re-enable OCR path**: set `RECONCILIATION__OCR__ENABLED=true` in the runtime config;
+   add `rapidocr + onnxruntime` to the runtime image.
+5. **Architecture**: new `RapidOCRAdapter` behind `ExtractionPort` — mirror the
+   vision provider-agnostic pattern (config-selectable engine). Domain stays pure.
+6. **Validate**: against real reg227 guías (GT in `docs/eval/ground_truth.md`: pages
+   0148/0156/0160 + others). Strict-TDD.
 
-### §known-open-rev3b — deferred KNOWN ISSUES (fix in verify/JD fix phases)
+**Impact**: the #40 vision quantity problem largely disappears — deterministic OCR reads
+printed GRE tables exactly. Vision becomes date reads + rare fallback only.
 
-The code is correct where tested; these are the open items, NOT regressions. Verified-FIXED
-already: vision read-timeout (6f188c3), max_retries=0 (4a135ad), **hard per-call wall-clock
-deadline** (48bb268, confirmed firing live), paddle-free container + `ocr.enabled` (1a7ef2b).
+### SDD#2 — [Descartadas para revisión] tab + recover-specific-page + history UI
 
-- **KI-1 — VisionCapExceededError crashes the run. [FIXED — ba3b0c5]** When
-  `vision.max_vision_calls` was hit, `pipeline._stage_extract_vision` RAISED instead of degrading.
-  Now it degrades gracefully (stops calling vision, leaves remaining `fecha=None`/flagged); no raise.
-- **KI-2 — Cloud vision throttling.** `qwen3.5:397b-cloud` (Ollama cloud) throttles the
-  pipeline's rapid sequential calls → every call >25s under load (isolated calls are 5-9s).
-  Fix: add inter-call pacing (like SUNAT) and/or a local fallback. This is why the e2e didn't
-  complete this session (deadline correctly degraded all calls; nothing was a code bug).
-- **KI-3 — SUNAT subset re-fetch.** Intermittent `read operation timed out / retry` on the
-  subset's guías under load; cross-run cache only works via the container named volume.
-- **KI-4 — [CAPTURED — 2026-06-03]** `TestR9RealPDFGate` 5/5 PASS in 6:05. Subset recipe:
-  pages 1-25 of the full PDF (contents + Registro 232 block) → `/tmp/ctr_section1.pdf`.
-  Run: `docker compose run --rm -v /tmp/ctr_section1.pdf:/data/section1.pdf:ro -e CTR_PDF_PATH=/data/section1.pdf -e OLLAMA_BASE_URL=http://localhost:11435/v1 backend python -m pytest tests/integration/test_pipeline_r9_gate.py::TestR9RealPDFGate -p no:cacheprovider -v -s`.
-  Result: #4252 1/2"×9M = 4.124 TN MATCH deterministic + R9 date/divergence confirmed on
-  real data. Full-PDF run is impractical under KI-2 throttling; the subset is the tractable
-  fixture. KI-2 and KI-3 remain open environment limitations (not code bugs).
+**Goal**: surface GUIA-classified pages dropped due to no identity (issue #50), and give the
+operator a way to recover them. Also: later add a processing-history hamburger menu.
 
-### §follow-ups — post-merge SDD slices (deferred)
+**Key decisions**:
+1. **Backend root fix** (may land in SDD#1 or SDD#2): `assemble_blocks` must NOT silently
+   drop a GUIA-classified page with no resolvable identity. Emit an errored/unidentified
+   entry (page number + thumbnail) instead. The root cause: `pipeline.py:964-982`
+   `assemble_blocks` rev-6 QR-evidence gate silently drops pages with no QR and no OCR
+   identity.
+2. **[Descartadas para revisión] tab**: new tab on ReviewPage surfacing unidentified GUIA
+   pages with page number + thumbnail. Operator can trigger deterministic OCR (SDD#1 path)
+   or IA fallback if OCR fails — mirrors [Pendientes por procesar] tab flow.
+3. **Recover specific page/sheet** function: operator points at page N → process as guía
+   (OCR then IA). Handles classification/QR misses generally.
+4. **History/persistence** (later, SDD#2 or SDD#3): hamburger menu showing sections
+   ([Nuevo] / [batch actual] / [historial]). Persist what each batch/run processed for an
+   auditable UI history.
 
-These are NOT blockers for push; they are the next SDD changes **after PR + merge**
-(user decision 2026-06-03).
+**Frontend-visual apply → opus** (per session execution preference).
 
-> **Validation policy (CLAUDE.md SA-5):** after implementing each follow-up below, run a
-> **visual e2e check against the running app** (Playwright MCP) proving the feature works —
-> per feature, or concatenating features in one flow (upload → review → the feature). A green
-> unit suite is NOT sufficient to mark a follow-up done.
+## 4. Open issues
 
-- **Reception-date floor = guía delivery date (DOMAIN RULE, MUST)**: the vision-read reception
-  date can **never be before the guía's SUNAT delivery date** (`fecha_entrega`). If OCR/vision
-  reads a date **earlier** than the guía's `fecha_entrega`, **use `fecha_entrega` as the
-  fallback** and raise a non-blocking **"verify" WARNING** (flag `requires_review`). Physical
-  invariant: goods cannot be received before they are delivered. Today `fecha_entrega` is only
-  the **year**-inference lower bound (`pipeline.py:1308 lower = official.fecha_entrega`,
-  `infer_reception_year`); extend it to a **full day-month floor** on the resolved date for both
-  the guía stamp read and (where applicable) the Protocolo reception date.
-- **disable_thinking by default (DECISION — do it)**: set `VisionConfig.disable_thinking`
-  default to `true` (and `RECONCILIATION__VISION__DISABLE_THINKING=true` in compose). The user
-  confirms from other projects that **disabling `<think>` improves OCR/vision captures** (not
-  just speed) — a decision, not an A/B experiment. `qwen3.5:397b-cloud` otherwise spends
-  ~12s/call in `<think>`.
-- **`.env.example` (config delivery)**: write a complete `.env.example` at the repo root with
-  every overridable setting documented (compose interpolation `OLLAMA_BASE_URL` / `OLLAMA_MODEL`
-  + the `RECONCILIATION__*` app config incl. `DISABLE_THINKING`); the user copies it to `.env`.
-  Note: the agent's Write/Bash to `.env` is permission-blocked, so `.env.example` is the channel.
-- **Determinate progress bar (UX)**: current pipeline progressbar is indeterminate. Add
-  stage+count reporting in `GET /runs/{id}` + a determinate frontend bar with ETA for
-  operator monitoring.
-- **Date-read variance (verify)**: a visual run read Registro 232 declared fecha as 2026-05-26
-  vs the smoke run's 2026-05-28 — likely cloud-vision non-determinism on the handwritten day;
-  the reception-date floor rule above should largely neutralize its downstream effect.
+| Issue | Severity | Description |
+|-------|----------|-------------|
+| **#50** | High | GUIA-classified page with no identity silently dropped. Root cause: `assemble_blocks` QR-evidence gate at `pipeline.py:964-982`. Addressed in SDD#1 (backend root fix) or SDD#2. |
+| **#44** | Medium | Cross-model consensus reprocess (qwen+kimi): agree→accept, disagree→`requires_review`. Upgrade path for vision accuracy. Lower priority once OCR is re-enabled. |
+| **#45** | Low | Run status endpoint stale after reprocess (errored count + `vision_calls_made` lag). Use `/table` as the fresh source; endpoint is cosmetic. |
+| **#41** | Low | Deadline-guard abandons in-flight httpx request (still billed). Cancel instead of abandon in the server context. |
+| **#43** | Low | 3-map unit normalizer — consolidate `UNIT_LABEL_MAP` / `_SUNAT_UNIT_MAP` / `pipeline._normalize_sunat_unit` into single domain source. |
 
-### §infra — how to run the faithful e2e in the r10 container
+## 5. Hard-won lessons (do not relearn these)
 
-- Image: `docker compose build backend` (target `test` = paddle-free + pytest + tests).
-- Networking: compose uses `network_mode: host` (Linux) so the container reaches host Ollama
-  at `localhost:11434` — `host.docker.internal` does NOT work on Linux (Ollama binds 127.0.0.1).
-- Run gates: `docker compose run --rm -e CTR_PDF_PATH=/data/input.pdf backend python -m pytest
-  tests/integration/test_pipeline_r8_gate.py::TestRealPDFGate
-  tests/integration/test_pipeline_r9_gate.py::TestR9RealPDFGate -p no:cacheprovider -v -s`.
-- Fast iteration: a 20-page section-1 subset is at `/tmp/ctr_section1.pdf` (mount it +
-  `-e CTR_PDF_PATH=/data/section1.pdf`). Quality timer: section-1 should finish < ~3 min;
-  if it drags to the 6-min cap, the cloud is throttled (KI-2).
-- Vision deadline: `RECONCILIATION__VISION__DEADLINE_S` (default 20s) hard-bounds each call.
-
-### Runtime requirements for a real run
-
-| Mode | Requirements |
-|------|-------------|
-| Air-gapped (local-only) | Ollama running with `qwen3.5:9b` pulled; working paddle runtime (not this env) for OCR quantities; `sunat.enabled=false` |
-| SUNAT-enabled (breaks air-gap) | `sunat.enabled=true` in `config.yaml`; network to `e-factura.sunat.gob.pe`; Ollama `qwen3.5:9b` for vision |
-| Validation shortcut | SUNAT-enabled + qwen3.5:9b covers both quantities and dates; paddle not required |
-
-Env setup done 2026-06-02 on the development machine:
-```bash
-uv venv --python 3.12 && uv pip install -e ".[dev,ml,llm,identity]"
-# then: pyzbar, zxing-cpp, pillow, numpy, paddleocr, openai all present
-# ollama pull qwen3.5:9b  (done)
-```
-
-## 4. Hard-won lessons (do not relearn these)
-
-- **Unit tests passed while the real pipeline was broken.** This happened four times in
-  rev-3 alone: classification gap, container identity-port wiring, paddle API format,
-  SUNAT parser format (see `docs/DECISIONS.md` §recurring-mock-gap). Always run a real-data
-  e2e check that does NOT inject fake page content via `HybridDocSource`.
+- **Unit tests passed while the real pipeline was broken.** This happened multiple times.
+  Always run a real-data e2e check — see `docs/DECISIONS.md` §recurring-mock-gap.
+- **OCR is correct for printed GRE tables; vision is a poor substitute.** The #40 quantity
+  errors are an artifact of running OCR-off. See `docs/EVAL-RESULTS.md` §2.
+- **kimi empty-returns are stochastic and recoverable by retry; qwen systematic misreads
+  are not.** Use `requires_review=True` as the mandatory gate on all vision-recovered lines.
+- **Poll-based progress needs a real backend completion signal, not a timing heuristic.**
+  SA-5 caught this bug in the bulk-reprocess flow (PR-C #49 fix).
 - **Scanned guía pages have NO "GUÍA DE REMISIÓN" in their digital text layer** — only the
   Autodesk Forma header. The classifier must use QR presence (Condition A) or heuristic
-  (Condition B). Never rely on digital-text title alone for scanned pages.
-- **qwen3.5:9b reads day-month reliably from full-page 200dpi input; year is unreliable.**
-  Year is reconstructed via bounded inference (`delivery_GRE_date <= reception <= doc_date`).
-- **The stamp crop region is UPPER-RIGHT on CTR guías** (x0=0.55, y0=0.05, x1=1.0, y1=0.45).
-  Do not assume lower-right without verifying against physical guías.
-- **qwen3.5:9b is a thinking model** — it emits `<think>…</think>` blocks before content.
-  `max_tokens=128` is exhausted by the thinking phase. Use ≥4096.
-- **SUNAT descargaqr requires COLOR QR decode at 200dpi+400dpi** — the URL-variant QR is
-  missed by grayscale-only decode. Use `pyzbar` AND `zxing-cpp`, union both results.
+  (Condition B).
 - **Three identifiers, never confuse**: Contents-ID `#4252` (section) ≠ Registro N° `232`
   (business key) ≠ QR `serie-numero` (deterministic guía id). Group by the Registro N°.
-- **The grouping date is the HANDWRITTEN reception date** (vision-read), NOT the electronic
-  GRE date. SUNAT date is a year-inference lower bound only — never the grouping key.
+- **GUIA-classified pages with no QR + OCR off are silently dropped.** Issue #50. The
+  operator has no signal a guía was lost. Data-integrity hole — fix in SDD#1/2.
+- **The stamp crop region is UPPER-RIGHT on CTR guías** (`x0=0.55, y0=0.05, x1=1.0, y1=0.45`).
 - **Units (KG/TN/RD/Rollo) are summed independently — never converted.**
-- **Classify pages by TITLE, not supplier name** (Aceros Arequipa appears on non-guía sheets).
 
-## 5. Engram → docs mapping (knowledge that was local-only, now versioned here)
+## 6. §known-open-rev3b — deferred runtime issues
+
+- **KI-2 — Cloud vision throttling.** kimi-k2.5:cloud throttles under rapid sequential
+  reprocess calls. Bounded by `Semaphore(3)`; per-guía (not batch) is the mitigation.
+  `DEADLINE_S=60` required.
+- **KI-3 — SUNAT subset re-fetch.** Intermittent timeout on some guías under load.
+- **OCR is OFF in the DEPLOY, not broken on the host.** The 2026-06-06 OCR eval ran
+  PaddleOCR 3.x successfully on the host uv env (`paddle imports OK`; ~4s/page; exact
+  quantity reads). OCR is disabled in the *deployed* app because the runtime image is
+  built paddle-free (target `runtime`) + `RECONCILIATION__OCR__ENABLED=false`. A prior
+  paddle 3.3.1 oneDNN/PIR CPU bug may recur on some envs — which is exactly why SDD#1
+  standardizes on **RapidOCR (ONNX)**: deployable in the image, no paddlepaddle runtime.
+
+## 7. §infra — how to run
+
+- Image: `docker compose build backend` (target `test` = paddle-free + pytest + tests).
+- Networking: compose uses `network_mode: host` (Linux). Container reaches host Ollama at
+  `localhost:11434` — `host.docker.internal` does NOT work on Linux.
+- Run gates: `docker compose run --rm -e CTR_PDF_PATH=/data/input.pdf backend python -m pytest
+  tests/integration/test_pipeline_r8_gate.py::TestRealPDFGate
+  tests/integration/test_pipeline_r9_gate.py::TestR9RealPDFGate -p no:cacheprovider -v -s`
+- Vision deadline: `RECONCILIATION__VISION__DEADLINE_S` (default 20s; set 60 for kimi cloud).
+
+## 8. Engram → docs mapping
 
 | Engram topic | Versioned in |
 |---|---|
@@ -187,8 +157,10 @@ uv venv --python 3.12 && uv pip install -e ".[dev,ml,llm,identity]"
 | frontend-review-findings (2 criticals) | `docs/DECISIONS.md` §frontend-review |
 | qr-sunat-evaluation | `docs/DECISIONS.md` §QR |
 | reception-date-authority | `docs/DECISIONS.md` §dates |
-| rev-3 real-run findings (7 items, #2747–2760) | `docs/DECISIONS.md` §rev-3 |
-| delivery-roadmap | this file §3 |
-
-If you re-enable engram on the new machine, re-import by reading these docs; nothing is lost.
-The engram IDs are recorded in `docs/DECISIONS.md` §engram-mirror-rev3 for cross-reference.
+| rev-3 real-run findings (7 items) | `docs/DECISIONS.md` §rev-3 |
+| vision-quantity-accuracy-eval (#3021 session / #2995 SA-5) | `docs/EVAL-RESULTS.md` §1 |
+| ocr-engine-eval (#3023) | `docs/EVAL-RESULTS.md` §2 |
+| ocr-off-vision-only-dropped-guia (#3022) | `docs/DECISIONS.md` §2026-06-06 |
+| plan/ocr-deterministic-and-discarded-ui (#3024) | this file §3 + `docs/DECISIONS.md` §2026-06-06 |
+| sdd/guia-reprocess-bulk-viewer/archive-report (#3019) | `docs/DECISIONS.md` §2026-06-06 |
+| pr46-reprocess-canonical-merge (#3003) | `docs/DECISIONS.md` §2026-06-06 |

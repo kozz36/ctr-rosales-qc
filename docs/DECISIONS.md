@@ -358,3 +358,102 @@ Minimum real-data e2e assertions that must pass before any slice is declared com
 | `sdd/material-reconciliation/sunat-fetch-spike` (#2750) | `docs/DECISIONS.md` §rev-3 R4 |
 | `sdd/material-reconciliation/paddle-compat-gap` (#2755) | `docs/DECISIONS.md` §rev-3 R5 |
 | `sdd/material-reconciliation/paddle-runtime-env` (#2757) | `docs/DECISIONS.md` §rev-3 R6–R7 |
+| `vision-quantity-accuracy-eval` (#2995 SA-5 / #3021 session) | `docs/EVAL-RESULTS.md` §1 |
+| `ocr-engine-eval` (#3023) | `docs/EVAL-RESULTS.md` §2 |
+| `ocr-off-vision-only-dropped-guia` (#3022) | `docs/DECISIONS.md` §2026-06-06 |
+| `plan/ocr-deterministic-and-discarded-ui` (#3024) | `docs/HANDOFF.md` §SDD-plan + `docs/DECISIONS.md` §2026-06-06 |
+| `sdd/guia-reprocess-bulk-viewer/archive-report` (#3019) | `docs/DECISIONS.md` §2026-06-06 |
+| `pr46-reprocess-canonical-merge` (#3003) | `docs/DECISIONS.md` §2026-06-06 |
+
+---
+
+## §2026-06-06 — session decisions and findings
+
+### bulk-viewer feature (SDD: guia-reprocess-bulk-viewer) — DELIVERED
+
+Four UX features implemented via SDD (explore→propose→spec→design→tasks→apply→verify→archive)
+across three stacked-to-main PRs merged to main:
+
+- **PR-A #47 (backend)**: `POST /runs/{id}/registros/{registro}/reprocess` (202 async,
+  `_run_reprocess_batch` bounded by shared `Semaphore(3)`); `GET .../reprocess-status`
+  `{total,recovered,failed,done}` batch-status signal; operator-assign
+  (`match_method="operator"`, `requires_review=True`); #42 fix (`_retry_batch`
+  `mark_retry_attempted`).
+- **PR-B #48 (frontend)**: tabs **Reconciliación | Pendientes por procesar** (count badge);
+  per-Registro **"Procesar todos con IA"** (confirm dialog w/ call count, live progress,
+  N/M summary).
+- **PR-C #49 (frontend)**: drill-down guía serie-número + Páginas chips → PageSheetViewer;
+  [Acciones] menu (Reasignar / Reprocesar / Corregir manual = operator picks a declared
+  material of the registro + cantidad). Phase 9 bug fixed: bulk live-progress settled at
+  2/22 (frontend time-heuristic) vs backend truth 17/24 → replaced with real
+  `GET .../reprocess-status` done-signal; re-validated UI shows 18/6.
+
+**SA-5 lesson**: poll-based progress MUST use a real backend completion signal, never a
+timing heuristic. The elapsed-floor/observed-shrink heuristic passed unit tests (fake
+timers) but failed on real latency. Only Playwright SA-5 exposed it.
+
+Spec REV-R20–R26 merged into `openspec/specs/review/spec.md`. Change archived to
+`openspec/changes/archive/2026-06-06-guia-reprocess-bulk-viewer/`.
+
+### PR #46 — Reprocesar con IA + canonical-matching — MERGED
+
+PR#3 (Reprocesar con IA) + dual-spec normalization + grade-tolerant recovery merged as single
+size:exception PR (#46) to main. JD×2 + ctr-review (fresh opus APPROVE, 0 CRITICAL) + SA-5
+all passed. Key canonical-matching fix: illegible-grade guard context-anchored (not
+whole-string scan); `{2,3}` digit quantifier excludes diameter leads (`1"`, `1 3/8"`) — the
+JD-caught data-corrupting regression the green suite masked.
+
+### Vision quantity-accuracy eval (#40) — VERDICT
+
+N=5, 5 curated guías, 65 line-runs each. kimi-k2.5:cloud 83.1% vs qwen3.5:397b-cloud 76.9%.
+**Neither model reliable alone.** `requires_review=True` on every vision-recovered line is
+mandatory.
+
+**Failure modes are qualitatively complementary**: qwen errors are deterministic (same wrong
+value all 5 runs; 0.608 for 0.008, 1.843 for 1.643) — retry cannot fix them. kimi errors are
+stochastic empty-returns (~20–40% on some pages) — retry has non-zero success probability.
+Where qwen errs systematically, kimi is correct and they disagree — basis for consensus #44.
+
+**Decision**: kimi-k2.5:cloud selected (faster, no systematic misreads). Consensus (#44) is
+the accuracy upgrade path. See `docs/EVAL-RESULTS.md` §1.
+
+### OCR disabled in deploy — root cause of vision-only extraction
+
+Investigation triggered by domain authority: reg227 guía pages contain only the Forma
+header in their PDF text layer (`text_len≈159`). GRE table (printed quantities) is inside
+a raster image. `RECONCILIATION__OCR__ENABLED=false` + paddle excluded from the runtime image
+→ vision is the sole extractor for all 24 reg227 guías. This is the structural root cause of
+#40. Recommendation: re-enable OCR with a deployable ONNX engine (SDD#1).
+
+### OCR engine eval — VERDICT
+
+RapidOCR PP-OCRv5-server (ONNX) + de-rotation reads printed GRE table quantities exactly
+(3/3, 4/4, 4/4 on the three test guías), tying paddle in accuracy at ~3s/page with no
+paddlepaddle dependency → deployable in the runtime image. The two real blockers are the
+parser (not layout-aware: `_LINE_RE` one-line vs columnar TNE table → 0 lines) and
+orientation (sideways scans need auto de-rotation). Both are implementation work, not engine
+limitations. See `docs/EVAL-RESULTS.md` §2.
+
+### Issue #50 — GUIA-classified page silently dropped (root cause confirmed)
+
+Page 0152 is classified `kind: GUIA` (confidence 0.99, `FORMA_HEADER_HEURISTIC`) but its QR
+did not decode. With OCR off → no identity → `assemble_blocks` rev-6 QR-evidence gate
+(`pipeline.py:964-982`) silently drops it. Not in recovered/errored/unresolved. The operator
+has no signal a guía is missing; declared totals look short with no explanation.
+
+**Fix required**: a GUIA-classified page with no resolvable identity must surface as an
+errored/unidentified entry (page number + thumbnail), never be silently dropped. Addressed
+in SDD#1 backend root fix and/or SDD#2 UI.
+
+### SDD plan approved (2026-06-06)
+
+Two sequential SDDs:
+1. **SDD#1 — Deterministic OCR backend**: RapidOCR ONNX PP-OCRv5-server + auto page-orientation
+   + layout-aware box parser (TNE→TN, column association) + re-enable OCR path. No UI changes.
+   Fix #50 backend root (surface identity-less GUIA pages as errored, not dropped).
+2. **SDD#2 — [Descartadas para revisión] tab + recover-specific-page + history UI**: surface
+   dropped GUIA pages; operator recovery via OCR (SDD#1 path) or IA fallback; later:
+   processing history hamburger menu.
+
+Execution: SDD interactive · hybrid artifact store · ask-on-risk delivery · stacked-to-main
+chains. Frontend-visual apply → opus model.

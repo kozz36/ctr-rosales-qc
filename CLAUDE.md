@@ -147,21 +147,38 @@ Hard anti-pattern checklist the implementation sub-agent AND the reviewer enforc
 
 ## Status & next steps
 
-**MERGED to main (2026-06-06): PR#3+canonical (#46), then the bulk-viewer feature chain (#47/#48/#49).**
+**Branch `main` — all PRs merged as of 2026-06-06. Next: SDD#1 deterministic-OCR backend.**
 
-PR#3 (Reprocesar con IA) + canonical-matching fix — **MERGED #46** (single PR + `size:exception`; JD×2 + ctr-review + SA-5 all passed). Dual-spec normalization (Tier 1) + grade-tolerant recovery (Tier 2); illegible-grade guard context-anchored; `{2,3}` digit quantifier excludes diameter leads (`1"`, `1 3/8"`).
+See `docs/HANDOFF.md` §SDD-plan for the full approved plan. Summary:
 
-**`guia-reprocess-bulk-viewer` (SDD, MERGED + archived)** — 4 UX features over 3 stacked-to-main PRs:
-- **#47 PR-A backend**: `POST /runs/{id}/registros/{registro}/reprocess` (202, async `_run_reprocess_batch` over the bounded `Semaphore(3)` `apply_reprocess`) + **batch-status signal** `GET .../reprocess-status` `{total,recovered,failed,done}` + operator-assign (`match_method="operator"`, requires_review) + #42 fix (`_retry_batch` mark_retry_attempted).
-- **#48 PR-B frontend**: tabs **Reconciliación | Pendientes por procesar** (count badge) + per-Registro **"Procesar todos con IA"** (confirm dialog w/ call count, live progress, N/M summary).
-- **#49 PR-C frontend**: drill-down **guía serie-número + Páginas chips → PageSheetViewer**; **[Acciones]** menu (Reasignar/Reprocesar/**Corregir manual** = operator picks a declared material of the registro + cantidad).
-- **SA-5 caught a real bug**: bulk live-progress settled PREMATURELY (UI 2/22 vs backend truth 17/24) — root cause: frontend time-heuristic guessing batch completion. Fix = backend done-signal; re-validated UI shows 18/6 EXACTLY matching backend. **Lesson: poll-based progress needs a real completion signal, never a timing heuristic.** Spec REV-R20–R26 merged into `openspec/specs/review/spec.md`.
+**SDD#1 (start next session)**: re-enable deterministic OCR in the deployed paddle-free image.
+Engine: **RapidOCR ONNX PP-OCRv5-server** (`pip install rapidocr onnxruntime`). Needs: auto
+page-orientation/deskew before OCR (guías scanned sideways); layout-aware box-row parser
+(GRE table is columnar TNE — `_LINE_RE` one-liner produces 0 lines). With OCR on, vision
+becomes the rare fallback (date reads + illegible-page). Eliminates the #40 quantity-accuracy
+problem for printed tables. Also fixes the #50 backend root (surface identity-less GUIA pages
+as errored instead of dropping them).
 
-**Vision model (reprocess) findings (#40 eval, CLOSED)**: N=5 quantity-accuracy — kimi-k2.5:cloud 83% > qwen3.5:397b-cloud 77%; **neither reliable alone** (kimi empty-returns ~20-40% some pages; qwen systematic single-value misreads). `requires_review=True` on every recovered/operator/grade_tolerant line is the **mandatory** safety net. Picked **kimi-k2.5:cloud** (faster+accurate when it answers). Accuracy-upgrade path = **cross-model consensus (#44)**. Config: `provider=ollama, OLLAMA__MODEL=kimi-k2.5:cloud, DEADLINE_S=60`.
+**SDD#2 (after SDD#1)**: [Descartadas para revisión] tab + recover-specific-page +
+later history hamburger menu. Frontend-visual apply → opus.
 
-**Open follow-ups (issues)**: #44 cross-model consensus · #41 deadline-guard request-amplification (cancel in-flight) · #45 status endpoint stale errored-count after reprocess (use `/table`, the fresh source) · #43 3-map unit consolidation · #42 verify in batch.
+**Already merged (2026-06-06)**:
+- **PR #46**: PR#3 Reprocesar con IA + canonical-matching (dual-spec normalization Tier 1 +
+  grade-tolerant recovery Tier 2; JD×2 + ctr-review + SA-5 all passed).
+- **PR #47/#48/#49**: `guia-reprocess-bulk-viewer` SDD (bulk per-Registro IA reprocess,
+  Reconciliación|Pendientes tabs, drill-down page viewer, [Acciones] menu + Corregir manual,
+  #42 fix). SA-5 caught + fixed premature bulk-progress settlement.
 
-**Test counts**: ~1300+ backend targeted + 322 frontend vitest passing (monolithic `pytest -q` still hangs on paddle import — targeted paths only). SA-5 evidence in `docs/playwright/` (gitignored).
+**Vision eval (#40, CLOSED)**: kimi-k2.5:cloud 83.1% > qwen3.5:397b-cloud 76.9%; neither
+reliable alone. `requires_review=True` mandatory on all vision-recovered lines. OCR eval:
+deterministic OCR reads GRE tables exactly — `RECONCILIATION__OCR__ENABLED=false` in deploy
+is the root cause of #40. See `docs/EVAL-RESULTS.md` for full results.
+
+**Open issues**: #50 (dropped guía, SDD#1 fix) · #44 (cross-model consensus) ·
+#45 (stale status endpoint) · #41 (deadline-guard in-flight cancel) · #43 (unit map).
+
+**Test counts**: ~1300+ backend targeted + 322 frontend vitest passing (monolithic `pytest -q`
+still hangs on paddle import — targeted paths only). SA-5 evidence in `docs/playwright/` (gitignored).
 
 `ocr.enabled=false` is a config escape hatch (NullOcrExtractor → ZERO paddle) for machines
 where the paddle runtime is broken; SUNAT then supplies quantities. `vision.enabled=false`
@@ -177,10 +194,11 @@ Ollama base_url/model are env-configurable (port 11435).
 
 ## Map
 
-- `docs/HANDOFF.md` — resume-here guide (read first; §known-open-rev3b + §follow-ups + §infra).
-- `docs/DECISIONS.md` — every decision + audit finding (engram mirror; §dates, §rev-3 R8/R9).
+- `docs/HANDOFF.md` — resume-here guide (read first; current state, SDD plan, open issues).
+- `docs/DECISIONS.md` — every decision + audit finding (engram mirror; §dates, §rev-3 R8/R9, §2026-06-06).
+- `docs/EVAL-RESULTS.md` — vision (#40) + OCR engine eval results, methodology, conclusions.
 - `docs/MATERIAL-MATCHING.md` — R8 canonical-key domain reference.
 - `docs/ARCHITECTURE.md` — folder layout, pipeline, how to run.
 - `backend/Dockerfile` + `docker-compose.yml` + `Makefile` — r10 containerized verification.
 - `openspec/specs/` — 8 promoted capability specs (reconciliation, extraction, ingestion, review, export, material-matching, fecha-divergence, containerized-verification).
-- `openspec/changes/archive/` — 4 closed change folders (material-reconciliation, r8, r9, r10).
+- `openspec/changes/archive/` — 5 closed change folders (material-reconciliation, r8, r9, r10, guia-reprocess-bulk-viewer).

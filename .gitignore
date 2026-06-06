@@ -10,6 +10,9 @@ claude-prompt-*.md
 /docs/playwright/*.txt
 /sa5-*.md
 
+# Local vision quantity-accuracy eval (#40) — real QC data, env-specific
+/docs/eval/
+
 # Local agent tooling (excluded from public repo)
 .claude/
 .atl/

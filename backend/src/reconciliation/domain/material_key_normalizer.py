@@ -66,8 +66,16 @@ _VALID_GRADE_LEVELS: Final[frozenset[str]] = frozenset({"60", "42", "75"})
 #      ``lote 119``) from being mistaken for a grade.
 #
 # Both capture group 1 = the grade payload string the caller validates.
+#   JD ROUND 2 FIX #2: the payload MUST be DIGIT-ANCHORED.  The previous
+#   ``[a-z0-9]+`` payload matched ANY g-initial word (``gerdau`` → ``erdau``,
+#   ``galvanizado`` → ``alvanizado``, ``grapa`` → ``rapa``, ``gm`` → ``m``),
+#   producing an invalid grade payload → a false None that even discarded a
+#   co-present VALID ``g60``.  Requiring a leading digit (``\d[a-z0-9]*``) means
+#   a pure-alpha word no longer qualifies as a grade context, while genuine
+#   misreads (``g7s``→``7s``, ``g6o``→``6o``, ``g660``→``660``) still start with a
+#   digit and are still caught and bailed.
 _G_PREFIXED_GRADE_RE: Final[re.Pattern[str]] = re.compile(
-    r"\bg(?:rado|r)?[-\s]*([a-z0-9]+)",
+    r"\bg(?:rado|r)?[-\s]*(\d[a-z0-9]*)",
     re.IGNORECASE,
 )
 # NOTE: the captured digit run must NOT be the leading whole of a diameter
@@ -76,8 +84,24 @@ _G_PREFIXED_GRADE_RE: Final[re.Pattern[str]] = re.compile(
 # whose next token is the diameter does not spuriously read the diameter as a
 # grade.  ``8mm`` is the only mm diameter and ``8`` is not a valid grade, so the
 # guard matters.
+#
+# JD ROUND 2 FIX #1 (CRITICAL, data-corrupting): the payload MUST be 2-3 digits.
+# The previous bare ``(\d+)`` captured the LEADING single digit of a diameter
+# (``1`` of ``1"`` / ``1 3/8"``) when no grade token sat between the spec family
+# and the diameter → ``1`` ∉ {60,42,75} → the whole grade-less line bailed to
+# None, silently degrading the two LARGEST in-corpus diameters (``1"``, ``1 3/8"``)
+# to UNRESOLVED.  Grade magnitudes are exactly 2-3 digits (60/42/75 valid;
+# 580/680/660 invalid-but-grade-shaped → still bail); diameter leads are single
+# digits.  The ``{2,3}`` quantifier alone already excludes a single-digit
+# diameter lead (``1`` of ``1"`` / ``1 3/8"`` cannot satisfy the 2-digit
+# minimum), so NO ``(?!\s*\d)`` lookahead is used — that would have wrongly
+# rejected the legacy space-separated 3-digit misread ``a615a706 680 3/4"``
+# (grade ``680`` is legitimately followed by a space + diameter digit and MUST
+# still be captured → invalid → bail).  The remaining lookaheads only guard the
+# direct-suffix forms (``./`` fraction, ``mm``, inch/pulg) so a 2-3 digit token
+# glued to a diameter suffix is not misread as a grade.
 _POST_FAMILY_NUMERIC_GRADE_RE: Final[re.Pattern[str]] = re.compile(
-    r"a(?:615|706)\s+(\d+)(?!\s*/)(?!\s*mm)\b",
+    r"a(?:615|706)\s+(\d{2,3})(?!\s*[./])(?!\s*mm)(?!\s*['\"″]|\s*pulg)\b",
     re.IGNORECASE,
 )
 

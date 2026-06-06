@@ -216,6 +216,95 @@ class TestIllegibleGradeContextDetection:
         assert result.grado == "A615 G60", f"got {result.grado!r} for {raw!r}"
 
 
+class TestGradeContextRegressionRound2:
+    """JD ROUND 2: the grade-context regexes added in 383cec2 leaked.
+
+    FIX #1 (CRITICAL, data-corrupting): ``_POST_FAMILY_NUMERIC_GRADE_RE``'s bare
+    ``(\\d+)`` captured the LEADING digit of a diameter (``1`` of ``1"`` / ``1 3/8"``)
+    when no grade token sat between the spec family and the diameter → ``1`` ∉
+    {60,42,75} → the whole grade-less line bailed to None.  The two LARGEST
+    in-corpus diameters silently degraded to UNRESOLVED.  Grade magnitudes are
+    exactly 2-3 digits; diameter leads are single digits → require ``\\d{2,3}``.
+
+    FIX #2 (HIGH): ``_G_PREFIXED_GRADE_RE`` matched ANY g-initial word
+    (``gerdau`` → ``erdau``, ``galvanizado`` → ``alvanizado``, ``grapa`` → ``rapa``,
+    ``gm`` → ``m``) → invalid payload → false None, even discarding a co-present
+    VALID ``g60``.  A grade payload must be DIGIT-ANCHORED.
+    """
+
+    # --- FIX #1: grade-less LARGE diameters MUST resolve to A615 G60 ---
+    @pytest.mark.parametrize(
+        "raw,expected_diam",
+        [
+            ('barra a615 1 3/8" dob', '1 3/8"'),
+            ('barra a615 1" dob', '1"'),
+            ('barra a615 1" x 9m', '1"'),
+            ('barra a615a706 1 3/8" x 9m', '1 3/8"'),
+            ('acero dimensionado - barra a615 1" dob apl', '1"'),
+        ],
+    )
+    def test_gradeless_large_diameter_defaults_g60(
+        self, normalizer: MaterialKeyNormalizer, raw: str, expected_diam: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None (grade-less → G60) for {raw!r}"
+        assert result.grado == "A615 G60", f"got {result.grado!r} for {raw!r}"
+        assert result.diametro == expected_diam, f"got {result.diametro!r} for {raw!r}"
+
+    # --- FIX #2: valid g60 must win over g-initial noise words ---
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            'barra a615 g60 gerdau 3/4" dob',
+            'barra a615 g60 galvanizado 3/4" dob',
+            'barra a615 g60 grapa 3/4" dob',
+            'barra a615 g60 3/4" dob gm',
+            'barra a615 g60 3/4" dob grado especial',
+        ],
+    )
+    def test_valid_g60_wins_over_g_word_noise(
+        self, normalizer: MaterialKeyNormalizer, raw: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None (valid g60 wins) for {raw!r}"
+        assert result.grado == "A615 G60", f"got {result.grado!r} for {raw!r}"
+
+    # --- Regression guards: MUST STILL bail to None ---
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            'barra a615a706 680 3/4" dob',
+            'barra a615a706 g660 3/4" dob',
+            'barra a615 g7s 3/4" dob',
+            'barra a615a706 g 60 g 75 3/4" dob',
+        ],
+    )
+    def test_round2_invalid_still_bails(
+        self, normalizer: MaterialKeyNormalizer, raw: str
+    ) -> None:
+        assert normalizer.parse(raw, "TN") is None, (
+            f"Expected None (→ Tier-2/requires_review) for {raw!r}"
+        )
+
+    # --- Regression guards: MUST STILL parse to the stated grade ---
+    @pytest.mark.parametrize(
+        "raw,expected_grado",
+        [
+            ('barra a615 g60 3/4" dob', "A615 G60"),
+            ('barra a615 g75 3/4" dob', "A615 G75"),
+            ('barra a615a706 g60 1 3/8" dob', "A615 G60"),
+            ('barra a615 3/4" dob 250', "A615 G60"),
+            ('barra a615 1 3/8" dob', "A615 G60"),
+        ],
+    )
+    def test_round2_valid_still_parses(
+        self, normalizer: MaterialKeyNormalizer, raw: str, expected_grado: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None for {raw!r}"
+        assert result.grado == expected_grado, f"got {result.grado!r} for {raw!r}"
+
+
 class TestDiameterNormalization:
     """MAT-S02: compound fraction detected before simple fraction."""
 

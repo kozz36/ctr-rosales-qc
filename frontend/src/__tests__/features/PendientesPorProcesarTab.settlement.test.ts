@@ -1,38 +1,33 @@
 /**
- * TDD RED — PendientesPorProcesarTab robust settlement + warnings (fix-forward).
+ * PendientesPorProcesarTab settlement — REAL backend signal (SA-5 fix).
  *
- * Fixes a fresh-context ctr-review CRITICAL: premature batch-settlement. The
- * old logic finalized on the FIRST poll tick when `remaining >= lastRemaining`
- * (a plateau), so a still-running backend batch (vision 6-14s/guía under
- * Semaphore(3)) was reported as "0 recuperadas / N fallaron" even though no
- * guía had recovered yet.
+ * SUPERSEDES the previous frontend-only time-heuristic (elapsed-floor +
+ * observed-shrink + hard-cap polling GET /table). That heuristic GUESSED batch
+ * completion via timing and finalized prematurely on real latency (SA-5 run
+ * c8a6f97d: UI "2 recuperadas / 22 fallaron" vs backend truth 17/7). Settlement
+ * is now driven by GET /reprocess-status `done:true` + real counts.
  *
- * Robust contract (poll-based, frontend-only — no backend task-status endpoint):
- *   - Settlement requires remaining stable across ticks AND either (a) we have
- *     OBSERVED ≥1 shrink since firing, OR (b) an elapsed floor proportional to N
- *     (Semaphore(3) bounded) has passed. A first-tick plateau must NOT finalize.
- *   - remaining === 0 finalizes immediately.
- *   - Hard cap on total poll duration; on cap, finalize with observed delta.
- *   - The poll samples AFTER the async refetch resolves (await refetch).
- *
- * Warnings also covered here:
- *   - W3: the null/'—' bucket must NOT render a bulk button (dead 404 action).
- *
- * These tests exercise the REAL settlement seam (fake timers across a plateau,
- * no pre-staged shrink) and fail against the current premature-settlement code.
+ * Contract retained here:
+ *   - A mid-batch `done:false` (even a long plateau) does NOT finalize early.
+ *   - `done:true` finalizes with the REAL recovered/failed counts.
+ *   - A generous failsafe hard cap still bounds a hung batch (backend never
+ *     reports done) — finalizes with the last-known counts.
+ *   - W3: the null/'—' bucket renders no bulk button (dead 404 action).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import type { ErroredGuiaResponse } from '@/api/types'
+import type { ErroredGuiaResponse, ReprocessBatchStatusResponse } from '@/api/types'
 
-const { reprocessBatchMock } = vi.hoisted(() => ({
+const { reprocessBatchMock, batchStatusMock } = vi.hoisted(() => ({
   reprocessBatchMock: vi.fn(),
+  batchStatusMock: vi.fn(),
 }))
 
 vi.mock('@/api/client', () => ({
   reprocessRegistroBatch: reprocessBatchMock,
+  getReprocessBatchStatus: batchStatusMock,
   retryGuia: vi.fn(),
   reprocessGuia: vi.fn(),
 }))
@@ -47,6 +42,10 @@ function makeErrored(overrides: Partial<ErroredGuiaResponse> = {}): ErroredGuiaR
     retry_attempted: true,
     ...overrides,
   }
+}
+
+function status(p: Partial<ReprocessBatchStatusResponse>): ReprocessBatchStatusResponse {
+  return { registro: '232', total: 3, recovered: 0, failed: 0, done: false, ...p }
 }
 
 function mountTab(erroredGuias: ErroredGuiaResponse[]) {
@@ -65,17 +64,16 @@ function bulkButtons(wrapper: ReturnType<typeof mountTab>) {
 async function confirmBatch(wrapper: ReturnType<typeof mountTab>) {
   await bulkButtons(wrapper)[0].trigger('click')
   await nextTick()
-  const confirmBtn = wrapper
-    .findAll('button')
-    .find((b) => /confirmar/i.test(b.text()))!
+  const confirmBtn = wrapper.findAll('button').find((b) => /confirmar/i.test(b.text()))!
   await confirmBtn.trigger('click')
   await flushPromises()
 }
 
-describe('PendientesPorProcesarTab — robust settlement (CRITICAL fix-forward)', () => {
+describe('PendientesPorProcesarTab — backend-signal settlement (SA-5 fix)', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     reprocessBatchMock.mockReset()
+    batchStatusMock.mockReset()
     reprocessBatchMock.mockResolvedValue({
       run_id: 'run-123',
       registro: '232',
@@ -88,107 +86,84 @@ describe('PendientesPorProcesarTab — robust settlement (CRITICAL fix-forward)'
     vi.useRealTimers()
   })
 
-  it('does NOT finalize on a first-tick plateau while remaining is still full (keeps polling)', async () => {
-    // 3 errored guías; backend batch is still running — remaining stays full
-    // across the first several ticks (no recovery yet). The OLD code finalized
-    // here with recovered=0 because remaining >= lastRemaining on tick 1.
+  it('does NOT finalize while done:false, even across a long plateau', async () => {
+    batchStatusMock.mockResolvedValue(status({ recovered: 0, failed: 0, done: false }))
     const wrapper = mountTab([
-      makeErrored({ registro: '232', guia_id: 'g1' }),
-      makeErrored({ registro: '232', guia_id: 'g2' }),
-      makeErrored({ registro: '232', guia_id: 'g3' }),
+      makeErrored({ guia_id: 'g1' }),
+      makeErrored({ guia_id: 'g2' }),
+      makeErrored({ guia_id: 'g3' }),
     ])
-
     await confirmBatch(wrapper)
 
-    // Advance several poll ticks WITHOUT any prop shrink (plateau, batch running).
     await vi.advanceTimersByTimeAsync(2500)
     await flushPromises()
     await vi.advanceTimersByTimeAsync(2500)
     await flushPromises()
 
-    // Must NOT have finalized a wrong "0 recuperadas / 3 fallaron" summary.
     const text = wrapper.text().toLowerCase()
     expect(text).not.toContain('recuperada')
     expect(text).not.toContain('fallaron')
 
-    // Still in-flight (button disabled, "Procesando…").
     const btn = bulkButtons(wrapper)[0]
     expect(btn.attributes('disabled')).toBeDefined()
     expect(btn.text().toLowerCase()).toContain('procesando')
   })
 
-  it('finalizes correctly once a shrink is OBSERVED then remaining stabilizes', async () => {
+  it('finalizes with the real recovered/failed counts on done:true', async () => {
+    batchStatusMock
+      .mockResolvedValueOnce(status({ recovered: 0, done: false }))
+      .mockResolvedValue(status({ total: 3, recovered: 2, failed: 1, done: true }))
     const wrapper = mountTab([
-      makeErrored({ registro: '232', guia_id: 'g1' }),
-      makeErrored({ registro: '232', guia_id: 'g2' }),
-      makeErrored({ registro: '232', guia_id: 'g3' }),
+      makeErrored({ guia_id: 'g1' }),
+      makeErrored({ guia_id: 'g2' }),
+      makeErrored({ guia_id: 'g3' }),
     ])
-
     await confirmBatch(wrapper)
 
-    // Tick 1: plateau (batch starting, nothing recovered) — must keep polling.
     await vi.advanceTimersByTimeAsync(2500)
     await flushPromises()
 
-    // Backend recovers 2 → parent re-feeds the prop (only g3 remains errored).
-    await wrapper.setProps({
-      erroredGuias: [makeErrored({ registro: '232', guia_id: 'g3' })],
-      runId: 'run-123',
-      rows: [],
-    })
+    const text = wrapper.text()
+    expect(text.toLowerCase()).toContain('recuperada')
+    expect(text.toLowerCase()).toContain('fallaron')
+    expect(text).toContain('2') // recovered
+    expect(text).toContain('1') // failed
+  })
 
-    // Tick 2: observes the shrink (3 → 1).
-    await vi.advanceTimersByTimeAsync(2500)
-    await flushPromises()
-    // Tick 3+: remaining stable at 1 → finalize with the OBSERVED shrink.
-    await vi.advanceTimersByTimeAsync(2500)
+  it('finalizes immediately when the backend reports all recovered (done:true)', async () => {
+    batchStatusMock.mockResolvedValue(status({ total: 3, recovered: 3, failed: 0, done: true }))
+    const wrapper = mountTab([
+      makeErrored({ guia_id: 'g1' }),
+      makeErrored({ guia_id: 'g2' }),
+      makeErrored({ guia_id: 'g3' }),
+    ])
+    await confirmBatch(wrapper)
+
+    // Kickoff poll already returns done:true.
     await flushPromises()
 
     const text = wrapper.text().toLowerCase()
     expect(text).toContain('recuperada')
-    expect(text).toContain('fallaron')
-    expect(wrapper.text()).toContain('2') // recovered
-    expect(wrapper.text()).toContain('1') // failed
-  })
-
-  it('finalizes immediately when remaining reaches 0 (all recovered)', async () => {
-    const wrapper = mountTab([
-      makeErrored({ registro: '232', guia_id: 'g1' }),
-      makeErrored({ registro: '232', guia_id: 'g2' }),
-      makeErrored({ registro: '232', guia_id: 'g3' }),
-    ])
-
-    await confirmBatch(wrapper)
-
-    // All 3 recovered → parent re-feeds an empty list.
-    await wrapper.setProps({ erroredGuias: [], runId: 'run-123', rows: [] })
-    await vi.advanceTimersByTimeAsync(2500)
-    await flushPromises()
-
-    const text = wrapper.text().toLowerCase()
     expect(wrapper.text()).toContain('3') // recovered
-    expect(text).toContain('recuperada')
   })
 
-  it('finalizes via the hard cap if the batch never shrinks (avoids infinite poll)', async () => {
+  it('finalizes via the failsafe cap if the backend never reports done', async () => {
+    // Always running — backend hung; the failsafe cap (N * 30s = 90s for N=3)
+    // must finalize the poll with the last-known counts.
+    batchStatusMock.mockResolvedValue(status({ recovered: 1, failed: 0, done: false }))
     const wrapper = mountTab([
-      makeErrored({ registro: '232', guia_id: 'g1' }),
-      makeErrored({ registro: '232', guia_id: 'g2' }),
-      makeErrored({ registro: '232', guia_id: 'g3' }),
+      makeErrored({ guia_id: 'g1' }),
+      makeErrored({ guia_id: 'g2' }),
+      makeErrored({ guia_id: 'g3' }),
     ])
-
     await confirmBatch(wrapper)
 
-    // Drive well past the hard cap (N * 20s = 60s for N=3) with no shrink.
-    await vi.advanceTimersByTimeAsync(90_000)
+    await vi.advanceTimersByTimeAsync(95_000)
     await flushPromises()
 
-    // Capped → finalized with the observed delta (0 recovered, all failed).
-    const text = wrapper.text().toLowerCase()
-    expect(text).toContain('fallaron')
-    expect(wrapper.text()).toContain('3') // all failed at cap
-    // No longer in-flight.
+    // Capped → finalized; button re-enabled.
     expect(bulkButtons(wrapper)[0].attributes('disabled')).toBeUndefined()
+    expect(wrapper.text().toLowerCase()).toMatch(/recuperada|fallaron/)
   })
 })
 
@@ -196,6 +171,7 @@ describe('PendientesPorProcesarTab — W3: null/"—" bucket has no bulk button'
   beforeEach(() => {
     vi.useFakeTimers()
     reprocessBatchMock.mockReset()
+    batchStatusMock.mockReset()
   })
   afterEach(() => {
     vi.useRealTimers()
@@ -208,7 +184,6 @@ describe('PendientesPorProcesarTab — W3: null/"—" bucket has no bulk button'
       makeErrored({ registro: null as unknown as string, guia_id: 'gY' }),
     ])
 
-    // The "—" group renders, but only the real registro (232) gets a bulk button.
     expect(wrapper.text()).toContain('—')
     expect(bulkButtons(wrapper)).toHaveLength(1)
   })

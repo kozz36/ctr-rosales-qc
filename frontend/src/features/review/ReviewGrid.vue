@@ -122,6 +122,7 @@
               :key="row.row_id"
               :row="row"
               :run-id="runId"
+              :table-rows="rows"
               :pending-value="pendingEdits.get(row.row_id)?.value ?? undefined"
               @edit="onEdit"
               @open-reassign="emit('openReassign', $event)"

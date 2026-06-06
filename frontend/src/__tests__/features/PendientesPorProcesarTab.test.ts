@@ -21,12 +21,14 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import type { ErroredGuiaResponse } from '@/api/types'
 
-const { reprocessBatchMock } = vi.hoisted(() => ({
+const { reprocessBatchMock, batchStatusMock } = vi.hoisted(() => ({
   reprocessBatchMock: vi.fn(),
+  batchStatusMock: vi.fn(),
 }))
 
 vi.mock('@/api/client', () => ({
   reprocessRegistroBatch: reprocessBatchMock,
+  getReprocessBatchStatus: batchStatusMock,
   retryGuia: vi.fn(),
   reprocessGuia: vi.fn(),
 }))
@@ -61,6 +63,14 @@ describe('PendientesPorProcesarTab — bulk per-Registro reprocess (F1)', () => 
   beforeEach(() => {
     vi.useFakeTimers()
     reprocessBatchMock.mockReset()
+    batchStatusMock.mockReset()
+    batchStatusMock.mockResolvedValue({
+      registro: '232',
+      total: 0,
+      recovered: 0,
+      failed: 0,
+      done: false,
+    })
   })
 
   afterEach(() => {
@@ -122,13 +132,18 @@ describe('PendientesPorProcesarTab — bulk per-Registro reprocess (F1)', () => 
     expect(inflight.text().toLowerCase()).toContain('procesando')
   })
 
-  it('emits refetch on the poll interval after a 202 response', async () => {
+  it('polls the status endpoint and emits a final refetch on done', async () => {
     reprocessBatchMock.mockResolvedValue({
       run_id: 'run-123',
       registro: '232',
       count: 2,
       task: 'started',
     })
+    // Kickoff running → interval tick done:true → final refetch.
+    batchStatusMock
+      .mockResolvedValueOnce({ registro: '232', total: 2, recovered: 0, failed: 0, done: false })
+      .mockResolvedValue({ registro: '232', total: 2, recovered: 2, failed: 0, done: true })
+
     const wrapper = mountTab([
       makeErrored({ registro: '232', guia_id: 'g1' }),
       makeErrored({ registro: '232', guia_id: 'g2' }),
@@ -142,27 +157,32 @@ describe('PendientesPorProcesarTab — bulk per-Registro reprocess (F1)', () => 
     await confirmBtn.trigger('click')
     await flushPromises()
 
-    // Advance the poll timer — the component must emit 'refetch' to refresh table.
+    // Advance the poll timer — the component polls /reprocess-status and, on
+    // done, emits 'refetch' to refresh the table.
     await vi.advanceTimersByTimeAsync(2500)
     await flushPromises()
 
+    expect(batchStatusMock).toHaveBeenCalledWith('run-123', '232')
     expect(wrapper.emitted('refetch')).toBeTruthy()
   })
 
-  it('shows "N recuperadas / M fallaron" once the batch settles (derived from list delta)', async () => {
+  it('shows "N recuperadas / M fallaron" from the REAL backend counts on done', async () => {
     reprocessBatchMock.mockResolvedValue({
       run_id: 'run-123',
       registro: '232',
       count: 3,
       task: 'started',
     })
-    // Start: 3 errored guías for registro 232.
-    const initial = [
+    // Kickoff running → done:true with the real 2 recovered / 1 failed split.
+    batchStatusMock
+      .mockResolvedValueOnce({ registro: '232', total: 3, recovered: 0, failed: 0, done: false })
+      .mockResolvedValue({ registro: '232', total: 3, recovered: 2, failed: 1, done: true })
+
+    const wrapper = mountTab([
       makeErrored({ registro: '232', guia_id: 'g1' }),
       makeErrored({ registro: '232', guia_id: 'g2' }),
       makeErrored({ registro: '232', guia_id: 'g3' }),
-    ]
-    const wrapper = mountTab(initial)
+    ])
 
     await bulkButtons(wrapper)[0].trigger('click')
     await nextTick()
@@ -172,15 +192,7 @@ describe('PendientesPorProcesarTab — bulk per-Registro reprocess (F1)', () => 
     await confirmBtn.trigger('click')
     await flushPromises()
 
-    // Parent re-feeds the prop after polling: 2 recovered, 1 still errored.
-    await wrapper.setProps({
-      erroredGuias: [makeErrored({ registro: '232', guia_id: 'g3' })],
-      runId: 'run-123',
-      rows: [],
-    })
-    // Let the poll loop observe a stable read (no further shrink) and finalize.
-    await vi.advanceTimersByTimeAsync(2500)
-    await flushPromises()
+    // Interval tick → done:true → finalize from the real counts.
     await vi.advanceTimersByTimeAsync(2500)
     await flushPromises()
 

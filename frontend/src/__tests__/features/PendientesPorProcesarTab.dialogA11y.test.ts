@@ -22,6 +22,13 @@ const { reprocessBatchMock } = vi.hoisted(() => ({
 
 vi.mock('@/api/client', () => ({
   reprocessRegistroBatch: reprocessBatchMock,
+  getReprocessBatchStatus: vi.fn().mockResolvedValue({
+    registro: '232',
+    total: 0,
+    recovered: 0,
+    failed: 0,
+    done: true,
+  }),
   retryGuia: vi.fn(),
   reprocessGuia: vi.fn(),
 }))

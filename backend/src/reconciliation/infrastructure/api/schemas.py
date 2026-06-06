@@ -536,6 +536,25 @@ class ReprocessBatchResponse(BaseModel):
     task: str = Field(default="started", description="Task handle (always 'started').")
 
 
+class ReprocessBatchStatusResponse(BaseModel):
+    """Response for GET /runs/{run_id}/registros/{registro}/reprocess-status.
+
+    SA-5 fix: a REAL backend completion signal for the bulk AI reprocess batch,
+    replacing the fragile frontend time-heuristic. The frontend polls this until
+    ``done`` is True and drives the "N recuperadas / M fallaron" summary from the
+    real ``recovered`` / ``failed`` counts.
+
+    When no batch has been fired for the registro, the endpoint returns a sane
+    terminal shape (``total=0``, ``done=True``) so the client never hangs.
+    """
+
+    registro: str
+    total: int = Field(description="Number of guías queued for the batch.")
+    recovered: int = Field(default=0, description="Guías recovered so far.")
+    failed: int = Field(default=0, description="Guías that failed so far.")
+    done: bool = Field(description="True once the batch coroutine has finished.")
+
+
 class ReprocessGuiaResponse(BaseModel):
     """Response for POST /runs/{run_id}/errored-guias/{guia_id}/reprocess (PR#3).
 

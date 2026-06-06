@@ -31,6 +31,10 @@ vi.mock('@/composables/useReconciliationApi', () => ({
   }),
 }))
 
+vi.mock('@/api/client', () => ({
+  reprocessGuia: vi.fn().mockResolvedValue({ recovered: true }),
+}))
+
 // Stub ConfidenceBadge to make badge state assertions simple
 vi.mock('@/features/review/ConfidenceBadge.vue', () => ({
   default: {
@@ -66,6 +70,7 @@ const DEFAULT_PROPS = {
   guias: [makeGuia()],
   runId: 'run-abc',
   materialCanonical: 'BARRA A615 G60 1/2" 9M',
+  registro: '232',
 }
 
 // ---------------------------------------------------------------------------
@@ -84,9 +89,10 @@ describe('GuiaDrillDown', () => {
     expect(wrapper.text()).toContain('T009-0741770')
   })
 
-  it('renders source_pages as comma-separated list', () => {
+  it('renders source_pages as interactive SourcePages chips (F2)', () => {
     const wrapper = mount(GuiaDrillDown, { props: DEFAULT_PROPS })
-    expect(wrapper.text()).toContain('4, 5')
+    const chips = wrapper.findAll('.source-pages__chip')
+    expect(chips.map((c) => c.text())).toEqual(['4', '5'])
   })
 
   it('renders formatted cantidad', () => {
@@ -109,7 +115,7 @@ describe('GuiaDrillDown', () => {
 
   it('ConfidenceBadge shows needs-review when confidence < 0.85 (amber state)', () => {
     const wrapper = mount(GuiaDrillDown, {
-      props: { guias: [makeGuia({ confidence: 0.72 })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical },
+      props: { guias: [makeGuia({ confidence: 0.72 })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical, registro: DEFAULT_PROPS.registro },
     })
     const badge = wrapper.find('.stub-confidence-badge')
     expect(badge.attributes('data-needs-review')).toBe('true')
@@ -117,7 +123,7 @@ describe('GuiaDrillDown', () => {
 
   it('renders QR badge when identity_source = "qr"', () => {
     const wrapper = mount(GuiaDrillDown, {
-      props: { guias: [makeGuia({ identity_source: 'qr' })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical },
+      props: { guias: [makeGuia({ identity_source: 'qr' })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical, registro: DEFAULT_PROPS.registro },
     })
     expect(wrapper.find('.guia-drill-down__identity-badge--qr').exists()).toBe(true)
     expect(wrapper.find('.guia-drill-down__identity-badge--qr').text()).toBe('QR')
@@ -125,7 +131,7 @@ describe('GuiaDrillDown', () => {
 
   it('renders OCR fallback label when identity_source = "ocr_fallback"', () => {
     const wrapper = mount(GuiaDrillDown, {
-      props: { guias: [makeGuia({ identity_source: 'ocr_fallback' })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical },
+      props: { guias: [makeGuia({ identity_source: 'ocr_fallback' })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical, registro: DEFAULT_PROPS.registro },
     })
     expect(wrapper.find('.guia-drill-down__identity-badge--ocr').exists()).toBe(true)
     expect(wrapper.find('.guia-drill-down__identity-badge--ocr').text()).toContain('OCR fallback')
@@ -136,15 +142,17 @@ describe('GuiaDrillDown', () => {
       makeGuia({ guia_id: 'T009-0741770' }),
       makeGuia({ guia_id: 'T073-0680256', source_pages: [10] }),
     ]
-    const wrapper = mount(GuiaDrillDown, { props: { guias, runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical } })
+    const wrapper = mount(GuiaDrillDown, { props: { guias, runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical, registro: DEFAULT_PROPS.registro } })
     expect(wrapper.text()).toContain('T009-0741770')
     expect(wrapper.text()).toContain('T073-0680256')
     expect(wrapper.findAll('.guia-drill-down__row')).toHaveLength(2)
   })
 
-  it('"Reassign" button emits reassign event with guia_id (REV-C02)', async () => {
+  it('"Reasignar" (Acciones menu) emits reassign event with guia_id (REV-C02)', async () => {
     const wrapper = mount(GuiaDrillDown, { props: DEFAULT_PROPS })
-    await wrapper.find('.guia-drill-down__reassign-btn').trigger('click')
+    await wrapper.find('.guia-drill-down__acciones-trigger').trigger('click')
+    const reasignar = wrapper.findAll('[role="menuitem"]').find((i) => i.text().includes('Reasignar'))!
+    await reasignar.trigger('click')
     expect(wrapper.emitted('reassign')).toBeTruthy()
     expect(wrapper.emitted('reassign')![0]).toEqual(['T009-0741770'])
   })
@@ -218,14 +226,14 @@ describe('GuiaDrillDown', () => {
 
   it('shows YearInferredBadge when guia.year_inferred=true (R4.2)', () => {
     const wrapper = mount(GuiaDrillDown, {
-      props: { guias: [makeGuia({ year_inferred: true })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical },
+      props: { guias: [makeGuia({ year_inferred: true })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical, registro: DEFAULT_PROPS.registro },
     })
     expect(wrapper.find('.year-inferred-badge').exists()).toBe(true)
   })
 
   it('does not show YearInferredBadge when guia.year_inferred=false (R4.2)', () => {
     const wrapper = mount(GuiaDrillDown, {
-      props: { guias: [makeGuia({ year_inferred: false })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical },
+      props: { guias: [makeGuia({ year_inferred: false })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical, registro: DEFAULT_PROPS.registro },
     })
     expect(wrapper.find('.year-inferred-badge').exists()).toBe(false)
   })
@@ -235,7 +243,7 @@ describe('GuiaDrillDown', () => {
       makeGuia({ guia_id: 'T009-INFERRED', year_inferred: true }),
       makeGuia({ guia_id: 'T009-EXACT', year_inferred: false }),
     ]
-    const wrapper = mount(GuiaDrillDown, { props: { guias, runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical } })
+    const wrapper = mount(GuiaDrillDown, { props: { guias, runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical, registro: DEFAULT_PROPS.registro } })
     const badges = wrapper.findAll('.year-inferred-badge')
     expect(badges).toHaveLength(1)
   })
@@ -258,6 +266,7 @@ describe('GuiaDrillDown', () => {
         guias: [makeGuia({ fecha_divergence: true, divergence_reason: 'fecha_divergence' })],
         runId: 'run-abc',
         materialCanonical: DEFAULT_PROPS.materialCanonical,
+        registro: DEFAULT_PROPS.registro,
       },
     })
     expect(wrapper.find('.guia-drill-down__row--divergent').exists()).toBe(true)
@@ -266,7 +275,7 @@ describe('GuiaDrillDown', () => {
 
   it('no divergent class nor badge when fecha_divergence=false', () => {
     const wrapper = mount(GuiaDrillDown, {
-      props: { guias: [makeGuia({ fecha_divergence: false })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical },
+      props: { guias: [makeGuia({ fecha_divergence: false })], runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical, registro: DEFAULT_PROPS.registro },
     })
     expect(wrapper.find('.guia-drill-down__row--divergent').exists()).toBe(false)
     expect(wrapper.find('.fecha-divergence-badge').exists()).toBe(false)
@@ -277,7 +286,7 @@ describe('GuiaDrillDown', () => {
       makeGuia({ guia_id: 'T009-OK', fecha_divergence: false }),
       makeGuia({ guia_id: 'T009-DIVERGENT', fecha_divergence: true, divergence_reason: 'fecha_divergence' }),
     ]
-    const wrapper = mount(GuiaDrillDown, { props: { guias, runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical } })
+    const wrapper = mount(GuiaDrillDown, { props: { guias, runId: 'run-abc', materialCanonical: DEFAULT_PROPS.materialCanonical, registro: DEFAULT_PROPS.registro } })
     expect(wrapper.findAll('.guia-drill-down__row--divergent')).toHaveLength(1)
     expect(wrapper.findAll('.fecha-divergence-badge')).toHaveLength(1)
   })
@@ -288,6 +297,7 @@ describe('GuiaDrillDown', () => {
         guias: [makeGuia({ source_pages: [42], fecha_divergence: true, divergence_reason: 'fecha_divergence' })],
         runId: 'run-abc',
         materialCanonical: DEFAULT_PROPS.materialCanonical,
+        registro: DEFAULT_PROPS.registro,
       },
     })
     expect(wrapper.text()).toContain('42')

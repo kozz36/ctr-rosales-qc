@@ -122,7 +122,10 @@
     :guias="row.guias"
     :run-id="runId"
     :material-canonical="row.material_canonical"
+    :registro="row.registro"
+    :table-rows="tableRows"
     @reassign="onDrillDownReassign"
+    @page-click="emit('pageClick', $event)"
     @row-updated="emit('rowUpdated')"
   />
 </template>
@@ -151,6 +154,12 @@ const props = defineProps<{
   runId: string
   /** Kept for API compatibility — no longer used since summed_qty is read-only. */
   pendingValue?: string | null
+  /**
+   * F4 / REV-R25 (D9): all reconciliation rows, forwarded to GuiaDrillDown so the
+   * "Corregir manual" dialog can list this registro's declared materials. Sourced
+   * from the table response already held by ReviewPage — no extra API call.
+   */
+  tableRows?: ReconciliationRowResponse[]
 }>()
 
 const emit = defineEmits<{

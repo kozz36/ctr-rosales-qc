@@ -20,6 +20,7 @@ import type {
   ReassignResponse,
   ReconciliationTableResponse,
   ReprocessBatchResponse,
+  ReprocessBatchStatusResponse,
   ReprocessGuiaResponse,
   RetryBatchResponse,
   RetryGuiaResponse,
@@ -199,6 +200,23 @@ export async function reprocessRegistroBatch(
 ): Promise<ReprocessBatchResponse> {
   const { data } = await http.post<ReprocessBatchResponse>(
     `/runs/${runId}/registros/${encodeURIComponent(registro)}/reprocess`,
+  )
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// GET /runs/{run_id}/registros/{registro}/reprocess-status — REAL completion
+// signal for the bulk AI reprocess batch (SA-5 fix). The frontend polls this
+// until `done` is true and drives the N/M summary from the real counts,
+// replacing the fragile time-heuristic that settled prematurely.
+// ---------------------------------------------------------------------------
+
+export async function getReprocessBatchStatus(
+  runId: string,
+  registro: string,
+): Promise<ReprocessBatchStatusResponse> {
+  const { data } = await http.get<ReprocessBatchStatusResponse>(
+    `/runs/${runId}/registros/${encodeURIComponent(registro)}/reprocess-status`,
   )
   return data
 }

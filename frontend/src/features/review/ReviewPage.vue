@@ -361,10 +361,20 @@ const viewerPage = ref<number>(0)
 const viewerRowPages = ref<number[]>([])
 
 function onPageClick(page: number): void {
-  // Derive the clicked page's row context so the viewer can offer prev/next
-  // navigation across that row's source pages only (cheap nice-to-have).
+  // F2 / REV-R22 refinement: when the click originates from a drill-down guía
+  // (chip or serie-número), scope prev/next navigation to THAT guía's own pages.
+  // Prefer the owning guía's source_pages; fall back to the owning row's pages,
+  // then to the single page.
+  let owningGuiaPages: number[] | null = null
+  for (const r of rows.value) {
+    const guia = r.guias?.find((g) => g.source_pages?.includes(page))
+    if (guia) {
+      owningGuiaPages = guia.source_pages
+      break
+    }
+  }
   const owningRow = rows.value.find((r) => r.source_pages?.includes(page))
-  viewerRowPages.value = owningRow?.source_pages ?? [page]
+  viewerRowPages.value = owningGuiaPages ?? owningRow?.source_pages ?? [page]
   viewerPage.value = page
   showPageViewer.value = true
 }

@@ -252,7 +252,7 @@ class ReconciliationRowResponse(BaseModel):
     )
     # R8.12 (MAT-008, ADR-5): read-only provenance field (no POST/PATCH accepts it).
     match_method: Literal[
-        "deterministic", "grade_tolerant", "llm_inferred", "codigo_sunat", "unresolved"
+        "deterministic", "grade_tolerant", "llm_inferred", "codigo_sunat", "unresolved", "operator"
     ] = Field(
         default="deterministic",
         description=(
@@ -260,7 +260,8 @@ class ReconciliationRowResponse(BaseModel):
             "'deterministic' (regex), 'grade_tolerant' (matched on familia+diámetro+"
             "presentación with an illegible/misread grade adopted from the unique declared "
             "item — always requires_review), 'llm_inferred' (Ollama), 'codigo_sunat' "
-            "(reserved), or 'unresolved' (fallback)."
+            "(reserved), 'unresolved' (fallback), or 'operator' (engineer manually "
+            "reassigned via Corregir manual — always requires_review)."
         ),
     )
     # R9.6 (FDR-008, ADR-5): group-level divergence indicator (derived from guías).
@@ -365,6 +366,12 @@ class GuiaLineEditRequest(BaseModel):
 
     Identifies the target line by ``line_index`` (0-based, preferred) or
     by ``material_canonical`` when ``line_index`` is omitted.
+
+    F4 Corregir manual (REV-R25 / D9): the optional ``assign_material_canonical``
+    field reassigns the line to an operator-chosen declared canonical.  When present,
+    the service sets ``description_canonical``, ``match_method="operator"``, and
+    ``requires_review=True`` — immutable model_copy + re-reconcile + audit trail.
+    Backward-compatible: ``None`` (default) preserves the original cantidad-only path.
     """
 
     line_index: int | None = Field(
@@ -378,6 +385,15 @@ class GuiaLineEditRequest(BaseModel):
     cantidad: float = Field(
         description="New quantity value. Must be >= 0.",
         ge=0,
+    )
+    assign_material_canonical: str | None = Field(
+        default=None,
+        description=(
+            "Operator-chosen declared canonical key to reassign this line to (F4 / REV-R25). "
+            "When set, the line's description_canonical is updated to this value, "
+            "match_method is set to 'operator', and requires_review is set to True. "
+            "Null (default) → original cantidad-only path (backward-compatible)."
+        ),
     )
 
 

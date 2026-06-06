@@ -566,6 +566,7 @@ def edit_guia_line(
             line_index=body.line_index,
             material_canonical=body.material_canonical,
             new_cantidad=new_cantidad,
+            assign_material_canonical=body.assign_material_canonical,
         )
     except ValueError as exc:
         detail = str(exc)

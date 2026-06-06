@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, computed_field
 # ---------------------------------------------------------------------------
 
 MatchMethod = Literal[
-    "deterministic", "grade_tolerant", "llm_inferred", "codigo_sunat", "unresolved"
+    "deterministic", "grade_tolerant", "llm_inferred", "codigo_sunat", "unresolved", "operator"
 ]
 """How the canonical key was derived.
 
@@ -33,6 +33,8 @@ MatchMethod = Literal[
 - ``llm_inferred``:   Ollama inference was needed; row requires human review.
 - ``codigo_sunat``:   reserved — SUNAT producto code authoritative join (no production path yet).
 - ``unresolved``:     both deterministic and LLM failed; row requires human review.
+- ``operator``:       the engineer manually reassigned the line's canonical key via Corregir
+                      manual (F4 / REV-R25); always requires_review=True.
 """
 
 # Methods that always require human review

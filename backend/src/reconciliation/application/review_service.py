@@ -248,6 +248,7 @@ class ReviewService:
         line_index: int | None,
         material_canonical: str | None,
         new_cantidad: Decimal,
+        assign_material_canonical: str | None = None,
     ) -> list[ReconciliationRow]:
         """Update a specific line's ``cantidad`` on a GuiaDeRemision and recompute rows.
 
@@ -257,6 +258,13 @@ class ReviewService:
         by ``material_canonical`` when ``line_index`` is None (matches first line with
         that canonical description).  Updates the line's ``cantidad`` in-place on an
         immutable copy, then re-runs reconcile to recompute MATCH/MISMATCH statuses.
+
+        F4 / REV-R25 (D9): when ``assign_material_canonical`` is provided, the line's
+        ``description_canonical`` is reassigned to the operator-chosen declared canonical
+        key, ``match_method`` is set to ``"operator"``, and ``requires_review`` is set to
+        ``True``.  An immutable ``model_copy`` is used; re-reconcile follows as usual; a
+        ``"manual_correction"`` audit event is emitted.  The backward-compatible path
+        (``assign_material_canonical=None``) is unchanged (cantidad-only edit).
 
         KNOWN LIMITATION (B5): when matching by ``material_canonical`` the edit targets
         the FIRST line whose ``description_canonical`` equals the canonical key. This is
@@ -268,12 +276,14 @@ class ReviewService:
         addressed. Prefer passing an explicit ``line_index`` when disambiguation matters.
 
         Args:
-            guia_id:            Identifier of the target GuiaDeRemision.
-            line_index:         0-based index of the line to update, or None to match
-                                by material_canonical.
-            material_canonical: Canonical material description for lookup when
-                                line_index is None.
-            new_cantidad:       New quantity value (must be >= 0).
+            guia_id:                    Identifier of the target GuiaDeRemision.
+            line_index:                 0-based index of the line to update, or None to
+                                        match by material_canonical.
+            material_canonical:         Canonical material description for lookup when
+                                        line_index is None.
+            new_cantidad:               New quantity value (must be >= 0).
+            assign_material_canonical:  Operator-chosen declared canonical key to reassign
+                                        this line to (F4 / REV-R25). None → cantidad-only.
 
         Returns:
             Updated list of reconciliation rows (all rows recomputed).
@@ -315,23 +325,45 @@ class ReviewService:
 
         old_line = lines[resolved_index]
         old_cantidad = old_line.cantidad
-        new_line = old_line.model_copy(update={"cantidad": new_cantidad})
+
+        if assign_material_canonical is not None:
+            # F4 Corregir manual (REV-R25 / D9): operator-assigned canonical reassignment.
+            # Immutable model_copy — never mutate the original line object.
+            new_line = old_line.model_copy(update={
+                "cantidad": new_cantidad,
+                "description_canonical": assign_material_canonical,
+                "match_method": "operator",
+                "requires_review": True,
+            })
+            event = EditEvent(
+                kind="manual_correction",
+                target={
+                    "guia_id": guia_id,
+                    "line_index": line_index,
+                    "material_canonical": material_canonical,
+                },
+                field="description_canonical",
+                old_value=old_line.description_canonical,
+                new_value=assign_material_canonical,
+            )
+        else:
+            # Original cantidad-only path (backward-compatible).
+            new_line = old_line.model_copy(update={"cantidad": new_cantidad})
+            event = EditEvent(
+                kind="guia_line_edit",
+                # B2: persist the line selector so restore_from_sidecar can replay it.
+                target={
+                    "guia_id": guia_id,
+                    "line_index": line_index,
+                    "material_canonical": material_canonical,
+                },
+                field="cantidad",
+                old_value=str(old_cantidad),
+                new_value=str(new_cantidad),
+            )
+
         lines[resolved_index] = new_line
-
         updated_guia = guia.model_copy(update={"lines": lines})
-
-        event = EditEvent(
-            kind="guia_line_edit",
-            # B2: persist the line selector so restore_from_sidecar can replay it.
-            target={
-                "guia_id": guia_id,
-                "line_index": line_index,
-                "material_canonical": material_canonical,
-            },
-            field="cantidad",
-            old_value=str(old_cantidad),
-            new_value=str(new_cantidad),
-        )
 
         # Mutate in-memory state
         new_guias = list(self._guias)

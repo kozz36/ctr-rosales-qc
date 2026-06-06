@@ -40,6 +40,7 @@ from reconciliation.infrastructure.api.schemas import (
     ReconciliationRowResponse,
     ReconciliationTableResponse,
     ReprocessBatchResponse,
+    ReprocessBatchStatusResponse,
     ReprocessGuiaResponse,
     RetryBatchResponse,
     RetryGuiaResponse,
@@ -1106,6 +1107,57 @@ async def reprocess_guia(
     )
 
 
+async def _run_reprocess_batch(
+    reprocess_service: Any,
+    target_guias: list[Any],
+    status: dict[str, Any],
+    *,
+    run_id: str,
+) -> None:
+    """Run all per-guía apply_reprocess calls concurrently, maintaining a live
+    {total, recovered, failed, done} status record (SA-5 fix).
+
+    Race-free by construction: asyncio is single-threaded; control only yields at
+    ``await`` points.  Each guía runs inside ``_one`` which awaits apply_reprocess
+    and then increments the shared ``status`` dict in a SYNCHRONOUS block (no
+    ``await`` between read and write), so concurrent coroutines can never interleave
+    a partial update.  ``done`` flips True only after ``gather`` resolves every guía.
+
+    The existing Semaphore(3) inside ReprocessService.apply_reprocess remains the
+    SOLE concurrency limiter (D1 / KI-2) — no second semaphore here, no asyncio.run.
+    mark_retry_attempted is NEVER called here (D5 / REV-R26): AI reprocess is
+    stateless-retryable; that flag is SUNAT-REINTENTAR-only.
+    """
+    status["total"] = len(target_guias)
+    status["recovered"] = 0
+    status["failed"] = 0
+    status["done"] = False
+
+    async def _one(eg: Any) -> None:
+        try:
+            result = await reprocess_service.apply_reprocess(
+                guia_id=eg.guia_id,
+                source_pages=list(eg.source_pages),
+            )
+            recovered = bool(getattr(result, "recovered", False))
+        except Exception as exc:  # noqa: BLE001 — per-guía isolation (REV-R20-S03)
+            logger.warning(
+                "reprocess_registro: apply_reprocess raised for %r in run %r: %s",
+                eg.guia_id,
+                run_id,
+                exc,
+            )
+            recovered = False
+        # SYNCHRONOUS counter update — no await between read and write → race-free.
+        if recovered:
+            status["recovered"] = status["recovered"] + 1
+        else:
+            status["failed"] = status["failed"] + 1
+
+    await asyncio.gather(*[_one(eg) for eg in target_guias])
+    status["done"] = True
+
+
 @router.post(
     "/runs/{run_id}/registros/{registro}/reprocess",
     response_model=ReprocessBatchResponse,
@@ -1151,35 +1203,23 @@ async def reprocess_registro(
             detail=f"No errored guías found for registro='{registro}' in run '{run_id}'.",
         )
 
+    # SA-5 fix: per-batch status record in the run-registry entry (API-layer
+    # bookkeeping, NOT domain/application state — consistent with how the registry
+    # already holds run state).  Initialized BEFORE the task fires so an immediate
+    # GET .../reprocess-status sees done=False while the batch is still running.
+    batches: dict[str, Any] = entry.setdefault("reprocess_batches", {})
+    status: dict[str, Any] = {
+        "total": len(target_guias),
+        "recovered": 0,
+        "failed": 0,
+        "done": False,
+    }
+    batches[registro] = status
+
     async def _reprocess_batch() -> None:
-        """Run all per-guía apply_reprocess calls concurrently.
-
-        The existing Semaphore(3) inside ReprocessService.apply_reprocess is the SOLE
-        concurrency limiter — no second semaphore added here (D1 / KI-2).
-        asyncio.gather with return_exceptions=True ensures per-guía isolation: one
-        failure does NOT abort the remaining guías (REV-R20-S02/S03).
-
-        mark_retry_attempted is NOT called here (D5 / REV-R26): that flag gates the
-        SUNAT REINTENTAR button, not AI reprocess.  AI reprocess is stateless-retryable.
-        """
-        results = await asyncio.gather(
-            *[
-                reprocess_service.apply_reprocess(
-                    guia_id=eg.guia_id,
-                    source_pages=list(eg.source_pages),
-                )
-                for eg in target_guias
-            ],
-            return_exceptions=True,
+        await _run_reprocess_batch(
+            reprocess_service, target_guias, status, run_id=run_id
         )
-        for eg, result in zip(target_guias, results):
-            if isinstance(result, Exception):
-                logger.warning(
-                    "reprocess_registro: apply_reprocess raised for %r in run %r: %s",
-                    eg.guia_id,
-                    run_id,
-                    result,
-                )
 
     background_tasks.add_task(_reprocess_batch)
 
@@ -1187,6 +1227,44 @@ async def reprocess_registro(
         run_id=run_id,
         registro=registro,
         count=len(target_guias),
+    )
+
+
+@router.get(
+    "/runs/{run_id}/registros/{registro}/reprocess-status",
+    response_model=ReprocessBatchStatusResponse,
+    summary="Live status of a bulk AI reprocess batch (SA-5 completion signal).",
+)
+def get_reprocess_status(
+    run_id: str,
+    registro: str,
+    registry: RunRegistry,
+) -> ReprocessBatchStatusResponse:
+    """Return the live {total, recovered, failed, done} record for a registro's batch.
+
+    SA-5 fix (REV-R20): the frontend polls this until ``done`` is True and drives the
+    "N recuperadas / M fallaron" summary from the REAL counts, replacing the fragile
+    PR-B time-heuristic that settled prematurely on real latency.
+
+    When no batch has been fired for the registro, returns a terminal shape
+    (``total=0``, ``done=True``) so the client never hangs.
+
+    Errors:
+        404 — run_id unknown.
+    """
+    entry = _require_run(registry, run_id)
+    batches: dict[str, Any] = entry.get("reprocess_batches") or {}
+    status = batches.get(registro)
+    if status is None:
+        return ReprocessBatchStatusResponse(
+            registro=registro, total=0, recovered=0, failed=0, done=True
+        )
+    return ReprocessBatchStatusResponse(
+        registro=registro,
+        total=int(status.get("total", 0)),
+        recovered=int(status.get("recovered", 0)),
+        failed=int(status.get("failed", 0)),
+        done=bool(status.get("done", False)),
     )
 
 

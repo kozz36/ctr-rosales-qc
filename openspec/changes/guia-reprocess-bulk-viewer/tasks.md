@@ -99,6 +99,23 @@ Chain strategy: pending
 - [ ] 8.5 Open `[Acciones]` menu in a drill-down → Reasignar opens reassign dialog (unchanged) → Reprocesar fires per-guía endpoint → Corregir manual: select declared material from dropdown (only that registro's materials present); enter cantidad; submit → table updates; `requires_review` badge visible on corrected line.
 - [ ] 8.6 **COMMIT** — `test(e2e): SA-5 Playwright runtime validation — tabs, bulk reprocess, viewer, acciones/corregir` — conventional commit.
 
+## Phase 9 — SA-5 fix: real backend batch-status completion signal
+*REV-R20 | confirmed SA-5 bug (run c8a6f97d: UI 2/22 vs backend truth 17/7) | PR-C*
+
+SA-5 Playwright caught the F1 bulk live-progress settling PREMATURELY: the PR-B
+frontend used a time-heuristic (elapsed-floor + observed-shrink + hard-cap polling
+GET /table) to GUESS batch completion. On a real-latency batch it plateaued and
+finalized "2 recuperadas / 22 fallaron" while the backend recovered 17/24. Fix:
+replace the heuristic with a REAL backend completion signal.
+
+- [x] 9.1 RED — backend/tests/unit/infrastructure/test_reprocess_batch_status.py (new): `_run_reprocess_batch` records {total,recovered,failed,done}; mid-batch done=false, final done=true with correct split; per-guía failure increments failed not recovered; GET /reprocess-status shape + 404 + no-batch terminal shape. 5 tests RED (helper + endpoint absent).
+- [x] 9.2 GREEN — schemas.py: `ReprocessBatchStatusResponse(registro,total,recovered,failed,done)`.
+- [x] 9.3 GREEN — routes.py: module-level race-free `_run_reprocess_batch` (synchronous counter increment after each per-guía await; done flips after gather); per-batch status stored in `entry["reprocess_batches"][registro]`; new `GET /runs/{id}/registros/{r}/reprocess-status`. Tests 9.1 green. Commit: 7d7172b.
+- [x] 9.4 RED — frontend PendientesPorProcesarTab.batchStatus.test.ts (new): poll status running→running→done; summary only after done; mid-batch plateau does NOT finalize early; button re-enables on done; final refetch on done; stops polling after done. RED (component still polls /table).
+- [x] 9.5 GREEN — api/types.ts + api/client.ts: `ReprocessBatchStatusResponse` + `getReprocessBatchStatus`.
+- [x] 9.6 GREEN — PendientesPorProcesarTab.vue: replace the time-heuristic with polling GET /reprocess-status until done:true; drive N/M summary from real counts; button disabled while !done; final refetch on done; generous failsafe cap only. Removed dead floor/observed-shrink logic. Updated the two heuristic specs to the backend-signal contract. Tests 9.4 green; 322 vitest + vue-tsc clean. Commit: ffe3095.
+- [ ] 9.7 SA-5 RE-VALIDATION (orchestrator) — re-run the real-latency bulk batch via Playwright; confirm the summary now matches the backend truth (no premature settle).
+
 ---
 
 ## Dependency Graph

@@ -81,7 +81,7 @@ export interface GuiaContributionResponse {
   cantidad: string // Decimal serialised as string
   unidad: string
   confidence: number
-  identity_source: 'qr' | 'ocr_fallback'
+  identity_source: 'qr' | 'ocr_fallback' | 'vision'
   /**
    * Rev-3 D5 (REC-C07): true when the year component of this guía's reception
    * date was reconstructed via bounded inference (EXT-021), not read directly
@@ -162,7 +162,7 @@ export interface ReconciliationRowResponse {
  */
 export interface UnresolvedGuiaResponse {
   guia_id: string // serie-numero, e.g. "T009-0741770"
-  identity_source: 'qr' | 'ocr_fallback'
+  identity_source: 'qr' | 'ocr_fallback' | 'vision'
   source_pages: number[]
   first_page: number | null
 }
@@ -208,6 +208,16 @@ export interface RetryBatchResponse {
   registro: string
   count: number
   task: string
+}
+
+/** POST /runs/{run_id}/errored-guias/{guia_id}/reprocess → 200 (PR#3) */
+export interface ReprocessGuiaResponse {
+  run_id: string
+  guia_id: string
+  recovered: boolean
+  reason: string | null
+  rows: ReconciliationRowResponse[]
+  errored_guias: ErroredGuiaResponse[]
 }
 
 /** GET /runs/{run_id}/table */

@@ -57,6 +57,13 @@ class _StubVisionLLM:
     ) -> list[VisionResult]:
         return []
 
+    def read_material_table(
+        self,
+        image: bytes,
+        hint: str | None = None,
+    ) -> list[MaterialLine]:
+        return []
+
 
 class _StubReport:
     def export(

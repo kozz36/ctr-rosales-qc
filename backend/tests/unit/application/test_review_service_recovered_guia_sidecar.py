@@ -205,6 +205,106 @@ class TestRecoveredGuiaSidecarReplay:
         )
         assert "guia_id" in ev["new_value"]
 
+    def test_legacy_event_with_requires_review_false_is_not_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        """R2-W2 (silent-data-loss regression): a recovered_guia event serialized by an
+        OLDER build (line ``requires_review`` omitted/False) must STILL be re-added on
+        replay — the new fail-closed guard must NOT silently swallow it.
+
+        Strict-TDD: this FAILS against current code (the guard raises ValueError →
+        swallowed by ``except (ValueError, ReconciliationError): pass`` → guía vanishes).
+        """
+        ctx = _make_ctx(tmp_path)
+        guias = [_make_guia()]
+        declared = [_make_registro()]
+        errored = [_make_errored("errored-g1")]
+        reconciler = ReconciliationService()
+        rows = reconciler.reconcile(declared, guias)
+
+        # Build a LEGACY-shape recovered guía whose line has requires_review=False
+        # (the historical default before FIX #5's fail-closed guard existed).
+        legacy_line = MaterialLine(
+            description_raw="acero corrugado",
+            description_canonical="acero corrugado",
+            unidad="KG",  # type: ignore[arg-type]
+            cantidad=Decimal("30"),
+            confidence=1.0,
+            source_page=3,
+            requires_review=False,  # legacy shape
+        )
+        legacy_guia = GuiaDeRemision(
+            guia_id="errored-g1",
+            registro="R001",
+            fecha=date(2026, 5, 28),
+            fecha_entrega=date(2026, 5, 28),
+            lines=[legacy_line],
+            source_pages=[3],
+            identity_source="qr",
+        )
+        # Write the sidecar event directly (simulating an older serialisation).
+        ctx.write_review_sidecar({
+            "edits": [
+                {
+                    "kind": "recovered_guia",
+                    "target": {"guia_id": "errored-g1"},
+                    "field": None,
+                    "old_value": None,
+                    "new_value": legacy_guia.model_dump(mode="json"),
+                }
+            ],
+            "audit_trail": [],
+        })
+
+        svc = ReviewService.restore_from_sidecar(
+            declared=declared,
+            guias=guias,
+            rows=rows,
+            ctx=ctx,
+            errored_guias=list(errored),
+        )
+
+        guia_ids = {g.guia_id for g in svc.guias}
+        assert "errored-g1" in guia_ids, (
+            "legacy recovered_guia event was SILENTLY DROPPED on replay (R2-W2 regression)"
+        )
+        # The replayed guía's lines must be coerced to requires_review=True (contract).
+        replayed = next(g for g in svc.guias if g.guia_id == "errored-g1")
+        assert all(ln.requires_review is True for ln in replayed.lines)
+
+    def test_identity_source_vision_survives_sidecar_round_trip(
+        self, tmp_path: Path
+    ) -> None:
+        """V-W1 (REV-R19): a vision-recovered guía (identity_source="vision") must
+        round-trip through sidecar serialize → replay with identity_source preserved
+        and requires_review=True."""
+        ctx = _make_ctx(tmp_path)
+        guias = [_make_guia()]
+        declared = [_make_registro()]
+        errored = [_make_errored("errored-g1")]
+        reconciler = ReconciliationService()
+        rows = reconciler.reconcile(declared, guias)
+
+        svc1 = ReviewService(
+            declared=declared, guias=guias, rows=rows, ctx=ctx, errored_guias=errored
+        )
+        vision_recovered = _make_recovered_guia("errored-g1").model_copy(
+            update={"identity_source": "vision"}
+        )
+        svc1.add_recovered_guia(vision_recovered)
+
+        svc2 = ReviewService.restore_from_sidecar(
+            declared=declared,
+            guias=guias,
+            rows=rows,
+            ctx=ctx,
+            errored_guias=list(errored),
+        )
+
+        replayed = next(g for g in svc2.guias if g.guia_id == "errored-g1")
+        assert replayed.identity_source == "vision"
+        assert all(ln.requires_review is True for ln in replayed.lines)
+
     def test_idempotent_replay_no_duplicate(self, tmp_path: Path) -> None:
         """If the sidecar has one recovered_guia event, restart replay must add it exactly once."""
         ctx = _make_ctx(tmp_path)

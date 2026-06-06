@@ -22,21 +22,88 @@ from reconciliation.domain.normalizer import MaterialNormalizer
 
 # ---------------------------------------------------------------------------
 # Grade patterns (MAT-003)
-# All known dual-grade variants → "A615 G60" (Aceros Arequipa rebar)
-# Order matters: more-specific patterns first.
+# The spec family is the Aceros Arequipa dual cert A615/A706 (≡ bare A615).
+# The grade NUMBER (60/42/75) is captured SEPARATELY so valid grades stay
+# distinct: G60 is the standard, but G42 and G75 are valid and MUST NOT be
+# collapsed into G60.  Canonical grade = "A615 G{n}".
 # Applied AFTER NFC + lowercase.
 # ---------------------------------------------------------------------------
 
-_GRADE_PATTERNS: Final[list[tuple[re.Pattern[str], str]]] = [
-    # "ag615/a706 g60" and "a615/a706 g60" — slash-separated dual grade
-    (re.compile(r"ag?615/a706\s*g?60", re.IGNORECASE), "A615 G60"),
-    # "a a615-g60" — space-separated with hyphen
-    (re.compile(r"a\s+a615[-\s]g?60", re.IGNORECASE), "A615 G60"),
-    # "a615 g60" — space-separated (also handles "a615 g 60" with extra space)
-    (re.compile(r"a615\s+g?60", re.IGNORECASE), "A615 G60"),
-    # "a615" last-resort — bare grade with no G60 qualifier
-    (re.compile(r"\ba615\b", re.IGNORECASE), "A615 G60"),
-]
+# Spec-family detector: matches the A615 dual-cert family in all real-corpus
+# spellings — bare ``a615``, slash dual ``a615/a706`` / ``ag615/a706``, and the
+# physical-guía concatenations WITHOUT a slash: ``a615a706``, ``a6151a706``
+# (stray OCR "1" between 615 and a706), ``a615-a706``, ``a615 a706``.
+# A leading optional "a " (as in "a a615-g60") is tolerated by the \b anchor.
+_SPEC_FAMILY_RE: Final[re.Pattern[str]] = re.compile(
+    r"\ba?g?615"          # bare 615 / ag615 / a615
+    r"(?:\s*[/\-\s]?\s*"   # optional separator: slash / hyphen / space / concat
+    r"\d?\s*a706)?",       # optional a706 dual cert (with optional stray OCR digit)
+    re.IGNORECASE,
+)
+
+# Valid canonical grade levels (Aceros Arequipa A615/A706 dual cert).
+# G60 is the standard; G42 and G75 are valid and MUST stay distinct (never
+# collapsed into G60).  Any token positioned as a grade whose value is NOT in
+# this set is an ILLEGIBLE/INVALID grade → parse() returns None → Tier-2.
+_VALID_GRADE_LEVELS: Final[frozenset[str]] = frozenset({"60", "42", "75"})
+
+# Grade-context token detectors.  A "grade-like token" is anchored to a grade
+# CONTEXT, NOT a whole-string scan — this is the JD FIX #1 core change:
+#
+#   1. ``_G_PREFIXED_GRADE_RE`` — a ``g`` / ``gr`` / ``grado`` prefix followed by
+#      the grade payload.  OCR glue is tolerated: there may be NO boundary
+#      between the ``g`` and the digits (``g660``), and the payload may carry
+#      alpha-noise (``g7s``, ``g6o``).  The payload (``[a-z0-9]+``) is captured
+#      and validated against ``_VALID_GRADE_LEVELS`` by the caller.  This catches
+#      g-glued, 2-digit, 4-digit, and alpha-noise invalid grades that the old
+#      ``\d{3}`` guard silently let default to G60.
+#
+#   2. ``_POST_FAMILY_NUMERIC_GRADE_RE`` — a standalone numeric token positioned
+#      AS the grade: immediately after the spec family (``a615`` / ``a706``),
+#      separated only by whitespace.  This is the legacy space-separated misread
+#      form (``a615a706 580 ...``) and must still bail.  Anchoring to the family
+#      boundary is what prevents an INCIDENTAL number elsewhere (lot ``250``,
+#      ``lote 119``) from being mistaken for a grade.
+#
+# Both capture group 1 = the grade payload string the caller validates.
+#   JD ROUND 2 FIX #2: the payload MUST be DIGIT-ANCHORED.  The previous
+#   ``[a-z0-9]+`` payload matched ANY g-initial word (``gerdau`` → ``erdau``,
+#   ``galvanizado`` → ``alvanizado``, ``grapa`` → ``rapa``, ``gm`` → ``m``),
+#   producing an invalid grade payload → a false None that even discarded a
+#   co-present VALID ``g60``.  Requiring a leading digit (``\d[a-z0-9]*``) means
+#   a pure-alpha word no longer qualifies as a grade context, while genuine
+#   misreads (``g7s``→``7s``, ``g6o``→``6o``, ``g660``→``660``) still start with a
+#   digit and are still caught and bailed.
+_G_PREFIXED_GRADE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bg(?:rado|r)?[-\s]*(\d[a-z0-9]*)",
+    re.IGNORECASE,
+)
+# NOTE: the captured digit run must NOT be the leading whole of a diameter
+# fraction (``3/4"`` → ``3``) nor a millimetre diameter (``8mm`` → ``8``); a
+# trailing ``/`` or ``mm`` negative-lookahead excludes those so a bare-A615 line
+# whose next token is the diameter does not spuriously read the diameter as a
+# grade.  ``8mm`` is the only mm diameter and ``8`` is not a valid grade, so the
+# guard matters.
+#
+# JD ROUND 2 FIX #1 (CRITICAL, data-corrupting): the payload MUST be 2-3 digits.
+# The previous bare ``(\d+)`` captured the LEADING single digit of a diameter
+# (``1`` of ``1"`` / ``1 3/8"``) when no grade token sat between the spec family
+# and the diameter → ``1`` ∉ {60,42,75} → the whole grade-less line bailed to
+# None, silently degrading the two LARGEST in-corpus diameters (``1"``, ``1 3/8"``)
+# to UNRESOLVED.  Grade magnitudes are exactly 2-3 digits (60/42/75 valid;
+# 580/680/660 invalid-but-grade-shaped → still bail); diameter leads are single
+# digits.  The ``{2,3}`` quantifier alone already excludes a single-digit
+# diameter lead (``1`` of ``1"`` / ``1 3/8"`` cannot satisfy the 2-digit
+# minimum), so NO ``(?!\s*\d)`` lookahead is used — that would have wrongly
+# rejected the legacy space-separated 3-digit misread ``a615a706 680 3/4"``
+# (grade ``680`` is legitimately followed by a space + diameter digit and MUST
+# still be captured → invalid → bail).  The remaining lookaheads only guard the
+# direct-suffix forms (``./`` fraction, ``mm``, inch/pulg) so a 2-3 digit token
+# glued to a diameter suffix is not misread as a grade.
+_POST_FAMILY_NUMERIC_GRADE_RE: Final[re.Pattern[str]] = re.compile(
+    r"a(?:615|706)\s+(\d{2,3})(?!\s*[./])(?!\s*mm)(?!\s*['\"″]|\s*pulg)\b",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # Diameter table (MAT-004)
@@ -162,6 +229,27 @@ class MaterialKeyNormalizer:
             raw=raw,
         )
 
+    def parse_partial(self, raw: str) -> tuple[str, str, str] | None:
+        """Extract the NON-grade attributes ``(familia, diámetro, presentación)``.
+
+        The Tier-2 grade-tolerant reconciliation primitive: when ``parse()``
+        fails ONLY because the grade token is illegible (OCR misread), the
+        remaining three attributes still identify the declared item. Returns
+        the triple when all three are extractable, else ``None`` (a missing
+        familia/diámetro/presentación means the line cannot be matched on grade
+        alone — never guess).
+
+        Pure: no grade is inferred here; grade adoption happens in the
+        reconciliation layer against a UNIQUE same-registro declared item.
+        """
+        cleaned = self._pre_clean.canonicalize(raw)
+        familia = self._extract_familia(cleaned)
+        diametro = self._extract_diametro(cleaned)
+        presentacion = self._extract_presentacion(cleaned)
+        if familia is None or diametro is None or presentacion is None:
+            return None
+        return (familia, diametro, presentacion)
+
     # ------------------------------------------------------------------
     # Private extraction helpers
     # ------------------------------------------------------------------
@@ -173,10 +261,49 @@ class MaterialKeyNormalizer:
         return None
 
     def _extract_grado(self, cleaned: str) -> str | None:
-        for pattern, canonical in _GRADE_PATTERNS:
-            if pattern.search(cleaned):
-                return canonical
-        return None
+        """Extract the canonical grade ``A615 G{n}``.
+
+        Requires the A615 spec family.  Grade detection is ANCHORED to a grade
+        CONTEXT (a ``g``/``gr``/``grado`` prefix, or a numeric token positioned
+        immediately after the spec family) — NOT a whole-string ``\\d{3}`` scan.
+        This is the JD FIX #1 core: an incidental lot/qty number elsewhere in
+        the string (``lote 119``, ``... dob 250``) is NOT a grade context and
+        must NOT trigger a bail, while a g-glued / 2-digit / 4-digit / alpha-
+        noise invalid grade (``g660``, ``g50``, ``g6042``, ``g7s``) IS a grade
+        context and MUST bail to None.
+
+        Resolution rules (after the spec-family gate):
+          1. Collect every grade-context token and validate each against
+             ``_VALID_GRADE_LEVELS`` (60/42/75).
+          2. If ANY grade-context token is INVALID → None (Tier-2 / requires_review).
+             Invalid grades must never silently default to G60.
+          3. If >1 DISTINCT valid grade is present (e.g. ``g 60`` AND ``g 75``)
+             → None (hand to Tier-2/LLM, never arbitrarily pick the first).
+          4. Exactly one distinct valid grade → ``A615 G{n}`` (kept distinct).
+          5. No grade-context token at all (clean bare A615, incidental numbers
+             allowed) → standard G60 default.
+        """
+        if not _SPEC_FAMILY_RE.search(cleaned):
+            return None
+
+        valid_levels: set[str] = set()
+        for token_re in (_G_PREFIXED_GRADE_RE, _POST_FAMILY_NUMERIC_GRADE_RE):
+            for match in token_re.finditer(cleaned):
+                payload = match.group(1).lower()
+                if payload in _VALID_GRADE_LEVELS:
+                    valid_levels.add(payload)
+                else:
+                    # Grade context present but value is not a valid grade →
+                    # illegible/invalid grade.  Never default to G60.
+                    return None
+
+        if len(valid_levels) > 1:
+            # Contradictory legible grades → ambiguous, hand to Tier-2/LLM.
+            return None
+        if len(valid_levels) == 1:
+            return f"A615 G{next(iter(valid_levels))}"
+        # No grade-context token at all → clean bare A615 → standard G60.
+        return "A615 G60"
 
     def _extract_diametro(self, cleaned: str) -> str | None:
         for pattern, canonical in _DIAMETER_TABLE:

@@ -22,6 +22,7 @@ Design:
 from __future__ import annotations
 
 import copy
+import logging
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -36,6 +37,8 @@ from reconciliation.domain.models import (
 from reconciliation.domain.reconciliation import ReconciliationService
 from reconciliation.domain.section_id_guard import is_section_id
 from reconciliation.application.run_context import RunContext
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +449,17 @@ class ReviewService:
         Returns:
             Updated list of reconciliation rows after re-reconcile.
         """
+        # Fail-closed guard (FIX #5): the auto-reject invariant — recovered lines
+        # ALWAYS requires_review=True (reconciliation validation gate) — must not
+        # rest solely on callers.  Reject any line that would bypass review.
+        bad = [ln for ln in guia.lines if ln.requires_review is not True]
+        if bad:
+            raise ValueError(
+                f"add_recovered_guia: guía {guia.guia_id!r} has "
+                f"{len(bad)} line(s) with requires_review!=True — recovered guías "
+                "must always be flagged for review (reconciliation validation gate)."
+            )
+
         # Resolve the existing guía with this guia_id (if any).
         existing_idx: int | None = next(
             (i for i, g in enumerate(self._guias) if g.guia_id == guia.guia_id),
@@ -638,10 +652,33 @@ class ReviewService:
                     continue
                 try:
                     guia = GuiaDeRemision.model_validate(raw_guia)
+                    # R2-W2 (silent-data-loss guard): a recovered_guia event
+                    # serialized by an OLDER build may carry lines with
+                    # requires_review=False (the historical default). The new
+                    # fail-closed guard in add_recovered_guia (FIX #5) would raise
+                    # ValueError → swallowed below → the recovered guía would
+                    # SILENTLY VANISH on restart. Coerce lines to requires_review=True
+                    # BEFORE re-adding: recovered guías are ALWAYS requires_review=True
+                    # by contract, so this restores the historical re-add behavior
+                    # without masking anything (the guard still protects live callers).
+                    if any(ln.requires_review is not True for ln in guia.lines):
+                        guia = guia.model_copy(
+                            update={
+                                "lines": [
+                                    ln.model_copy(update={"requires_review": True})
+                                    for ln in guia.lines
+                                ]
+                            }
+                        )
                     service.add_recovered_guia(guia)
                 except (ValueError, ReconciliationError):
-                    # Tolerate replay errors; continue.
-                    pass
+                    # Tolerate replay errors but DO NOT swallow silently — a
+                    # dropped recovered guía is a silent-data-loss path (R2-W2).
+                    logger.warning(
+                        "restore_from_sidecar: failed to replay recovered_guia "
+                        "event for guia_id=%r; the recovered guía was not re-added.",
+                        guia_id,
+                    )
 
             elif kind == "retry_attempted":
                 # FIX 1: replay the failed-retry flag so it survives a restart.

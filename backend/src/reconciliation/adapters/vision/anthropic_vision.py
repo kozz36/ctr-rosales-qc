@@ -27,7 +27,8 @@ import re
 from datetime import date
 from typing import Any
 
-from reconciliation.domain.models import VisionResult
+from reconciliation.domain.models import MaterialLine, VisionResult
+from reconciliation.domain.units import normalize_unit_label
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,23 @@ _SYSTEM_PROMPT = (
 )
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# REV-R10 (T3): material-table extraction prompt.
+# Instructs the model to extract EVERY material row from the guía de remisión
+# table and return ONLY strict JSON (no extra text, no markdown fences).
+# Full-page image is sent — no static bbox crop ever applied here.
+_TABLE_SYSTEM_PROMPT = (
+    "You are a material-table extraction specialist for Peruvian logistics documents (Guías de Remisión). "
+    "The user will send you a full-page image of a guía de remisión. "
+    "Extract EVERY material row from the items/materials table in the document. "
+    'Respond with ONLY valid JSON in this exact format: '
+    '{"lines": [{"descripcion": "<raw material description>", "cantidad": <number>, "unidad": "<unit>"}], '
+    '"confidence": <0.0-1.0>} '
+    "where 'unidad' is the unit of measure (e.g. KG, TN, RD, Rollo). "
+    "If no material table is found or the image is unreadable, respond with "
+    '{"lines": [], "confidence": 0.0}. '
+    "Do NOT include any explanation, markdown, or extra text outside the JSON."
+)
 
 
 def _parse_vision_json(raw: str) -> VisionResult:
@@ -72,6 +90,63 @@ def _parse_vision_json(raw: str) -> VisionResult:
             pass
 
     return VisionResult(date=parsed_date, confidence=confidence, raw=raw)
+
+
+def _parse_table_json(raw: str) -> list[MaterialLine]:
+    """Defensively parse the model's table JSON response into a list of MaterialLine.
+
+    On any error (non-JSON, missing fields, invalid unit, etc.) returns [].
+    Strips markdown fences before parsing.
+    """
+    try:
+        clean = raw.strip()
+        if clean.startswith("```"):
+            clean = re.sub(r"^```[a-z]*\n?", "", clean)
+            clean = re.sub(r"\n?```$", "", clean)
+        data: dict[str, Any] = json.loads(clean)
+    except (json.JSONDecodeError, ValueError):
+        logger.debug("_parse_table_json: non-JSON response: %r", raw[:200])
+        return []
+
+    lines_raw = data.get("lines")
+    if not isinstance(lines_raw, list) or not lines_raw:
+        return []
+
+    confidence = float(data.get("confidence", 0.0))
+    confidence = max(0.0, min(1.0, confidence))
+
+    result: list[MaterialLine] = []
+    for entry in lines_raw:
+        if not isinstance(entry, dict):
+            continue
+        desc = entry.get("descripcion") or entry.get("description") or ""
+        if not desc:
+            continue
+        try:
+            cantidad = float(entry.get("cantidad", 0))
+        except (TypeError, ValueError):
+            continue
+        # Normalize long-form unit labels ("TONELADAS"→"TN", "VARILLA"→"RD") BEFORE the
+        # Literal coercion so a long-form unit does not silently drop the line
+        # (FIX #3 — parity with the SUNAT path; shared domain map, no conversion).
+        raw_unidad = str(entry.get("unidad") or "").strip()
+        unidad = normalize_unit_label(raw_unidad)
+        try:
+            line = MaterialLine(  # type: ignore[call-arg]
+                description_raw=str(desc),
+                description_canonical=str(desc),  # placeholder; service overwrites via key_resolver
+                unidad=unidad,  # type: ignore[arg-type]
+                cantidad=cantidad,
+                confidence=confidence,
+            )
+            result.append(line)
+        except Exception:  # noqa: BLE001 — still-unmappable unit or validation failure
+            logger.warning(
+                "_parse_table_json: dropping line with unmappable unit %r "
+                "(normalized=%r, descripcion=%r)",
+                raw_unidad, unidad, desc,
+            )
+    return result
 
 
 class AnthropicVisionAdapter:
@@ -213,6 +288,60 @@ class AnthropicVisionAdapter:
                 exc,
             )
             return [self.read_handwritten_date(img) for img in images]
+
+    def read_material_table(
+        self,
+        image: bytes,
+        hint: str | None = None,
+    ) -> list[MaterialLine]:
+        """Extract material rows from a full guía page image using Claude vision.
+
+        REV-R10: full-page image passed — no static bbox crop ever applied.
+        Lazy anthropic import inside method (suite runs without SDK installed).
+        Any SDK / parse failure returns [] (never raises).
+
+        Args:
+            image: PNG bytes of the full rendered page (downscaled to max_edge).
+            hint:  Optional text hint appended to the user message (ignored if None).
+
+        Returns:
+            List of raw MaterialLine objects (description_canonical is a placeholder;
+            the service overwrites it via key_resolver.resolve).
+            Returns [] on any failure.
+        """
+        try:
+            client = self._get_client()
+            b64 = base64.b64encode(image).decode("ascii")
+            user_text = "Extract all material rows from this guía de remisión."
+            if hint:
+                user_text += f" Context hint: {hint}"
+
+            response = client.messages.create(  # type: ignore[union-attr]
+                model=self._model,
+                max_tokens=self._max_tokens,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_text},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": b64,
+                                },
+                            },
+                        ],
+                    }
+                ],
+                system=_TABLE_SYSTEM_PROMPT,
+            )
+            raw = response.content[0].text  # type: ignore[index]
+            return _parse_table_json(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AnthropicVisionAdapter.read_material_table failed: %s", exc)
+            return []
 
     # ------------------------------------------------------------------
     # Internal helpers

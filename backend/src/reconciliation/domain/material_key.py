@@ -21,17 +21,24 @@ from pydantic import BaseModel, ConfigDict, computed_field
 # MatchMethod
 # ---------------------------------------------------------------------------
 
-MatchMethod = Literal["deterministic", "llm_inferred", "codigo_sunat", "unresolved"]
+MatchMethod = Literal[
+    "deterministic", "grade_tolerant", "llm_inferred", "codigo_sunat", "unresolved"
+]
 """How the canonical key was derived.
 
-- ``deterministic``: pure regex rules, no LLM involved.
-- ``llm_inferred``:  Ollama inference was needed; row requires human review.
-- ``codigo_sunat``:  reserved — SUNAT producto code authoritative join (no production path yet).
-- ``unresolved``:    both deterministic and LLM failed; row requires human review.
+- ``deterministic``:  pure regex rules, no LLM involved.
+- ``grade_tolerant``: deterministic parse failed ONLY on an illegible grade token;
+                      the line was merged into the UNIQUE same-registro declared item
+                      with matching (familia, diámetro, presentación). Requires review.
+- ``llm_inferred``:   Ollama inference was needed; row requires human review.
+- ``codigo_sunat``:   reserved — SUNAT producto code authoritative join (no production path yet).
+- ``unresolved``:     both deterministic and LLM failed; row requires human review.
 """
 
 # Methods that always require human review
-_REQUIRES_REVIEW_METHODS: frozenset[str] = frozenset({"llm_inferred", "unresolved"})
+_REQUIRES_REVIEW_METHODS: frozenset[str] = frozenset(
+    {"grade_tolerant", "llm_inferred", "unresolved"}
+)
 
 
 # ---------------------------------------------------------------------------

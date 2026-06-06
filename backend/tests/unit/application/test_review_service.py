@@ -41,6 +41,7 @@ def _make_line(
     unit: str = "KG",
     confidence: float | None = 0.95,
     page: int = 0,
+    requires_review: bool = False,
 ) -> MaterialLine:
     return MaterialLine(
         description_raw=desc,
@@ -49,6 +50,7 @@ def _make_line(
         cantidad=Decimal(qty),
         confidence=confidence,
         source_page=page,
+        requires_review=requires_review,
     )
 
 
@@ -777,7 +779,8 @@ class TestAddRecoveredGuia:
             guia_id=guia_id,
             registro=registro,
             fecha=date(2026, 5, 28),
-            lines=[_make_line(desc=desc, qty=qty, confidence=1.0)],
+            # Recovered guías ALWAYS carry requires_review=True (reconciliation gate).
+            lines=[_make_line(desc=desc, qty=qty, confidence=1.0, requires_review=True)],
             source_pages=[3],
         )
 
@@ -824,7 +827,11 @@ class TestAddRecoveredGuia:
             guia_id="errored-g1",
             registro="R001",
             fecha=date(2026, 5, 28),
-            lines=[_make_line(desc="acero corrugado", qty="30", confidence=1.0)],
+            lines=[
+                _make_line(
+                    desc="acero corrugado", qty="30", confidence=1.0, requires_review=True
+                )
+            ],
             source_pages=[3],
         )
         updated_rows = service.add_recovered_guia(recovered)

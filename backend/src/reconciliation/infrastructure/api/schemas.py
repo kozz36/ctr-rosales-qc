@@ -32,7 +32,7 @@ class GuiaContributionResponse(BaseModel):
     cantidad: Decimal = Field(description="Total quantity contributed by this guía to the group.")
     unidad: str = Field(description="Unit of measure (must match the parent group's unidad).")
     confidence: float = Field(description="Identity confidence from QR decode or fallback.")
-    identity_source: Literal["qr", "ocr_fallback"] = Field(
+    identity_source: Literal["qr", "ocr_fallback", "vision"] = Field(
         description="How the guía identity was determined."
     )
     # Rev-3 D5 (REC-C07): year_inferred provenance flag.
@@ -251,11 +251,16 @@ class ReconciliationRowResponse(BaseModel):
         ),
     )
     # R8.12 (MAT-008, ADR-5): read-only provenance field (no POST/PATCH accepts it).
-    match_method: Literal["deterministic", "llm_inferred", "unresolved"] = Field(
+    match_method: Literal[
+        "deterministic", "grade_tolerant", "llm_inferred", "codigo_sunat", "unresolved"
+    ] = Field(
         default="deterministic",
         description=(
-            "How the canonical material key was derived: "
-            "'deterministic' (regex), 'llm_inferred' (Ollama), or 'unresolved' (fallback)."
+            "How the canonical material key was derived (mirrors domain MatchMethod): "
+            "'deterministic' (regex), 'grade_tolerant' (matched on familia+diámetro+"
+            "presentación with an illegible/misread grade adopted from the unique declared "
+            "item — always requires_review), 'llm_inferred' (Ollama), 'codigo_sunat' "
+            "(reserved), or 'unresolved' (fallback)."
         ),
     )
     # R9.6 (FDR-008, ADR-5): group-level divergence indicator (derived from guías).
@@ -500,6 +505,36 @@ class RetryBatchResponse(BaseModel):
     registro: str
     count: int = Field(description="Number of errored guías queued for retry.")
     task: str = Field(default="started", description="Task handle (always 'started').")
+
+
+class ReprocessGuiaResponse(BaseModel):
+    """Response for POST /runs/{run_id}/errored-guias/{guia_id}/reprocess (PR#3).
+
+    recovered=True when the guía was successfully recovered via vision.
+    recovered=False when recovery failed (vision_empty | not_found).
+    rows is the updated reconciliation table after re-reconcile (empty on failure).
+    errored_guias is the remaining errored guías list after the attempt.
+    """
+
+    run_id: str
+    guia_id: str
+    recovered: bool
+    reason: str | None = Field(
+        default=None,
+        description=(
+            "Failure reason when recovered=False: "
+            "'vision_empty' | 'not_found'. "
+            "Null on success."
+        ),
+    )
+    rows: list[ReconciliationRowResponse] = Field(
+        default_factory=list,
+        description="Updated reconciliation rows after recovery (empty on failure).",
+    )
+    errored_guias: list[ErroredGuiaResponse] = Field(
+        default_factory=list,
+        description="Remaining errored guías after the reprocess attempt.",
+    )
 
 
 # ---------------------------------------------------------------------------

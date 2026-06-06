@@ -25,6 +25,7 @@ from typing import NamedTuple
 from reconciliation.domain.date_ceiling import apply_reception_ceiling
 from reconciliation.domain.date_divergence import check_fecha_divergence
 from reconciliation.domain.material_key import MatchMethod
+from reconciliation.domain.material_key_normalizer import MaterialKeyNormalizer
 from reconciliation.domain.models import (
     GuiaContribution,
     GuiaDeRemision,
@@ -38,8 +39,9 @@ from reconciliation.domain.models import (
 _MATCH_METHOD_PRIORITY: dict[str, int] = {
     "deterministic": 0,
     "codigo_sunat": 0,
-    "llm_inferred": 1,
-    "unresolved": 2,
+    "grade_tolerant": 1,
+    "llm_inferred": 2,
+    "unresolved": 3,
 }
 
 # Internal grouping key type (MAT-001: fecha intentionally excluded — see module docstring)
@@ -59,6 +61,113 @@ class ReconciliationService:
     This is a pure value service — instantiate once and call ``reconcile``
     with each batch of inputs.  No state is held between calls.
     """
+
+    def __init__(self, normalizer: MaterialKeyNormalizer | None = None) -> None:
+        """Construct the reconciliation engine.
+
+        Args:
+            normalizer: Pure-domain attribute parser used ONLY by the Tier-2
+                grade-tolerant pass (``parse_partial``).  Defaults to a fresh
+                ``MaterialKeyNormalizer`` so existing direct-construction tests
+                keep working without injecting one.  No I/O, no LLM — pure domain.
+        """
+        self._normalizer = normalizer or MaterialKeyNormalizer()
+
+    # ------------------------------------------------------------------
+    # Tier-2: grade-tolerant recovery of UNRESOLVED guía lines
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_unresolved_canonical(canonical: str) -> bool:
+        return canonical.startswith("UNRESOLVED::")
+
+    def _apply_grade_tolerant_recovery(
+        self,
+        declared: list[Registro],
+        guias: list[GuiaDeRemision],
+    ) -> list[GuiaDeRemision]:
+        """Rewrite UNRESOLVED guía lines that uniquely match a same-registro declared item.
+
+        A pure pre-pass run BEFORE grouping.  For each guía line whose canonical is
+        the ``UNRESOLVED::`` sentinel (deterministic parse failed — only the grade
+        token was illegible), extract its non-grade attributes
+        ``(familia, diámetro, presentación)`` and look for declared items IN THE SAME
+        REGISTRO with the same attributes and unidad.
+
+        - EXACTLY ONE declared match → adopt that declared item's canonical key and
+          merge the line into that group; set ``match_method="grade_tolerant"`` and
+          ``requires_review=True`` (reconciliation is the validation gate — never a
+          silent auto-accept).
+        - ZERO or MORE-THAN-ONE declared match (ambiguous) → leave the line UNRESOLVED.
+
+        INVARIANTS: never converts units (unidad must match exactly); never adds fecha
+        to the key; only matches within the same registro (no cross-registro leak);
+        never touches quantities.  Returns a NEW guías list (no input mutation).
+        """
+        # Index declared canonicals per (registro, familia, diámetro, presentación, unidad).
+        # Value = set of distinct declared canonical strings (group_tokens) — a set so a
+        # registro with two declared GRADES at the same attrs registers as ambiguous.
+        declared_attr_index: dict[
+            tuple[str, str, str, str, str], set[str]
+        ] = defaultdict(set)
+        for registro in declared:
+            for line in registro.declared_lines:
+                if self._is_unresolved_canonical(line.description_canonical):
+                    continue
+                partial = self._normalizer.parse_partial(line.description_raw)
+                if partial is None:
+                    continue
+                familia, diametro, presentacion = partial
+                key = (
+                    registro.numero,
+                    familia,
+                    diametro,
+                    presentacion,
+                    line.unidad,
+                )
+                declared_attr_index[key].add(line.description_canonical)
+
+        if not declared_attr_index:
+            return guias
+
+        recovered: list[GuiaDeRemision] = []
+        for guia in guias:
+            if guia.registro is None:
+                recovered.append(guia)
+                continue
+            new_lines: list[MaterialLine] = []
+            changed = False
+            for line in guia.lines:
+                if not self._is_unresolved_canonical(line.description_canonical):
+                    new_lines.append(line)
+                    continue
+                partial = self._normalizer.parse_partial(line.description_raw)
+                if partial is None:
+                    new_lines.append(line)
+                    continue
+                familia, diametro, presentacion = partial
+                candidates = declared_attr_index.get(
+                    (guia.registro, familia, diametro, presentacion, line.unidad)
+                )
+                # Adopt ONLY on a unique declared match (exactly one canonical).
+                if candidates is None or len(candidates) != 1:
+                    new_lines.append(line)
+                    continue
+                adopted_canonical = next(iter(candidates))
+                new_lines.append(
+                    line.model_copy(
+                        update={
+                            "description_canonical": adopted_canonical,
+                            "match_method": "grade_tolerant",
+                            "requires_review": True,
+                        }
+                    )
+                )
+                changed = True
+            recovered.append(
+                guia.model_copy(update={"lines": new_lines}) if changed else guia
+            )
+        return recovered
 
     def reconcile(
         self,
@@ -90,6 +199,12 @@ class ReconciliationService:
             or ``guias`` generates a row; no group is silently dropped (REC-007).
             Guías with ``registro=None`` surface in ``unresolved_guias`` (REC-C05).
         """
+        # Tier-2 (grade-tolerant): recover UNRESOLVED guía lines whose non-grade
+        # attributes uniquely identify a same-registro declared item BEFORE grouping.
+        # Pure pre-pass; rewrites only description_canonical/match_method/requires_review
+        # on the affected lines (never qty/unidad/fecha) — see _apply_grade_tolerant_recovery.
+        guias = self._apply_grade_tolerant_recovery(declared, guias)
+
         # Build declared index: key -> declared_qty
         # Also remember the declared reception date per group (MAT-001): fecha is no
         # longer a grouping axis, but the output row still carries it for display.

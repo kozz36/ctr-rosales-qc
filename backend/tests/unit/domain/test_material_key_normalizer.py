@@ -48,6 +48,263 @@ class TestGradeNormalization:
         assert result is None
 
 
+class TestDualSpecConcatenatedGrade:
+    """Category A (real corpus): the physical guía writes the dual cert WITHOUT a
+    slash — ``a615a706`` (and the OCR-noise variant ``a6151a706``) — which the
+    original ``\\ba615\\b`` pattern could not match (``a706`` immediately follows).
+    These MUST canonicalize deterministically to ``A615 G60``.
+    """
+
+    @pytest.mark.parametrize(
+        "raw,expected_diam",
+        [
+            ('barra a615a706 g60 3/8" dob apl', '3/8"'),
+            ('barra a615a706 g60 3/4" dob apl', '3/4"'),
+            ('barra a615a706 g60 1/2" dob apl', '1/2"'),
+            ('barra a6151a706 g60 3/8" dob apl', '3/8"'),
+            ('barra a615-a706 g60 5/8" dob', '5/8"'),
+            ('barra a615 a706 g60 1" dob', '1"'),
+        ],
+    )
+    def test_concatenated_dual_spec_resolves(
+        self, normalizer: MaterialKeyNormalizer, raw: str, expected_diam: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None for {raw!r}"
+        assert result.grado == "A615 G60", f"got {result.grado!r} for {raw!r}"
+        assert result.diametro == expected_diam
+        assert result.presentacion == "DOB"
+        assert result.method == "deterministic"
+
+    def test_concatenated_equals_slash_form(self, normalizer: MaterialKeyNormalizer) -> None:
+        """The Category-A guía form must produce the SAME key as the declared slash form."""
+        guia = normalizer.parse('barra a615a706 g60 3/4" dob apl', "TN")
+        declared = normalizer.parse('BARRA A615/A706 G60 3/4" DOB', "TN")
+        assert guia is not None and declared is not None
+        assert guia == declared
+
+
+class TestValidGradeVariants:
+    """G60 is the standard but G42 and G75 are VALID grades that CAN appear.
+    Each must be kept DISTINCT — never collapsed into G60.
+    """
+
+    @pytest.mark.parametrize(
+        "raw,expected_grado",
+        [
+            ('barra a615 g60 1/2" dob', "A615 G60"),
+            ('barra a615 gr60 1/2" dob', "A615 G60"),
+            ('barra a615 grado 60 1/2" dob', "A615 G60"),
+            ('barra a615 g-60 1/2" dob', "A615 G60"),
+            ('barra a615 g 60 1/2" dob', "A615 G60"),
+            ('barra a615 g42 1/2" dob', "A615 G42"),
+            ('barra a615 gr42 1/2" dob', "A615 G42"),
+            ('barra a615 grado 42 1/2" dob', "A615 G42"),
+            ('barra a615 g75 1/2" dob', "A615 G75"),
+            ('barra a615 gr75 1/2" dob', "A615 G75"),
+            ('barra a615 grado 75 1/2" dob', "A615 G75"),
+        ],
+    )
+    def test_grade_variant_kept_distinct(
+        self, normalizer: MaterialKeyNormalizer, raw: str, expected_grado: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None for {raw!r}"
+        assert result.grado == expected_grado, f"got {result.grado!r} for {raw!r}"
+
+    def test_g42_not_collapsed_to_g60(self, normalizer: MaterialKeyNormalizer) -> None:
+        g42 = normalizer.parse('barra a615 g42 1/2" dob', "TN")
+        g60 = normalizer.parse('barra a615 g60 1/2" dob', "TN")
+        assert g42 is not None and g60 is not None
+        assert g42.grado != g60.grado
+        assert g42 != g60
+
+    def test_g75_not_collapsed_to_g60(self, normalizer: MaterialKeyNormalizer) -> None:
+        g75 = normalizer.parse('barra a615 g75 1/2" dob', "TN")
+        g60 = normalizer.parse('barra a615 g60 1/2" dob', "TN")
+        assert g75 is not None and g60 is not None
+        assert g75.grado != g60.grado
+
+
+class TestIllegibleGradeContextDetection:
+    """Grade detection must be ANCHORED to a grade context (g/gr/grado prefix or
+    a numeric token positioned as the grade after the spec family), NOT a whole-
+    string ``\\d{3}`` scan.
+
+    JD FIX #1: the old ``\\b\\d{3}\\b`` guard was both TOO NARROW (g-glued/2-digit/
+    alpha-noise grades silently defaulted to G60 with requires_review=False — an
+    invariant breach) and TOO BROAD (an incidental lot/qty number forced a legit
+    bare-A615 line to UNRESOLVED).
+    """
+
+    # --- Category: MUST BAIL to None (invalid grade in grade context → Tier-2) ---
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            # g-glued invalid grades (no word boundary between g and digits)
+            'barra a615a706 g660 3/4" dob',
+            'barra a615a706 gr580 1/2" x 9m',
+            'barra a615a706 g680 3/4" dob',
+            'barra a615a706 g6042 3/4" dob',
+            # 2-digit invalid grades with g prefix
+            'barra a615 g50 3/4" dob',
+            'barra a615 g80 3/4" dob',
+            'barra a615 g90 3/4" dob',
+            # alpha-noise grade (plausible OCR misread of G75)
+            'barra a615 g7s 3/4" dob',
+        ],
+    )
+    def test_invalid_grade_in_context_bails_to_none(
+        self, normalizer: MaterialKeyNormalizer, raw: str
+    ) -> None:
+        assert normalizer.parse(raw, "TN") is None, (
+            f"Expected None (→ Tier-2/requires_review) for {raw!r}"
+        )
+
+    def test_contradictory_valid_grades_bail_to_none(
+        self, normalizer: MaterialKeyNormalizer
+    ) -> None:
+        """Two DISTINCT valid grade tokens → None (never arbitrarily pick first)."""
+        assert normalizer.parse('barra a615a706 g 60 g 75 3/4" dob', "TN") is None
+
+    # --- Category: space-separated misreads MUST STILL bail (regression) ---
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            'barra a615a706 680 3/4" dob',
+            'barra a6151a706 580 3/4" dob',
+            'barra a615a706 660 1/2" dob',
+        ],
+    )
+    def test_space_separated_misread_still_bails(
+        self, normalizer: MaterialKeyNormalizer, raw: str
+    ) -> None:
+        assert normalizer.parse(raw, "TN") is None
+
+    # --- Category: MUST PARSE (valid grade in context) ---
+    @pytest.mark.parametrize(
+        "raw,expected_grado",
+        [
+            ('barra a615 g60 3/4" dob', "A615 G60"),
+            ('barra a615/a706 g60 3/4" dob', "A615 G60"),
+            ('barra a615a706 g60 3/4" dob', "A615 G60"),
+            ('barra a615 g75 3/4" dob', "A615 G75"),
+            ('barra a615 g42 3/4" dob', "A615 G42"),
+        ],
+    )
+    def test_valid_grade_in_context_parses(
+        self, normalizer: MaterialKeyNormalizer, raw: str, expected_grado: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None for {raw!r}"
+        assert result.grado == expected_grado, f"got {result.grado!r} for {raw!r}"
+
+    # --- Category: incidental number must NOT bail (bare-A615 default G60) ---
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            'barra a615 3/4" dob 250',
+            'barra a615a706 3/4" dob lote 119',
+            'barra a615 3/4" dob',
+        ],
+    )
+    def test_incidental_number_defaults_to_g60(
+        self, normalizer: MaterialKeyNormalizer, raw: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None (bare-A615 → G60) for {raw!r}"
+        assert result.grado == "A615 G60", f"got {result.grado!r} for {raw!r}"
+
+
+class TestGradeContextRegressionRound2:
+    """JD ROUND 2: the grade-context regexes added in 383cec2 leaked.
+
+    FIX #1 (CRITICAL, data-corrupting): ``_POST_FAMILY_NUMERIC_GRADE_RE``'s bare
+    ``(\\d+)`` captured the LEADING digit of a diameter (``1`` of ``1"`` / ``1 3/8"``)
+    when no grade token sat between the spec family and the diameter → ``1`` ∉
+    {60,42,75} → the whole grade-less line bailed to None.  The two LARGEST
+    in-corpus diameters silently degraded to UNRESOLVED.  Grade magnitudes are
+    exactly 2-3 digits; diameter leads are single digits → require ``\\d{2,3}``.
+
+    FIX #2 (HIGH): ``_G_PREFIXED_GRADE_RE`` matched ANY g-initial word
+    (``gerdau`` → ``erdau``, ``galvanizado`` → ``alvanizado``, ``grapa`` → ``rapa``,
+    ``gm`` → ``m``) → invalid payload → false None, even discarding a co-present
+    VALID ``g60``.  A grade payload must be DIGIT-ANCHORED.
+    """
+
+    # --- FIX #1: grade-less LARGE diameters MUST resolve to A615 G60 ---
+    @pytest.mark.parametrize(
+        "raw,expected_diam",
+        [
+            ('barra a615 1 3/8" dob', '1 3/8"'),
+            ('barra a615 1" dob', '1"'),
+            ('barra a615 1" x 9m', '1"'),
+            ('barra a615a706 1 3/8" x 9m', '1 3/8"'),
+            ('acero dimensionado - barra a615 1" dob apl', '1"'),
+        ],
+    )
+    def test_gradeless_large_diameter_defaults_g60(
+        self, normalizer: MaterialKeyNormalizer, raw: str, expected_diam: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None (grade-less → G60) for {raw!r}"
+        assert result.grado == "A615 G60", f"got {result.grado!r} for {raw!r}"
+        assert result.diametro == expected_diam, f"got {result.diametro!r} for {raw!r}"
+
+    # --- FIX #2: valid g60 must win over g-initial noise words ---
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            'barra a615 g60 gerdau 3/4" dob',
+            'barra a615 g60 galvanizado 3/4" dob',
+            'barra a615 g60 grapa 3/4" dob',
+            'barra a615 g60 3/4" dob gm',
+            'barra a615 g60 3/4" dob grado especial',
+        ],
+    )
+    def test_valid_g60_wins_over_g_word_noise(
+        self, normalizer: MaterialKeyNormalizer, raw: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None (valid g60 wins) for {raw!r}"
+        assert result.grado == "A615 G60", f"got {result.grado!r} for {raw!r}"
+
+    # --- Regression guards: MUST STILL bail to None ---
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            'barra a615a706 680 3/4" dob',
+            'barra a615a706 g660 3/4" dob',
+            'barra a615 g7s 3/4" dob',
+            'barra a615a706 g 60 g 75 3/4" dob',
+        ],
+    )
+    def test_round2_invalid_still_bails(
+        self, normalizer: MaterialKeyNormalizer, raw: str
+    ) -> None:
+        assert normalizer.parse(raw, "TN") is None, (
+            f"Expected None (→ Tier-2/requires_review) for {raw!r}"
+        )
+
+    # --- Regression guards: MUST STILL parse to the stated grade ---
+    @pytest.mark.parametrize(
+        "raw,expected_grado",
+        [
+            ('barra a615 g60 3/4" dob', "A615 G60"),
+            ('barra a615 g75 3/4" dob', "A615 G75"),
+            ('barra a615a706 g60 1 3/8" dob', "A615 G60"),
+            ('barra a615 3/4" dob 250', "A615 G60"),
+            ('barra a615 1 3/8" dob', "A615 G60"),
+        ],
+    )
+    def test_round2_valid_still_parses(
+        self, normalizer: MaterialKeyNormalizer, raw: str, expected_grado: str
+    ) -> None:
+        result = normalizer.parse(raw, "TN")
+        assert result is not None, f"Expected non-None for {raw!r}"
+        assert result.grado == expected_grado, f"got {result.grado!r} for {raw!r}"
+
+
 class TestDiameterNormalization:
     """MAT-S02: compound fraction detected before simple fraction."""
 
@@ -237,6 +494,32 @@ class TestRealPairs:
             result = normalizer.parse(raw, "TN")
             assert result is not None
             assert result.method == "deterministic"
+
+
+class TestParsePartial:
+    """parse_partial() extracts the NON-grade attributes (familia, diámetro,
+    presentación) even when the grade token is unrecognized/illegible — the
+    primitive the Tier-2 grade-tolerant reconciliation pass relies on.
+    """
+
+    def test_partial_on_grade_misread(self, normalizer: MaterialKeyNormalizer) -> None:
+        """OCR misread grade '580' → parse() returns None, but the non-grade
+        attributes are still extractable."""
+        assert normalizer.parse('barra a6151a706 580 3/4" dob apl', "TN") is None
+        partial = normalizer.parse_partial('barra a6151a706 580 3/4" dob apl')
+        assert partial == ("BARRA", '3/4"', "DOB")
+
+    def test_partial_full_resolvable(self, normalizer: MaterialKeyNormalizer) -> None:
+        partial = normalizer.parse_partial('barra a615 g60 1/2" dob')
+        assert partial == ("BARRA", '1/2"', "DOB")
+
+    def test_partial_missing_attribute_returns_none(
+        self, normalizer: MaterialKeyNormalizer
+    ) -> None:
+        """If familia / diámetro / presentación is itself missing → None
+        (Tier-2 cannot match on grade alone)."""
+        assert normalizer.parse_partial('barra 580 3/4"') is None  # no presentación
+        assert normalizer.parse_partial('580 3/4" dob') is None  # no familia
 
 
 class TestFamilia:

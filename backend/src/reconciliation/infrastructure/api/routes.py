@@ -38,6 +38,7 @@ from reconciliation.infrastructure.api.schemas import (
     ReassignResponse,
     ReconciliationRowResponse,
     ReconciliationTableResponse,
+    ReprocessGuiaResponse,
     RetryBatchResponse,
     RetryGuiaResponse,
     RowEditRequest,
@@ -160,18 +161,70 @@ def _require_review_service(entry: Any, run_id: str) -> Any:
 
 
 def _require_reprocess_service(entry: Any, run_id: str) -> Any:
-    """Return the ReprocessService from a run entry, or raise 503 if SUNAT is disabled."""
+    """Return the ReprocessService from a run entry, or raise 503 if unavailable.
+
+    PR#3 (T5): service is now built when vision OR SUNAT is enabled.
+    This guard only raises 503 when BOTH are disabled (service is None).
+    For REINTENTAR-specific SUNAT check, use _require_sunat_on_service.
+    """
     reprocess_service = entry.get("reprocess_service")
     if reprocess_service is None:
         raise HTTPException(
             status_code=503,
             detail=(
-                f"REINTENTAR not available for run '{run_id}': "
-                "SUNAT fetch is disabled (sunat.enabled=False). "
-                "Enable SUNAT in config to use this endpoint."
+                f"Recovery endpoints not available for run '{run_id}': "
+                "both vision and SUNAT fetch are disabled. "
+                "Enable vision or SUNAT in config to use REINTENTAR / Reprocesar con IA."
             ),
         )
     return reprocess_service
+
+
+def _require_sunat_on_service(reprocess_service: Any, run_id: str) -> None:
+    """Raise 503 if the ReprocessService has no SUNAT adapter (REINTENTAR-specific guard).
+
+    REINTENTAR (apply_retry) requires a SUNAT adapter.  Reprocesar con IA (apply_reprocess)
+    does not.  After PR#3 T5, the service may be built for vision-only runs where _sunat
+    is None — this guard preserves the REINTENTAR 503 behaviour in that scenario.
+    """
+    if getattr(reprocess_service, "_sunat", None) is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"REINTENTAR not available for run '{run_id}': "
+                "SUNAT fetch is disabled (sunat.enabled=False). "
+                "Enable SUNAT in config to use REINTENTAR."
+            ),
+        )
+
+
+def _require_vision_on_service(reprocess_service: Any, run_id: str) -> None:
+    """Raise 503 vision_disabled if the ReprocessService has no usable vision port.
+
+    Reprocesar con IA (apply_reprocess) requires a real vision adapter.  When
+    vision.enabled=False the container injects a NullVisionAdapter, which returns
+    [] from read_material_table — without this guard apply_reprocess would resolve
+    to 200 recovered=False reason="vision_empty", masking the disabled state.
+
+    REV-R16-S03 / REV-R17-S03: vision DISABLED → 503 "vision_disabled".  This is
+    distinct from vision ENABLED but returning no lines (REV-R16-S02), which stays
+    200 "vision_empty" — a real empty read, not a disabled service.  Mirrors the
+    _require_sunat_on_service pattern used by REINTENTAR.
+    """
+    from reconciliation.adapters.vision.null_vision import (  # noqa: PLC0415
+        NullVisionAdapter,
+    )
+
+    vision = getattr(reprocess_service, "_vision", None)
+    if vision is None or isinstance(vision, NullVisionAdapter):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Reprocesar con IA not available for run '{run_id}': "
+                "vision is disabled (vision.enabled=False). reason=vision_disabled. "
+                "Enable vision in config to use Reprocesar con IA."
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +910,8 @@ def retry_errored_guia(
     """
     entry = _require_run(registry, run_id)
     reprocess_service = _require_reprocess_service(entry, run_id)
+    # REINTENTAR requires SUNAT; raise 503 if the service was built for vision-only.
+    _require_sunat_on_service(reprocess_service, run_id)
     review_service = _require_review_service(entry, run_id)
 
     # Verify guia_id is in the errored_guias list.
@@ -931,6 +986,8 @@ def retry_registro(
     """
     entry = _require_run(registry, run_id)
     reprocess_service = _require_reprocess_service(entry, run_id)
+    # Batch REINTENTAR also requires SUNAT.
+    _require_sunat_on_service(reprocess_service, run_id)
     review_service = _require_review_service(entry, run_id)
 
     errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []
@@ -963,6 +1020,82 @@ def retry_registro(
         run_id=run_id,
         registro=registro,
         count=len(target_guias),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reprocesar con IA — vision recovery (PR#3)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/runs/{run_id}/errored-guias/{guia_id}/reprocess",
+    response_model=ReprocessGuiaResponse,
+    status_code=200,
+    summary="Attempt to recover an errored guía using vision (Reprocesar con IA).",
+)
+async def reprocess_guia(
+    run_id: str,
+    guia_id: str,
+    registry: RunRegistry,
+) -> ReprocessGuiaResponse:
+    """Attempt to recover a single errored guía via vision (Reprocesar con IA, PR#3).
+
+    Spec: REV-R16.
+
+    Flow: render page → downscale → VisionLLMPort.read_material_table → normalize
+    → re-reconcile.  Vision; guía fecha = ErroredGuia.fecha_entrega (R9b floor) when
+    available, else None.
+
+    Returns:
+        200 ReprocessGuiaResponse with recovered=True on success, or
+        recovered=False + reason on failure.
+
+    Errors:
+        404 — run_id unknown, or guia_id not in errored_guias.
+        503 — both vision and SUNAT disabled (reprocess_service is None), OR
+              vision disabled (NullVisionAdapter) → reason=vision_disabled
+              (REV-R16-S03; distinct from 200 vision_empty when vision is on).
+    """
+    entry = _require_run(registry, run_id)
+    reprocess_service = _require_reprocess_service(entry, run_id)
+    # Reprocesar con IA requires a real vision adapter (NOT NullVisionAdapter).
+    _require_vision_on_service(reprocess_service, run_id)
+    review_service = _require_review_service(entry, run_id)
+
+    # Verify guia_id is in errored_guias.
+    errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []
+    errored_entry = next((e for e in errored_list if e.guia_id == guia_id), None)
+    if errored_entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Guía '{guia_id}' not found in errored_guias for run '{run_id}'.",
+        )
+
+    result = await reprocess_service.apply_reprocess(
+        guia_id=guia_id,
+        source_pages=list(errored_entry.source_pages),
+    )
+
+    updated_rows = [_row_to_response(r) for r in result.rows] if result.rows else []
+
+    remaining_errored = [
+        ErroredGuiaResponse(
+            registro=eg.registro,
+            guia_id=eg.guia_id,
+            source_pages=list(eg.source_pages),
+            retry_attempted=eg.retry_attempted,
+        )
+        for eg in review_service.errored_guias
+    ]
+
+    return ReprocessGuiaResponse(
+        run_id=run_id,
+        guia_id=guia_id,
+        recovered=result.recovered,
+        reason=result.reason,
+        rows=updated_rows,
+        errored_guias=remaining_errored,
     )
 
 

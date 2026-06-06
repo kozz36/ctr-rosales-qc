@@ -265,3 +265,47 @@ class TestAddRecoveredGuiaSidecarRoundTripRealPrecondition:
         )
         assert row.summed_qty == Decimal("4.124")
         assert row.status == "MATCH"
+
+
+# ---------------------------------------------------------------------------
+# FIX #5 — defense-in-depth: add_recovered_guia rejects non-review lines.
+#
+# The docstring claims "only accepts guías whose lines all have
+# requires_review=True" but there was no runtime check — the auto-reject
+# invariant rested solely on callers. Enforce fail-closed.
+# ---------------------------------------------------------------------------
+
+
+class TestAddRecoveredGuiaRequiresReviewGuard:
+    def test_rejects_line_with_requires_review_false(self, tmp_path: Path) -> None:
+        import pytest  # noqa: PLC0415
+
+        service, _ = _build_service(tmp_path)
+
+        bad_line = MaterialLine(
+            description_raw=_DESC,
+            description_canonical=_DESC,
+            unidad="TN",  # type: ignore[arg-type]
+            cantidad=Decimal("4.124"),
+            confidence=1.0,
+            source_page=4,
+            requires_review=False,  # invariant violation — must be rejected
+        )
+        bad_guia = GuiaDeRemision(
+            guia_id="T009-0741770",
+            registro="232",
+            fecha=date(2026, 5, 28),
+            lines=[bad_line],
+            source_pages=[4],
+            identity_source="vision",
+        )
+
+        with pytest.raises(ValueError):
+            service.add_recovered_guia(bad_guia)
+
+    def test_accepts_when_all_lines_require_review(self, tmp_path: Path) -> None:
+        service, _ = _build_service(tmp_path)
+        # The standard recovered guía (all lines requires_review=True) is accepted.
+        service.add_recovered_guia(_make_recovered_guia())
+        matching = [g for g in service.guias if g.guia_id == "T009-0741770"]
+        assert len(matching[0].lines) == 1

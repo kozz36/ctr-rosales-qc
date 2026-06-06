@@ -69,8 +69,8 @@ describe('ErroredGuiasPanel', () => {
     expect(wrapper.text()).toContain('8')
   })
 
-  it('does NOT render Reprocesar button (PR#3 scope)', () => {
-    // REINTENTAR is PR#2 scope; Reprocesar-con-IA is PR#3 scope.
+  it('does NOT render Reprocesar button when retry_attempted=false (PR#3 gate)', () => {
+    // Reprocesar con IA is gated on retry_attempted=true (REINTENTAR must have been tried first).
     const wrapper = mount(ErroredGuiasPanel, {
       props: { erroredGuias: [makeErrored()], runId: 'run-123' },
     })

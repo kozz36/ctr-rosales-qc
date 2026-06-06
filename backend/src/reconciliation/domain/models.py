@@ -69,7 +69,7 @@ class GuiaContribution(BaseModel):
     cantidad: Decimal
     unidad: str
     confidence: float
-    identity_source: Literal["qr", "ocr_fallback"]
+    identity_source: Literal["qr", "ocr_fallback", "vision"]
     # Rev-3 D5: provenance flag — True when the year component of fecha was
     # reconstructed via bounded inference (EXT-021), not read directly from vision.
     year_inferred: bool = False
@@ -128,7 +128,7 @@ class GuiaDeRemision(BaseModel):
     tipo: str | None = None
     gre_hashqr_url: str | None = None
     identity_confidence: float = 0.0
-    identity_source: Literal["qr", "ocr_fallback"] = "ocr_fallback"
+    identity_source: Literal["qr", "ocr_fallback", "vision"] = "ocr_fallback"
     first_page: int | None = None
     # Rev-3 D5: True when the year was inferred via bounded inference (EXT-021).
     year_inferred: bool = False
@@ -398,9 +398,16 @@ class ErroredGuia(BaseModel):
     persist is forward-looking — the current restart/cache-load path
     (build_review_service) does NOT yet rebuild errored_guias; the consuming
     read side is wired in change #3 (staged REINTENTAR / review-table flow).
+
+    ``fecha_entrega`` is persisted from the SUNAT fetch so the R9b delivery-floor
+    is available to ``apply_reprocess`` (PR#3 vision recovery) without a second
+    SUNAT round-trip.  ``None`` when SUNAT was off or did not supply the date.
     """
 
     registro: str | None
     guia_id: str
     source_pages: list[int]
     retry_attempted: bool = False
+    # R9b / PR#3: SUNAT delivery date persisted for vision recovery R9b floor.
+    # None when SUNAT disabled or date not supplied.
+    fecha_entrega: date | None = None

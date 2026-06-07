@@ -327,10 +327,15 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
 
     # FIX B (round-2 WARNING-3, never-silent-drop): assign each QTY to the
     # GEOMETRICALLY NEAREST eligible DESC, instead of letting the top-most DESC
-    # greedily claim it first. A noise/header desc (`OBSERVACIONES`, stamp text)
-    # higher up in the same band must NOT steal a real material row's qty and
-    # cause that real row to silently vanish. Ownership is decided per QTY by
-    # vertical proximity, with deterministic tie-breaks:
+    # greedily claim it first. This resolves the EQUIDISTANT case — a noise/header
+    # desc (`OBSERVACIONES`, stamp text) tied in |Δcy| with the real material desc
+    # no longer steals the row's qty (the unit-bearing real row wins the tie).
+    # KNOWN RESIDUAL (deferred to PR#2 column anchoring): when a noise desc is
+    # STRICTLY nearer the qty than the real material desc, |Δcy| still dominates and
+    # the real row can be dropped. This needs real RapidOCR column geometry to fix
+    # safely; it never produces confident-wrong data (the stolen-qty row is
+    # off-profile or unit-mismatched and stays requires_review=True). Ownership is
+    # decided per QTY by vertical proximity, with deterministic tie-breaks:
     #   1. smaller |Δcy| (nearest row),
     #   2. the desc whose row also carries a unit cell (the real material row),
     #   3. smaller horizontal gap (qty column just right of detalle),
@@ -437,7 +442,10 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
             if unit_cell_idx is not None:
                 used_unit.add(unit_cell_idx)
 
-        # Parse the quantity.
+        # Parse the quantity. The qty regexes (`^\d+[.,]\d{1,3}$` / `^\d+$`)
+        # already guarantee a single-separator, Decimal-parseable shape after the
+        # `,`→`.` normalization, so InvalidOperation is unreachable in practice —
+        # the guard is intentional defensive belt against a future regex change.
         qty_str = qty.text.strip().replace(",", ".")
         try:
             cantidad = Decimal(qty_str)

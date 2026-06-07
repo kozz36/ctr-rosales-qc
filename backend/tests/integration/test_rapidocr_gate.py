@@ -16,16 +16,54 @@ or the full production PDF — the same file used by ``ocr_compare.py``.
 Ground truth: ``docs/eval/ground_truth.md`` (confirmed by zoomed 300 DPI read
 of printed GRE tables; cross-validated by model agreement in the eval).
 
+Gate semantics (``requires_review`` contract, NOT naive exact-multiset-equality)
+-------------------------------------------------------------------------------
+The per-page quantity gate does NOT assert ``sorted(emitted) == sorted(GT)``.
+That naive equality is WRONG after the M-6 fix (``never silent-drop a real
+material row``): on real page 156 RapidOCR reads the reception-STAMP region as
+non-lexical garble (e.g. ``'acacpen enfuin aeococl vignte'`` qty ``4.8`` unit
+``TN``, ``requires_review=True``, conf 0.573). A phrase-denylist cannot catch
+arbitrary OCR gibberish; only GEOMETRY can exclude it — and geometric
+column/table-region anchoring is DEFERRED to PR#4. The M-6 safety invariant
+requires EMITTING such a row (flagged), so it legitimately appears in the
+output and breaks naive equality.
+
+Instead each page asserts the two-part semantic rule that ENCODES the
+``requires_review`` trust contract:
+
+  1. **Completeness (binding correctness proof — the #40 fix)**: every GT
+     quantity MUST be present in the emitted multiset
+     (``Counter(GT) - Counter(emitted)`` is empty). All real deterministic
+     reads succeeded — this is the proof that the deterministic OCR path reads
+     the printed GRE tables exactly. NEVER weakened.
+
+  2. **No confident spurious (trust contract)**: every emitted line whose
+     quantity is NOT in the GT multiset MUST have ``requires_review is True``.
+     A TRUSTED deterministic read is never a false quantity; review-flagged
+     garble/stamp rows (the page-156 reception-stamp OCR) are TOLERATED because
+     they are surfaced for human review, not trusted.
+
+  # PR#4: geometric table-region / DESC|UNIDAD|CANTIDAD column anchoring will
+  # localize the material-table band and exclude the reception-stamp paragraph
+  # by POSITION, after which the page-156 review-flagged extra disappears.
+
+GT values are UNCHANGED — completeness still requires the full table to be read.
+
 Spec: EXT-031/S031a-c, EXT-032/S032b.
 """
 
 from __future__ import annotations
 
 import os
+from collections import Counter
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from reconciliation.domain.models import MaterialLine
 
 # ---------------------------------------------------------------------------
 # Asset / skip guard
@@ -92,14 +130,72 @@ _GT_0160 = [
 # ---------------------------------------------------------------------------
 
 
-def _extract_quantities(pdf_path: str, page_idx: int) -> list[Decimal]:
-    """Run the real RapidOCRAdapter on one page and return its quantity list."""
+def _extract_lines(pdf_path: str, page_idx: int) -> list[MaterialLine]:
+    """Run the real RapidOCRAdapter on one page and return its MaterialLines."""
     from reconciliation.adapters.ocr.rapid_table import RapidOCRAdapter  # noqa: PLC0415
 
     adapter = RapidOCRAdapter(dpi=200)
     image_bytes = _render_page(pdf_path, page_idx)
-    lines = adapter.extract_printed_table(image_bytes)
-    return [line.cantidad for line in lines]
+    return adapter.extract_printed_table(image_bytes)
+
+
+def _assert_gt_complete_no_confident_spurious(
+    lines: list[MaterialLine], gt: list[Decimal], page_label: str
+) -> None:
+    """Assert the two-part ``requires_review`` gate semantics for one page.
+
+    Replaces naive ``sorted(emitted) == sorted(GT)`` (WRONG post-M-6, which
+    never silent-drops a real material row — so the page-156 reception-stamp
+    OCR garble is legitimately EMITTED with ``requires_review=True`` and breaks
+    exact equality). The semantically-correct rule:
+
+    1. **Completeness (binding correctness proof, #40)**: every GT quantity is
+       present in the emitted multiset — ``Counter(GT) - Counter(emitted)`` is
+       empty. Deterministic OCR reads the printed GRE table exactly. NEVER
+       weakened.
+    2. **No confident spurious (trust contract)**: every emitted line whose
+       quantity is NOT in the GT multiset MUST be ``requires_review is True``.
+       A trusted deterministic read is never a false quantity; review-flagged
+       extras (garble/stamp rows) are tolerated by design.
+
+    # PR#4: geometric table-region/column anchoring will exclude the
+    # reception-stamp paragraph by POSITION, removing the page-156 extra.
+    """
+    emitted = [line.cantidad for line in lines]
+
+    # (1) Completeness — every GT quantity is deterministically extracted.
+    missing = Counter(gt) - Counter(emitted)
+    assert not missing, (
+        f"{page_label} INCOMPLETE — GT quantities missing from emitted (the "
+        f"binding correctness proof / #40 fix; never weaken this).\n"
+        f"  GT      : {sorted(gt)}\n"
+        f"  emitted : {sorted(emitted)}\n"
+        f"  missing : {sorted(missing.elements())}"
+    )
+
+    # (2) No confident spurious — every extra (not-in-GT) line is requires_review.
+    gt_budget = Counter(gt)
+    confident_spurious: list[MaterialLine] = []
+    for line in lines:
+        if gt_budget.get(line.cantidad, 0) > 0:
+            gt_budget[line.cantidad] -= 1  # consume one GT slot
+            continue
+        # This line's quantity is outside the GT multiset → it MUST be flagged.
+        if line.requires_review is not True:
+            confident_spurious.append(line)
+    assert not confident_spurious, (
+        f"{page_label} has CONFIDENT SPURIOUS line(s) — a trusted "
+        f"(requires_review=False) deterministic read carries a quantity outside "
+        f"GT, violating the trust contract. Flagged garble is tolerated; a "
+        f"confident false quantity is not.\n"
+        f"  GT       : {sorted(gt)}\n"
+        f"  emitted  : {sorted(emitted)}\n"
+        f"  offending: "
+        + ", ".join(
+            f"qty={ln.cantidad} review={ln.requires_review} desc={ln.description_raw!r}"
+            for ln in confident_spurious
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -115,12 +211,8 @@ class TestRapidOCRGatePage0148:
         if not _CTR_PDF_PATH:
             pytest.skip(_SKIP_REASON)
 
-        qtys = _extract_quantities(_CTR_PDF_PATH, 148)
-        assert sorted(qtys) == sorted(_GT_0148), (
-            f"page 0148 quantity mismatch.\n"
-            f"  GT  : {sorted(_GT_0148)}\n"
-            f"  got : {sorted(qtys)}"
-        )
+        lines = _extract_lines(_CTR_PDF_PATH, 148)
+        _assert_gt_complete_no_confident_spurious(lines, _GT_0148, "page 0148")
 
     @pytest.mark.slow
     def test_page_0148_no_unit_conversion(self) -> None:
@@ -162,12 +254,8 @@ class TestRapidOCRGatePage0156:
         if not _CTR_PDF_PATH:
             pytest.skip(_SKIP_REASON)
 
-        qtys = _extract_quantities(_CTR_PDF_PATH, 156)
-        assert sorted(qtys) == sorted(_GT_0156), (
-            f"page 0156 quantity mismatch.\n"
-            f"  GT  : {sorted(_GT_0156)}\n"
-            f"  got : {sorted(qtys)}"
-        )
+        lines = _extract_lines(_CTR_PDF_PATH, 156)
+        _assert_gt_complete_no_confident_spurious(lines, _GT_0156, "page 0156")
 
     @pytest.mark.slow
     def test_page_0156_conf_gate_not_dropping_real_rows(self) -> None:
@@ -197,14 +285,13 @@ class TestRapidOCRGatePage0156:
         assert n_total >= 4, (
             f"expected ≥4 rows, got {n_total} — noise floor may be dropping real rows"
         )
-        # All rows are requires_review=True due to UNIDAD-left-of-CANTIDAD layout;
-        # this is expected, NOT an error. The quantities must still be correct.
-        qtys = sorted([ln.cantidad for ln in lines])
-        assert qtys == sorted(_GT_0156), (
-            f"quantities mismatch even though row count is ok.\n"
-            f"  GT  : {sorted(_GT_0156)}\n"
-            f"  got : {qtys}"
-        )
+        # All real rows are requires_review=True due to UNIDAD-left-of-CANTIDAD
+        # layout; this is expected, NOT an error. The 4 GT quantities must all be
+        # present (completeness), and any EXTRA emitted line (e.g. the page-156
+        # reception-stamp OCR garble, legitimately emitted post-M-6) MUST be
+        # requires_review=True — never a confident false quantity.
+        # PR#4: geometric table-region anchoring will drop the stamp extra by position.
+        _assert_gt_complete_no_confident_spurious(lines, _GT_0156, "page 0156")
 
 
 # ---------------------------------------------------------------------------
@@ -220,11 +307,9 @@ class TestRapidOCRGatePage0160:
         if not _CTR_PDF_PATH:
             pytest.skip(_SKIP_REASON)
 
-        qtys = _extract_quantities(_CTR_PDF_PATH, 160)
-        assert sorted(qtys) == sorted(_GT_0160), (
-            f"page 0160 (ACERO DIMENSIONADO) quantity mismatch.\n"
-            f"  GT  : {sorted(_GT_0160)}\n"
-            f"  got : {sorted(qtys)}"
+        lines = _extract_lines(_CTR_PDF_PATH, 160)
+        _assert_gt_complete_no_confident_spurious(
+            lines, _GT_0160, "page 0160 (ACERO DIMENSIONADO)"
         )
 
 

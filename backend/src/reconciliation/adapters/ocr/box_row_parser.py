@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Final
@@ -76,6 +77,65 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONFIDENCE_THRESHOLD: Final[float] = 0.85
+
+# JD round-2 (M-6 regression fix): the ONLY legitimate exclusion is an
+# UNAMBIGUOUS FOOTER/STAMP PHRASE that is structurally not a material. Everything
+# else — including low-confidence and OCR-garbled material rows — is EMITTED with
+# requires_review=True and left to the reconciliation gate (which validates
+# against the trusted declared side). We NEVER `continue`-drop on a confidence
+# number or a material-keyword allowlist; re-anchoring material recognition on a
+# token allowlist is exactly the documented M-6 anti-pattern (docs/DECISIONS.md:62:
+# "material regex anchored on BARRA → non-BARRA materials silently dropped").
+#
+# This denylist is therefore restricted to UNAMBIGUOUS MULTI-WORD FOOTER PHRASES
+# that never occur inside a real material description. Matched accent-insensitively,
+# case-insensitively, on WORD BOUNDARIES (NOT greedy substring) so collision-prone
+# fragments cannot drop a real row: bare `FORMA` ⊂ `CONFORMADO`/`PLATAFORMA`,
+# bare `CONFORME` ⊂ real descs, bare `FECHA`/`MOTIVO`/`PLACA` are real-word
+# collision-prone — all REPLACED by their full unambiguous phrases. A DESC that
+# carries a material anchor is NEVER excluded (see `_is_desc_noise` anchor escape).
+# Real-corpus-confirmed footers (docs/eval/ocr_probe_paddle.json pages 156/160):
+# `REVISADO POR`, `RECIBI CONFORME`/`RECIBIDO CONFORME`, `EMITIDO POR`,
+# `CREATED BY ... AUTODESK FORMA`, the GRE column headers and section labels.
+_DESC_NOISE_DENYLIST: Final[tuple[str, ...]] = (
+    "REVISADO POR",
+    "RECIBIDO CONFORME",
+    "RECIBI CONFORME",
+    "EMITIDO POR",
+    "CREATED BY",
+    "AUTODESK FORMA",
+    "GUIA DE REMISION",
+    "GUIA REMISION",
+    "DESTINATARIO",
+    "TRANSPORTISTA",
+    "PUNTO DE PARTIDA",
+    "PUNTO DE LLEGADA",
+    "MOTIVO DE TRASLADO",
+    "FECHA DE EMISION",
+    "FECHA INICIO TRASLADO",
+    "FECHA FACT BOLETA",
+    "PLACA DEL VEHICULO",
+    "ORDEN VENTA",
+    "OBSERVACIONES",
+)
+
+# Material-family / spec ANCHORS — a positive signal that a DESC is a real
+# material descriptor (NOT a footer/stamp). This is used ONLY in the SAFE PROTECT
+# DIRECTION inside `_is_desc_noise`: a DESC carrying any anchor is NEVER excluded
+# as noise. It is NEVER a drop gate (that would BE the M-6 anti-pattern) and
+# NEVER an allowlist for emission (a high-confidence non-anchored material still
+# emits via the generalized `_is_desc` matcher).
+_MATERIAL_ANCHORS: Final[tuple[str, ...]] = (
+    "BARRA",
+    "FIERRO",
+    "ALAMBRE",
+    "ACERO",
+    "VARILLA",
+    "CLAVO",
+    "MALLA",
+    "A615",
+    "A706",
+)
 
 # QTY (decimal shape): one-or-more integer digits, a decimal separator (. or ,),
 # one-or-more fractional digits — NO artificial caps. This admits 2.5 (one
@@ -220,6 +280,61 @@ def _is_desc(text: str) -> bool:
     return bool(_DESC_ALPHA_RE.search(text))
 
 
+def _strip_accents(text: str) -> str:
+    """Return *text* with diacritics removed (NFD decomposition + drop marks).
+
+    Pure-stdlib (``unicodedata``) — keeps the parser SDK-free. Used so the
+    semantic noise denylist matches accent variants (``SEÑORES`` ≈ ``SENORES``,
+    ``REMISIÓN`` ≈ ``REMISION``) without an accented duplicate per entry.
+    """
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", text)
+        if unicodedata.category(ch) != "Mn"
+    )
+
+
+def _normalize_words(text: str) -> str:
+    """Return *text* accent-stripped, upper-cased, alnum-tokenized with single
+    spaces, padded with leading/trailing spaces.
+
+    Non-alphanumeric runs (punctuation, slashes, quotes) collapse to a single
+    space so phrase matching is on WORD BOUNDARIES. The leading/trailing space
+    padding lets a `" PHRASE "` test detect a phrase at the string edges without
+    a regex. Example: `"CONFORME, A615/A706"` → `" CONFORME A615 A706 "`.
+    """
+    stripped = _strip_accents(text).upper()
+    tokens = re.findall(r"[A-Z0-9]+", stripped)
+    return " " + " ".join(tokens) + " "
+
+
+def _has_material_anchor(text: str) -> bool:
+    """Return True iff *text* contains a recognized material-family/spec anchor.
+
+    Positive material signal (accent/case-insensitive WORD match). Used ONLY in
+    the SAFE PROTECT DIRECTION inside `_is_desc_noise` — a DESC carrying an
+    anchor is never excluded as noise. NEVER a drop gate and NEVER an emission
+    allowlist (a non-anchored material still emits via `_is_desc`).
+    """
+    words = _normalize_words(text)
+    return any(f" {anchor} " in words for anchor in _MATERIAL_ANCHORS)
+
+
+def _is_desc_noise(text: str) -> bool:
+    """Return True iff *text* is an UNAMBIGUOUS non-material footer/stamp label.
+
+    JD round-2 (M-6 regression fix): matches a denylisted footer PHRASE on WORD
+    BOUNDARIES (not greedy substring) so collision-prone fragments (`FORMA` in
+    `CONFORMADO`, `CONFORME` inside a material desc) can never drop a real row.
+    A DESC carrying a material anchor is NEVER excluded — the anchor escape is
+    used ONLY in the safe protect direction. A True result excludes a footer
+    label that is structurally not a material (NOT a silent-drop of a real row).
+    """
+    if _has_material_anchor(text):
+        return False
+    words = _normalize_words(text)
+    return any(f" {phrase} " in words for phrase in _DESC_NOISE_DENYLIST)
+
+
 def _normalise_unit(raw: str) -> str | None:
     """Normalise a raw unit token to the canonical domain literal.
 
@@ -295,14 +410,44 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
         elif _is_qty_integer(text):
             int_qty_cells.append(cell)  # provisional; needs adjacent unit
         elif _is_desc(text):
+            # CRITICAL-A semantic noise filter: a DESC cell whose text is a
+            # non-material footer/header/stamp label (REVISADO POR, CREATED BY
+            # ... AUTODESK FORMA, OBSERVACIONES, ...) is EXCLUDED here so it can
+            # never pair with a stray number and become a spurious material row.
+            # This is NOT a silent-drop of a real material row — a footer label
+            # is not a material. It is logged at a visible (info) level.
+            if _is_desc_noise(text):
+                logger.info(
+                    "box_row_parser: excluded non-material noise label '%s' "
+                    "(semantic denylist) at cy=%.1f",
+                    text,
+                    cell.cy,
+                )
+                continue
             desc_cells.append(cell)
         # OTHER cells (short alpha-less tokens) are discarded.
 
-    # Promote integer candidates to quantities only when a unit cell sits in
-    # their row band (unit-suffix disambiguator). Without an adjacent unit an
-    # integer stays an incidental number (lote 119, code 408916) and is dropped.
+    # Promote integer candidates to quantities only when BOTH conditions hold:
+    #   1. A UNIT cell is adjacent in the row band (unit-suffix disambiguator).
+    #   2. The integer is to the RIGHT of ALL DESC cells in the same row band.
+    #      This mirrors the decimal-QTY column requirement (qty.cx > desc.cx) at
+    #      promotion time. An integer that is LEFT of any DESC cell in its band
+    #      is in the ITEM or CODIGO column, NOT the quantity column.
+    #
+    #      Real-data failure: codes 408916 (cx≈426) and item numbers 1/2 (cx≈347)
+    #      were promoted because a long footer desc (cx≈67) was in the row band.
+    #      Requiring the integer to be right of ALL descs in the band (not just any)
+    #      rejects these column-left integers while preserving "25 RD"-style
+    #      integers that are genuinely in the quantity column (no desc to their right).
     for int_cell in int_qty_cells:
-        if any(abs(u.cy - int_cell.cy) <= band for u in unit_cells):
+        has_unit = any(abs(u.cy - int_cell.cy) <= band for u in unit_cells)
+        in_band_descs = [d for d in desc_cells if abs(d.cy - int_cell.cy) <= band]
+        # No descs in band at all: no material row → skip (lote/code/other).
+        if not in_band_descs:
+            continue
+        # Integer must be RIGHT of every desc in the band.
+        right_of_all_descs = all(int_cell.cx > d.cx for d in in_band_descs)
+        if has_unit and right_of_all_descs:
             qty_cells.append(int_cell)
 
     if not desc_cells or not qty_cells:
@@ -468,6 +613,22 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
             row_conf = min(row_conf, unit_cell.conf)
         if row_conf < _CONFIDENCE_THRESHOLD:
             requires_review = True
+
+        # JD round-2 (M-6 regression fix): the prior
+        # `row_conf < _NOISE_CONFIDENCE and not _has_material_anchor(...)` DROP is
+        # REMOVED ENTIRELY. That gate RELOCATED the silent-drop (a real material
+        # row whose desc lacked every token in the closed `_MATERIAL_ANCHORS`
+        # allowlist AND OCR'd below 0.65 was silently dropped — e.g. the IN-CORPUS
+        # `ACERD DIMENSIONADO` @0.60, the real `ACERO DIMENSIONADO` with an O→D
+        # OCR garble). Re-anchoring material recognition on a token allowlist IS
+        # the documented M-6 anti-pattern (docs/DECISIONS.md:62). A real-looking
+        # material row is NEVER dropped on a confidence number OR a family
+        # allowlist — a LOW confidence only forces requires_review=True (via the
+        # threshold gate above), and the reconciliation gate validates it against
+        # the trusted declared side. The ONLY legitimate exclusion is an
+        # UNAMBIGUOUS FOOTER/STAMP PHRASE, handled SEMANTICALLY at DESC
+        # classification (`_is_desc_noise`, word-boundary phrase denylist with a
+        # material-anchor escape) — never here.
 
         desc_raw = desc.text.strip()
         lines.append(

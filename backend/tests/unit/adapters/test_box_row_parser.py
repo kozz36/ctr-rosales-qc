@@ -833,3 +833,268 @@ class TestNoSilentDropOnNoiseDescContention:
         assert len(barra) == 1
         assert barra[0].cantidad == Decimal("0.136")
         assert barra[0].unidad == "TN"
+
+
+# ---------------------------------------------------------------------------
+# PR#3 real-data fixes — integer-promotion column guard + noise-floor drop
+# ---------------------------------------------------------------------------
+
+
+class TestIntegerPromotionColumnGuard:
+    """Integer candidates must be RIGHT of ALL desc cells in their row band.
+
+    Real-data failure on page 0148/0156: a long footer desc at cx≈67 (far left)
+    was in the same row band as the material rows. Item/código integers at
+    cx≈347/426 were right of the footer desc (cx=67) → promoted. But they were
+    LEFT of the BARRA desc at cx≈600. The fix: right-of-ALL-descs in band.
+    """
+
+    def test_left_column_integer_with_far_left_footer_desc_not_promoted(self) -> None:
+        # Footer desc far left (cx=67), código integer (cx=426), BARRA (cx=605).
+        # 408916 is right of the footer (67) but LEFT of BARRA (605) →
+        # must NOT be promoted to quantity.
+        cells = [
+            _cell("Created by Sandra Sopla with Autodesk Forma", cx=67, cy=589),  # footer
+            _cell("408916", cx=426, cy=595),          # código — left of BARRA
+            _cell("BARRA A615 G60 3/8\" DOB", cx=605, cy=595),
+            _cell("TNE", cx=1143, cy=598),
+            _cell("0.037", cx=1295, cy=598),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        quantities = [r.cantidad for r in rows]
+        # 0.037 must be extracted; 408916 must NOT appear
+        assert Decimal("0.037") in quantities
+        assert Decimal("408916") not in quantities
+        assert len(rows) == 1
+
+    def test_right_column_integer_is_still_promoted(self) -> None:
+        # Integer in the QTY column (far right, cx=1295), right of ALL descs.
+        # This is the valid "25 RD" case — must still be promoted.
+        cells = [
+            _cell("VARILLA LISA 10mm", cx=100, cy=150),
+            _cell("25", cx=280, cy=152),
+            _cell("RD", cx=340, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("25")
+        assert rows[0].unidad == "RD"
+
+
+class TestSemanticNoiseFilterNotConfidenceDrop:
+    """CRITICAL-A (dual-judge): a low-confidence REAL material row MUST be
+    emitted with requires_review=True — NEVER silently dropped on a confidence
+    number. Footer/stamp NOISE is excluded SEMANTICALLY (a denylist of
+    non-material GRE/Forma labels), not by a confidence floor.
+
+    This INVERTS the prior `_MIN_EMIT_CONFIDENCE` noise-floor drop, which
+    silently dropped any row with row_conf < 0.65 — a never-silent-drop and
+    false-MATCH-hole violation (a dropped MISMATCH row becomes a confident
+    false MATCH with no review signal; defeats reconciliation-is-the-gate).
+    """
+
+    def test_low_confidence_real_material_row_emitted_with_review(self) -> None:
+        # CRITICAL-A test #1: a REAL material row at qty conf 0.60 (row_conf 0.60,
+        # below the old 0.65 floor) MUST now be EMITTED with requires_review=True.
+        # Previously returned [] (silent drop — the bug).
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=100, cy=150, conf=0.95),
+            _cell("0.408", cx=250, cy=152, conf=0.60),
+            _cell("TNE", cx=320, cy=150, conf=0.95),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.408")
+        assert rows[0].requires_review is True
+
+    def test_low_confidence_bare_integer_real_row_emitted_with_review(self) -> None:
+        # CRITICAL-A test #2: a bare-integer real row (`VARILLA` + `25` + `RD`)
+        # at conf 0.60 → emitted with requires_review=True (not dropped on the
+        # confidence number). Scoped to the CONFIDENCE path: the bare integer is
+        # already off-profile so requires_review=True via the A2 gate too; the
+        # point of THIS test is that the low confidence does NOT cause a drop.
+        cells = [
+            _cell("VARILLA LISA 10mm", cx=100, cy=150, conf=0.60),
+            _cell("25", cx=250, cy=152, conf=0.60),
+            _cell("RD", cx=320, cy=150, conf=0.95),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("25")
+        assert rows[0].unidad == "RD"
+        assert rows[0].requires_review is True
+
+    def test_footer_noise_revisado_por_excluded_semantically(self) -> None:
+        # CRITICAL-A test #3: a footer-noise row (`REVISADO POR` + `4.8`) is
+        # EXCLUDED as non-material via the SEMANTIC denylist — NOT via confidence.
+        # Even at HIGH confidence the footer label must never become a material
+        # row (proving the exclusion is semantic, not a confidence artifact).
+        cells = [
+            _cell("REVISADO POR", cx=726, cy=999, conf=0.95),
+            _cell("4.8", cx=1121, cy=981, conf=0.95),
+            _cell("TN", cx=1200, cy=990, conf=0.95),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []
+
+    def test_footer_noise_at_low_confidence_also_excluded(self) -> None:
+        # The original page-156 observation: "REVISADO POR + 4.8" at conf 0.584.
+        # Still excluded — but now by the denylist, not the (removed) floor.
+        cells = [
+            _cell("REVISADO POR", cx=726, cy=999, conf=0.60),
+            _cell("4.8", cx=1121, cy=981, conf=0.55),
+            _cell("TN", cx=1200, cy=990, conf=0.90),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []
+
+    def test_recibido_conforme_footer_excluded(self) -> None:
+        # Another real GRE footer label — accent/case-insensitive substring match.
+        cells = [
+            _cell("Recibido Conforme", cx=80, cy=900, conf=0.90),
+            _cell("0.500", cx=300, cy=900, conf=0.90),
+            _cell("TN", cx=380, cy=900, conf=0.90),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []
+
+    def test_observaciones_footer_excluded(self) -> None:
+        # `OBSERVACIONES` is a GRE section label, not a material descriptor.
+        cells = [
+            _cell("OBSERVACIONES", cx=80, cy=900, conf=0.90),
+            _cell("0.500", cx=300, cy=900, conf=0.90),
+            _cell("TN", cx=380, cy=900, conf=0.90),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []
+
+    def test_garbled_stamp_noise_below_conf_no_anchor_emitted_with_review(self) -> None:
+        # JD round-2 (M-6 regression fix): the prior CRITICAL-A behavior DROPPED
+        # garbled low-confidence text with no anchor via the
+        # `row_conf < _NOISE_CONFIDENCE and not _has_material_anchor` gate. That
+        # RELOCATED the silent-drop onto a confidence number AND a material-keyword
+        # allowlist — the documented M-6 anti-pattern (docs/DECISIONS.md:62). A
+        # row that is NOT an unambiguous footer phrase is now EMITTED with
+        # requires_review=True (never silently dropped on confidence/allowlist);
+        # the reconciliation gate validates it against the trusted declared side.
+        # The garble here carries no footer phrase, so it survives as review-flagged
+        # noise — which the EXACT-quantity reconciliation surfaces, never auto-accepts.
+        cells = [
+            _cell("acacpen enfuin aeococl vignte", cx=80, cy=999, conf=0.573),
+            _cell("4.8", cx=1121, cy=999, conf=0.90),
+            _cell("TN", cx=1200, cy=999, conf=0.90),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("4.8")
+        assert rows[0].requires_review is True
+
+    def test_low_conf_garbled_text_WITH_material_anchor_still_emitted(self) -> None:
+        # The secondary signal MUST NOT drop a real material row: a low-confidence
+        # DESC that carries a material anchor (BARRA) is emitted with review even
+        # if the rest of the OCR text is garbled. Never-silent-drop holds.
+        cells = [
+            _cell("BARRA a615 g6d garbledtail", cx=80, cy=999, conf=0.55),
+            _cell("0.408", cx=1121, cy=999, conf=0.55),
+            _cell("TN", cx=1200, cy=999, conf=0.55),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.408")
+        assert rows[0].requires_review is True
+
+    def test_border_confidence_row_above_floor_emitted_with_review(self) -> None:
+        # row_conf = min(0.70, 0.68) = 0.68 < 0.85 threshold → emitted with
+        # requires_review=True (unchanged behavior).
+        cells = [
+            _cell("BARRA A615 G60 5/8\"", cx=100, cy=150, conf=0.70),
+            _cell("0.191", cx=250, cy=152, conf=0.68),
+            _cell("TN", cx=320, cy=150, conf=0.95),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].requires_review is True
+        assert rows[0].cantidad == Decimal("0.191")
+
+
+# ---------------------------------------------------------------------------
+# JD round-2 M-6 regression fix — never drop a real material row on a
+# confidence number OR a material-keyword allowlist (de-anchored, word-boundary)
+# ---------------------------------------------------------------------------
+
+
+class TestM6NoConfidenceAnchorDrop:
+    """JD round-2 (both judges, M-6 regression): the prior CRITICAL-A fix
+    RELOCATED the silent-drop into a `row_conf < _NOISE_CONFIDENCE AND NOT
+    _has_material_anchor` gate. A REAL material row whose desc lacks every token
+    in the closed `_MATERIAL_ANCHORS` allowlist AND OCRs below 0.65 was silently
+    dropped — re-anchoring material recognition on a token allowlist is exactly
+    the documented M-6 anti-pattern (docs/DECISIONS.md:62). The fix EMITS such a
+    row with requires_review=True; the reconciliation gate validates it against
+    the trusted declared side. NEVER `continue`-drop on confidence or a family
+    allowlist.
+    """
+
+    def test_anchorless_low_conf_real_material_emitted_with_review(self) -> None:
+        # IN-CORPUS repro (Judge B): `ACERD DIMENSIONADO` @0.60 — the real
+        # page-160 family name `ACERO DIMENSIONADO` with the O→D OCR garble
+        # already present in docs/eval/ocr_probe_paddle.json. It carries NO
+        # token from `_MATERIAL_ANCHORS` (`ACERD` != `ACERO`; no BARRA/A615/A706).
+        # The prior anchor-AND-confidence gate dropped it to []. It MUST now be
+        # EMITTED with requires_review=True (low confidence → review, never drop).
+        cells = [
+            _cell("ACERD DIMENSIONADO", cx=100, cy=150, conf=0.60),
+            _cell("1.616", cx=280, cy=151, conf=0.60),
+            _cell("TNE", cx=350, cy=150, conf=0.60),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("1.616")
+        assert rows[0].requires_review is True
+
+
+class TestDescNoiseWordBoundaryAndAnchorEscape:
+    """`_is_desc_noise` must match on UNAMBIGUOUS MULTI-WORD FOOTER PHRASES at
+    WORD BOUNDARIES — never greedy substrings of collision-prone bare tokens
+    (`FORMA` ⊂ `CONFORMADO`/`PLATAFORMA`, `CONFORME` ⊂ real descs). A desc that
+    carries a material anchor is NEVER excluded as noise (allowlist used ONLY in
+    the safe protect direction).
+    """
+
+    def test_barra_conforme_a615_not_dropped_by_anchor_escape(self) -> None:
+        # `BARRA CONFORME A615 G60 1/2"` @0.95 — the prior bare-`CONFORME`
+        # substring in the denylist dropped this real BARRA+A615 row to [].
+        # The material-anchor escape (BARRA/A615) MUST protect it from exclusion.
+        cells = [
+            _cell("BARRA CONFORME A615 G60 1/2\"", cx=100, cy=150, conf=0.95),
+            _cell("0.136", cx=280, cy=151, conf=0.95),
+            _cell("TN", cx=350, cy=150, conf=0.95),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.136")
+
+    def test_acero_conformado_en_frio_not_dropped_word_boundary(self) -> None:
+        # `ACERO CONFORMADO EN FRIO` @0.90 — `FORMA` is a substring of
+        # `CONFORMADO` but NOT a word; word-boundary matching MUST NOT exclude
+        # this real material row. (Also protected by the ACERO anchor escape.)
+        cells = [
+            _cell("ACERO CONFORMADO EN FRIO", cx=100, cy=150, conf=0.90),
+            _cell("0.500", cx=280, cy=151, conf=0.90),
+            _cell("TN", cx=350, cy=150, conf=0.90),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.500")
+
+    def test_real_footer_revisado_por_still_excluded(self) -> None:
+        # A real footer `REVISADO POR` + a qty-shaped number MUST still be
+        # EXCLUDED via the phrase-denylist (no MaterialLine emitted). This proves
+        # the tightening did not open the footer-leak hole.
+        cells = [
+            _cell("REVISADO POR", cx=726, cy=999, conf=0.95),
+            _cell("4.8", cx=1121, cy=981, conf=0.95),
+            _cell("TN", cx=1200, cy=990, conf=0.95),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []

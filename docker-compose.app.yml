@@ -3,12 +3,13 @@
 # This is the END-USER deployment: backend (FastAPI) + frontend (nginx SPA) on a
 # private bridge network. The frontend proxies /api to the backend by service name.
 #
-# Default run mode: DETERMINISTIC vision-off + SUNAT-authoritative.
+# Default run mode: DETERMINISTIC OCR + vision-off + SUNAT-supplementary.
 #   - Zero LLM calls (no Ollama/Anthropic needed, no API keys).
 #   - Guía reception dates fall back to SUNAT fecha_entrega (R9b floor).
-#   - Material + quantities come from the SUNAT GRE (OCR off).
-#   - Requires SUNAT (e-factura.sunat.gob.pe) reachable; results are cached in the
-#     sunat-cache volume so re-runs are fast and offline-friendly.
+#   - Material quantities: RapidOCR PP-OCRv5-server (deterministic, ONNX, air-gap).
+#   - SUNAT: supplementary source (QR decode → GRE lookup for date + metadata).
+#   - Requires SUNAT (e-factura.sunat.gob.pe) reachable for date reads; quantities
+#     are deterministic-OCR and cached so re-runs are fast and offline-friendly.
 #
 # `name:` pins the compose project so the volumes match the verification harness
 # (docker-compose.yml) — the SUNAT cache is shared across both.
@@ -27,9 +28,10 @@ services:
       target: runtime          # prod-lean, paddle-free image
     image: ctr-backend:v1.0.0
     environment:
-      # Deterministic SUNAT-authoritative mode (no LLM, no OCR).
+      # Deterministic OCR mode: RapidOCR quantities + no LLM vision.
       RECONCILIATION__VISION__ENABLED: "false"
-      RECONCILIATION__OCR__ENABLED: "false"
+      RECONCILIATION__OCR__ENABLED: "true"
+      RECONCILIATION__OCR__ENGINE: "rapidocr"
       RECONCILIATION__SUNAT__ENABLED: "true"
       RECONCILIATION__SUNAT__CACHE: "true"
       RECONCILIATION__SUNAT__CACHE_DIR: "/data/sunat-cache"

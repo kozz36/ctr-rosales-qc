@@ -31,8 +31,22 @@ identity = [
     "Pillow>=10.0",
     "numpy>=1.26",
 ]
+ocr = [
+    "rapidocr>=3.8,<3.9",
+    "onnxruntime>=1.18",
+    "Pillow>=10.0",
+    "numpy>=1.26",
+    # CRITICAL-B (JD): MUST be the HEADLESS build. opencv-python (full) links
+    # libGL.so.1 / libglib-2.0.so.0, absent from python:3.12-slim (only libzbar0
+    # installed) -> first real cv2-touching OCR call raises ImportError: libGL.so.1.
+    # Headless needs NO libGL -> air-gap/slim-runtime safe. NOTE: this pin alone
+    # is NOT sufficient — rapidocr transitively pins the FULL opencv-python, which
+    # wins the cv2 namespace; the `[tool.uv] override-dependencies` below is what
+    # actually removes the full build from the closure. Both are required.
+    "opencv-python-headless>=4.5.1.48",
+]
 all = [
-    "reconciliation[ml,llm,identity]",
+    "reconciliation[ml,llm,identity,ocr]",
 ]
 dev = [
     "pytest",
@@ -43,6 +57,21 @@ dev = [
     "types-openpyxl",
     "pytest-cov",
 ]
+
+[tool.uv]
+# CRITICAL-B (JD): rapidocr 3.8.1 transitively HARD-pins the FULL `opencv-python`
+# (see its requires-dist), which links libGL.so.1 / libglib-2.0.so.0 — absent
+# from the python:3.12-slim runtime (only libzbar0 installed) — AND wins the
+# `cv2` namespace over the headless build. A simple `[ocr]` pin swap to
+# opencv-python-headless does NOT remove rapidocr's transitive full opencv from
+# the resolution closure (both end up installed; full wins cv2). This override
+# forces the full `opencv-python` requirement to a marker that NEVER resolves,
+# so ONLY opencv-python-headless is installed — a truly libGL-free air-gap image.
+# Scope note: the override is global, but the deployed runtime installs only the
+# `[ocr]` extra (paddle-free). The legacy `[ml]`/paddle path (`opencv-contrib-python`
+# + full `opencv-python`) is NOT used in deployment; if a paddle install is ever
+# revived it must drop this override or install libGL itself.
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
 
 [build-system]
 requires = ["hatchling"]

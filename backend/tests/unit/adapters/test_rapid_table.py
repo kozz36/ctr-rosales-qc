@@ -30,9 +30,13 @@ import pytest
 def _make_engine(boxes, txts, scores):
     """Build a fake RapidOCR engine whose __call__ returns a mock result.
 
-    The RapidOCR 3.8.x API: ``engine(img_array)`` returns a result object
-    whose ``.boxes`` is a list of 4-point polygon arrays and ``.txts`` /
-    ``.scores`` are parallel lists.
+    The RapidOCR 3.8.x API: ``engine(img_array)`` returns a result object whose
+    REAL types are ``boxes: np.ndarray`` of shape ``(N,4,2)`` (float64 4-point
+    polygons — NOT a Python list), ``txts: tuple[str]`` and ``scores:
+    tuple[float]`` (parallel, length N). Tests may inject a list/ndarray/stub
+    for ``boxes`` since the adapter is numpy-agnostic, but the faithful engine
+    contract is the ndarray/tuple shape above (see ``_make_ndarray_like_engine``
+    and ``test_numpy_real_ndarray_boxes`` for the ndarray-shaped variants).
 
     ``boxes`` entries are 4-point polygons as nested lists/tuples:
         [[x0,y0],[x1,y1],[x2,y2],[x3,y3]]  (clockwise corners)
@@ -425,6 +429,45 @@ class TestRapidOCRAdapterRealOutputShape:
         adapter = RapidOCRAdapter(_engine=engine, _rotate_fn=_dummy_rotate)
         lines = adapter.extract_printed_table(b"\x89PNG")
         assert lines == [], "None txts/scores must degrade to [] without raising"
+
+    def test_length_mismatch_degrades_to_empty_not_truncated(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """W1/SUGGESTION-1: boxes/txts/scores of UNEQUAL length must degrade to []
+        with a logged WARNING — never silently truncate the tail via ``zip``.
+
+        Legacy ``zip`` over a (3, 3, 2) triple would silently process only the
+        first 2 rows (the same CLASS of silent under-extraction as the round-1
+        C1 crash).  The fix detects the length parity violation, logs a warning
+        naming the mismatched lengths, and returns [] (no truncated subset).
+        """
+        import logging
+
+        from reconciliation.adapters.ocr.rapid_table import RapidOCRAdapter
+
+        # 3 boxes, 3 txts, but only 2 scores → length parity violation.
+        boxes = [_box(100, 150), _box(250, 150), _box(320, 150)]
+        txts = ("BARRA CORRUGADA 3/8", "0.136", "TN")
+        scores = (0.92, 0.92)  # length 2 — mismatched
+
+        result = MagicMock()
+        result.boxes = boxes
+        result.txts = txts
+        result.scores = scores
+        engine = MagicMock(return_value=result)
+
+        adapter = RapidOCRAdapter(_engine=engine, _rotate_fn=_dummy_rotate)
+        with caplog.at_level(logging.WARNING):
+            lines = adapter.extract_printed_table(b"\x89PNG")
+
+        assert lines == [], (
+            "Mismatched boxes/txts/scores lengths must degrade to [] — never "
+            "silently truncate to the shortest sequence via zip (under-extraction)."
+        )
+        assert any(
+            "length" in rec.message.lower() or "mismatch" in rec.message.lower()
+            for rec in caplog.records
+        ), "A WARNING naming the mismatched lengths must be logged."
 
 
 # ---------------------------------------------------------------------------

@@ -222,6 +222,26 @@ class RapidOCRAdapter:
         if result.txts is None or result.scores is None:
             return []
 
+        # Length parity guard (SUGGESTION-1): boxes/txts/scores MUST be the same
+        # length. A partial/quirky engine result with unequal lengths would let
+        # ``zip`` silently truncate the tail and drop rows — the same CLASS of
+        # silent under-extraction as the C1 crash. Degrade gracefully: log a
+        # WARNING naming the mismatched lengths and return [] (never process a
+        # truncated subset).
+        n_boxes = len(result.boxes)
+        n_txts = len(result.txts)
+        n_scores = len(result.scores)
+        if not (n_boxes == n_txts == n_scores):
+            logger.warning(
+                "RapidOCRAdapter: boxes/txts/scores length mismatch "
+                "(boxes=%d, txts=%d, scores=%d); degrading to no rows for this "
+                "page to avoid silent zip truncation",
+                n_boxes,
+                n_txts,
+                n_scores,
+            )
+            return []
+
         cells: list[Cell] = []
         for poly, text, conf in zip(result.boxes, result.txts, result.scores):
             if text is None:

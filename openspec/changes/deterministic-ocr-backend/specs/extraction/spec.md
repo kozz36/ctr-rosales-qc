@@ -159,15 +159,31 @@ importable and unit-testable with NO OCR SDK installed.
    `row_band_px = round(40 * (dpi / 200))` where `dpi` is the render DPI of the image.
    Two cells are in the same row band when `|centroid_y_A − centroid_y_B| <= row_band_px`.
 3. For each row band, classify cells as:
-   - **QTY**: text is EITHER (a) a decimal number of shape `^\d+[.,]\d+$` — one-or-more
-     integer digits and one-or-more fractional digits, with NO artificial digit caps (admits
-     `2.5`, `0.008`, `5800.00`, `1234.56`; aligned with the declared-side extractor
-     `(\d+(?:[.,]\d+)?)`), OR (b) a bare integer `^\d+$` that has an adjacent UNIT cell in its
+   - **QTY**: text is EITHER (a) a decimal number of shape `^\d+[.,]\d{1,3}$` — one-or-more
+     integer digits and **1–3** fractional digits (admits `2.5`, `0.008`, `5800.00`,
+     `1234.56`; aligned with the declared-side extractor `(\d+(?:[.,]\d+)?)`). The fractional
+     part is capped at **3** because the corpus declared maximum is 3 decimals; a **4-digit
+     fraction is a year/date shape** (`12.2024`, `01.2025`) and MUST be STRUCTURALLY rejected
+     here (round-2 confidence-leak fix A1). The integer part stays open (`\d+`) so `5800.00`
+     KG is still EXTRACTED. OR (b) a bare integer `^\d+$` that has an adjacent UNIT cell in its
      row band (the unit-suffix disambiguator; admits `25 RD`, `5800 KG`). A bare integer with
      NO adjacent unit is NOT a QTY — it is an incidental number (line-item / lote `119`, guía
      code `408916`) or a diameter lead (`1`, `3`, `8`). Empirically (177 real qty tokens, full
      PDF) there are NO thousands separators; `.` is always the decimal separator, so a `,` is
      treated as a DECIMAL separator (`,`→`.`).
+
+   **Confidence-gate to the validated-corpus profile (round-2 fix A2, MUST):** a QTY is emitted
+   CONFIDENT (`requires_review=False`) ONLY when it matches the empirically-validated profile —
+   a DECIMAL with **integer-part 1–3 digits AND fractional 1–3 digits** (`\d{1,3}[.,]\d{1,3}`,
+   the in-corpus TN range 0.068–8.976, 177 tokens). ANY quantity OUTSIDE that profile — a
+   bare-integer-promoted qty (`25`, `5800`), OR a decimal with integer-part ≥4 digits
+   (`5800.00` KG, `408916.00` código) — is still EXTRACTED but MUST be emitted with
+   `requires_review=True`. Rationale: these are off the TN-only validated corpus and/or not
+   column-anchored yet (the precise qty-column structural anchoring is **deferred to PR#2**, see
+   below); they are extracted (never dropped) but flagged for human review, never silently
+   trusted. This gate removes the confident property from BOTH round-2 false-positive leaks
+   (integer código `408916`+unit, decimal date/code `408916.00`) while keeping every real
+   in-corpus TN quantity confident.
    - **DESC**: text matches a material descriptor pattern that is broader than the original
      corpus `_DESC_RE` (MUST recognize at least: `BARRA`, `ACERO`, `A615`, `A706`, `FIERRO`,
      `VARILLA`, `ALAMBRE`, codes like `40xxxx`, and any token containing a diameter notation
@@ -175,7 +191,14 @@ importable and unit-testable with NO OCR SDK installed.
    - **IGNORED**: cells that match neither (header cells, row-number cells, supplier text).
 4. For each QTY cell, the DESC cell in the SAME row band that is NEAREST to its LEFT MUST
    be the description for that quantity. A QTY cell with no DESC cell to its left in the
-   same row band MUST be ignored (not emitted as a row).
+   same row band MUST be ignored (not emitted as a row). **Ownership is decided PER QTY by
+   geometric nearness (round-2 fix B, never-silent-drop):** each QTY is assigned to its
+   geometrically NEAREST eligible DESC (smallest `|Δcy|`; deterministic tie-breaks: the desc
+   whose row carries the unit cell — smaller `|Δcy|` to an in-band unit — then smaller
+   horizontal gap, then stable cy/index). A noise/header desc (`OBSERVACIONES`, stamp text)
+   with a ≥3-letter run that sits higher in the band MUST NOT greedily claim the real
+   material's qty first and cause the real material row to silently vanish; the real row
+   (sharing the unit's row) wins its qty. NEVER silently drop a real material row.
 5. Unit: taken from a UNIT cell (`TN`, `KG`, `RD`, `Rollo`, `TNE` — see unit normalization
    below) in the same row band as the QTY cell. A unit found in the PREFERRED column position
    (same band, RIGHT of the qty column) yields a CONFIDENT line. A unit claimed via a relaxed
@@ -203,6 +226,13 @@ removes the ambiguity.
 
 The parser function MUST accept a `dpi: int` parameter (default `200`) so the caller can
 pass the actual render DPI without hardcoding.
+
+**Deferred to PR#2 (column-structure anchoring):** the PRECISE qty-column structural anchor —
+qty = the cell positionally between DESC and UNIDAD in the real GRE column order — is DEFERRED
+to PR#2, where `RapidOCRAdapter` supplies real polygon geometry to validate it on real pages.
+Until then, the confidence-gate (fix A2 above) is the PR#1 safety net: any quantity outside the
+validated in-corpus profile is extracted but flagged `requires_review=True`, never silently
+trusted. The geometric-nearest DESC ownership (step 4) is the PR#1 silent-drop guard.
 
 #### Scenario EXT-S029a — correct DESC↔QTY pairing on a multi-row table
 

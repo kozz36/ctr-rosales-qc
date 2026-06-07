@@ -636,3 +636,175 @@ class TestOrientationOracleMeaningful:
         ]
         assert count_valid_rows(good, 200) > count_valid_rows(degenerate, 200)
         assert count_valid_rows(degenerate, 200) == 0
+
+
+# ---------------------------------------------------------------------------
+# 1.1.16  FIX A1 — date/code-shape 4-digit fractions are NOT quantities
+# ---------------------------------------------------------------------------
+
+
+class TestDateShapeFractionNotQty:
+    """A 4-digit fraction (year shape `12.2024`, `2024.12`, `01.2025`) must be
+    STRUCTURALLY rejected as a quantity. The corpus declared max is 3 decimals,
+    so `_QTY_DECIMAL_RE` caps the fractional part at `\\d{1,3}`. This neutralizes
+    the decimal date/code confident-false-positive leak (round-2 finding A.2).
+    """
+
+    def test_year_fraction_12_2024_not_qty(self) -> None:
+        # `12.2024` (a month.year date shape) must NOT pair as a quantity.
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=100, cy=150),
+            _cell("12.2024", cx=250, cy=152),  # 4-digit fraction — date, not qty
+            _cell("TN", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        # No valid decimal qty present → the desc cannot pair → no row emitted.
+        assert rows == []
+
+    def test_year_fraction_2024_12_not_qty(self) -> None:
+        # `2024.12` (year.month) — integer part is fine but it is still a date
+        # shape; with only this token there is no real qty → no row.
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=100, cy=150),
+            _cell("2024.12", cx=250, cy=152),
+            _cell("TN", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        # `2024.12` IS shape-valid (2-digit fraction) but its integer part >=4
+        # digits → off-profile → MUST be flagged, never confident. The A1 cap
+        # only rejects the 4-digit FRACTION case (`12.2024`). `2024.12` is
+        # handled by the A2 confidence-gate (off-profile → requires_review).
+        if rows:
+            assert rows[0].requires_review is True
+
+    def test_decimal_date_code_408916_00_not_confident(self) -> None:
+        # `408916.00` (código.00 shape) — integer part 6 digits, fraction 2.
+        # Shape-valid (A1 passes) but off the in-corpus profile (integer >=4) →
+        # A2 confidence-gate MUST flag it requires_review=True, never confident.
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=100, cy=150),
+            _cell("408916.00", cx=250, cy=152),
+            _cell("TN", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].requires_review is True
+
+
+# ---------------------------------------------------------------------------
+# 1.1.17  FIX A2 — confidence-gate to the validated-corpus profile
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceGateToCorpusProfile:
+    """A quantity is emitted CONFIDENT (`requires_review=False`) ONLY when it
+    matches the empirically-validated profile: a DECIMAL with integer-part
+    1-3 digits AND fractional 1-3 digits (`\\d{1,3}[.,]\\d{1,3}`). Anything
+    outside that profile — bare-integer-promoted qty, or decimal with
+    integer-part >=4 digits — is EXTRACTED but flagged `requires_review=True`
+    (off the TN-only validated corpus and/or not column-anchored yet; PR#2).
+    """
+
+    def test_in_profile_decimal_is_confident(self) -> None:
+        # `0.136 TN` — canonical in-corpus shape → confident (requires_review=False).
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=100, cy=150),
+            _cell("0.136", cx=250, cy=152),
+            _cell("TN", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].requires_review is False
+
+    def test_in_profile_single_fractional_digit_is_confident(self) -> None:
+        # `2.5 TN` — 1 integer digit, 1 fractional digit → in-profile → confident.
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=100, cy=150),
+            _cell("2.5", cx=250, cy=152),
+            _cell("TN", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].requires_review is False
+
+    def test_large_integer_part_decimal_flagged(self) -> None:
+        # `5800.00 KG` — integer part 4 digits → off-profile → flagged, NOT confident.
+        # (Still EXTRACTED — never dropped.)
+        cells = [
+            _cell("BARRA A615 G60 3/8\"", cx=100, cy=150),
+            _cell("5800.00", cx=250, cy=152),
+            _cell("KG", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("5800.00")
+        assert rows[0].requires_review is True
+
+    def test_bare_integer_promoted_qty_flagged(self) -> None:
+        # `25 RD` — bare-integer-promoted qty (off the decimal TN corpus) →
+        # extracted but flagged requires_review=True.
+        cells = [
+            _cell("VARILLA LISA 10mm", cx=100, cy=150),
+            _cell("25", cx=250, cy=152),
+            _cell("RD", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("25")
+        assert rows[0].requires_review is True
+
+    def test_codigo_integer_with_unit_extracted_but_flagged(self) -> None:
+        # `408916` + adjacent unit — integer código promoted by the unit-suffix
+        # rule. Round-2 leak A.1: it reached requires_review=False. The gate now
+        # forces requires_review=True (extracted, never silently confident).
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=100, cy=150),
+            _cell("408916", cx=250, cy=152),
+            _cell("TN", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("408916")
+        assert rows[0].requires_review is True
+
+    def test_bare_integer_without_unit_still_dropped_entirely(self) -> None:
+        # The incidental-number guard MUST still hold: a bare `408916` with NO
+        # adjacent unit is rejected ENTIRELY (not even an extracted-flagged row).
+        cells = [
+            _cell("408916", cx=20, cy=150),
+            _cell("BARRA A615 G60 1/2\"", cx=150, cy=150),
+            _cell("0.037", cx=280, cy=150),
+            _cell("KG", cx=350, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.037")
+        assert rows[0].requires_review is False
+
+
+# ---------------------------------------------------------------------------
+# 1.1.18  FIX B — greedy DESC claim must not silently drop a real material row
+# ---------------------------------------------------------------------------
+
+
+class TestNoSilentDropOnNoiseDescContention:
+    """A noise/header DESC (`OBSERVACIONES`, stamp text) with a >=3-letter run
+    must NOT greedily claim the real material's qty and cause the real BARRA row
+    to silently vanish. Each qty is assigned to the GEOMETRICALLY NEAREST desc,
+    so the BARRA row (sharing the unit's row) wins its qty (round-2 WARNING-3,
+    never-silent-drop invariant).
+    """
+
+    def test_observaciones_does_not_steal_barra_qty(self) -> None:
+        cells = [
+            _cell("OBSERVACIONES", cx=80, cy=140),       # noise desc, higher up
+            _cell("BARRA A615 3/8\"", cx=80, cy=150),    # real material, nearer qty
+            _cell("0.136", cx=300, cy=145),
+            _cell("TN", cx=380, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        # The real BARRA row MUST survive with its 0.136 TN — never dropped.
+        barra = [r for r in rows if "BARRA" in r.description_raw.upper()]
+        assert len(barra) == 1
+        assert barra[0].cantidad == Decimal("0.136")
+        assert barra[0].unidad == "TN"

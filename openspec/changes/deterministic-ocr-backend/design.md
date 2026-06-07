@@ -262,12 +262,17 @@ contain those tokens — a silent data loss the moment the corpus widens.
 **Design — classify by POSITIVE quantity-shape + column geometry, NOT by a keyword allowlist.**
 
 ```python
-# Decimal qty: any-digit integer + any-digit fraction. NO artificial caps —
-# admits 2.5 (one fractional digit, real declared data), 0.008, 5800.00 (>=1000),
-# 1234.56. Aligned with the declared-side _MATERIAL_LINE_RE: (\d+(?:[.,]\d+)?).
-_QTY_DECIMAL_RE = re.compile(r"^\d+[.,]\d+$")
+# Decimal qty: open integer part + 1-3 digit fraction (round-2 fix A1). The
+# corpus declared max is 3 decimals, so a 4-digit fraction is a year/date shape
+# (12.2024, 01.2025) and is STRUCTURALLY rejected. Integer part stays open
+# (\d+) so 5800.00 (>=1000 KG) is still EXTRACTED. Admits 2.5, 0.008, 5800.00.
+_QTY_DECIMAL_RE = re.compile(r"^\d+[.,]\d{1,3}$")
 # Bare integer: only a QTY when an adjacent UNIT cell disambiguates it.
 _QTY_INTEGER_RE = re.compile(r"^\d+$")
+# CONFIDENT-corpus profile (round-2 fix A2): integer 1-3 + fraction 1-3 digits.
+# Only quantities inside this validated TN envelope are emitted confident; any
+# off-profile qty (bare-int-promoted, or integer-part >=4) is requires_review=True.
+_QTY_CONFIDENT_PROFILE_RE = re.compile(r"^\d{1,3}[.,]\d{1,3}$")
 _UNIT_RE = re.compile(r"^(TNE|TN|KG|RD|Rollo)$", re.IGNORECASE)  # unit-column cell (TNE label-normalized)
 ```
 
@@ -282,13 +287,32 @@ Three-way cell classification:
    one alphabetic run of ≥3 letters (`re.search(r"[A-Za-z]{3,}", text)`). The ≥3-letter run
    rejects stray punctuation/number-only header cells from being mistaken for descriptions.
 
-**Why any-digit (JD CRITICAL FIX):** the prior `^\d{1,3}[.,]\d{2,3}$` SILENTLY DROPPED real
-declared data — `2.5 TN` (one fractional digit, pages 378-379) failed the `\d{2,3}` minimum, and
-`5800.00 KG` (>=1000) failed the `\d{1,3}` cap. The OCR side MUST mirror the declared-side
-`(\d+(?:[.,]\d+)?)` shape or reconciliation produces false MISMATCH/drops. Empirically (177 real
-qty tokens, full 493-page PDF) NO thousands separators exist — `.` is always the decimal
-separator, so `,`→`.` (`replace(",", ".")`) treats a comma as a DECIMAL separator (evidence-backed,
-not an assumption). A malformed token is dropped-with-log, never raised.
+**Qty discriminator (round-1 + round-2 corrected):** the JD round-1 fix widened the prior
+`^\d{1,3}[.,]\d{2,3}$` (which SILENTLY DROPPED `2.5 TN` and `5800.00 KG`) to admit real declared
+data. The qty discriminator is now: a DECIMAL of shape `^\d+[.,]\d{1,3}$` (1–3 fractional digits,
+round-2 fix A1) **OR** a unit-adjacent bare integer (`^\d+$` + adjacent UNIT cell). The OCR side
+mirrors the declared-side `(\d+(?:[.,]\d+)?)` shape so reconciliation does not produce false
+MISMATCH/drops. Empirically (177 real qty tokens, full 493-page PDF) NO thousands separators exist
+— `.` is always the decimal separator, so `,`→`.` (`replace(",", ".")`) treats a comma as a
+DECIMAL separator (evidence-backed). A malformed token is dropped-with-log, never raised.
+
+**Round-2 fix A1 — 4-digit fraction is NOT a quantity:** the round-1 open fraction `\d+` re-opened
+a confident-false-positive: a date/code decimal `12.2024` (month.year) classified as a qty. The
+fraction is now capped at `\d{1,3}` (corpus declared max is 3 decimals). `12.2024` (4-digit
+fraction) is STRUCTURALLY rejected; `2024.12` / `408916.00` (valid fraction, ≥4 integer digits)
+remain shape-valid but are caught by the confidence-gate below.
+
+**Round-2 fix A2 — confidence-gate to the validated-corpus profile:** the looser round-1 qty regex
+plus the unit-suffix integer path opened NEW confident-false-positive leaks — an integer código
+`408916`+unit and a decimal código `408916.00` both reached `requires_review=False`. The remedy
+(domain-owner approved, the precise column-structure anchor DEFERRED to PR#2): a qty is emitted
+CONFIDENT only when it matches the empirically-validated profile
+`_QTY_CONFIDENT_PROFILE_RE = ^\d{1,3}[.,]\d{1,3}$` (in-corpus TN range 0.068–8.976). ANY qty
+outside that profile — bare-integer-promoted (`25 RD`, `5800 KG`), or decimal integer-part ≥4
+(`5800.00` KG, `408916.00` código) — is EXTRACTED (never dropped) but emitted with
+`requires_review=True`. This single gate strips the CONFIDENT property from BOTH leaks while
+keeping every real in-corpus TN quantity confident. Domain rule: the parser EXTRACTS but NEVER
+emits a confident line outside the validated quantity profile, and NEVER silently drops a real row.
 
 **Incidental-number guard (the critical correctness property):** `lote 119`, guía codes, and
 diameter leads `1"`, `1 3/8"` MUST NOT be read as quantities.
@@ -309,11 +333,34 @@ qty column) yields a CONFIDENT line. A relaxed/out-of-column unit pick violates 
 path). A unit is claimed only by the desc that OWNS it (band-nearest desc) and exactly once, so a
 unit is never STOLEN across rows packed tighter than the band.
 
+**Round-2 fix B — no silent drop on noise-desc contention (never-silent-drop invariant):** the
+round-1 pairing iterated DESC cells top-to-bottom, letting the top-most desc greedily claim the
+nearest unclaimed qty first. A noise/header desc (`OBSERVACIONES`, stamp text) with a ≥3-letter
+run sitting *higher* in the same band would steal the real material's qty; the real desc then
+found no candidate and silently `continue`-dropped — a real material row vanished with no row and
+no `requires_review` flag. The fix inverts ownership: each QTY is assigned to its GEOMETRICALLY
+NEAREST eligible DESC (smallest `|Δcy|`), with deterministic tie-breaks: (1) `|Δcy|`, (2) the desc
+whose row carries the unit cell — smaller `|Δcy|` to an in-band unit (the real material row shares
+the unit's row; a unit-less noise desc returns `+inf` and loses), (3) horizontal gap `qcx − dcx`,
+(4) stable cy then original index. The `OBSERVACIONES`/`BARRA`+`0.136 TN` contention now yields the
+BARRA row, not a drop. This needs NO column-structure anchor (deferred — see below). The path
+taken is the clean nearest-desc reassignment (NOT the fallback flag-instead-of-drop), so the real
+row is recovered intact and confident.
+
 **Geometry refinement (qty column):** beyond shape, the association in §2.1 already requires
 `qcx > dcx` (the quantity column is physically to the RIGHT of the detalle column) and same row
 band. So even if a description accidentally contains an amount-shaped substring as a *separate*
 cell, only an amount cell in the right-hand column band associates. Shape + geometry together
 are the discriminator; the keyword allowlist is removed entirely.
+
+**Deferred to PR#2 (column-structure anchoring):** the PRECISE qty-column structural anchor — qty
+= the cell positionally BETWEEN DESC and UNIDAD in the real GRE column order — is DEFERRED to PR#2,
+where `RapidOCRAdapter` supplies real polygon geometry to validate it on real pages (NOT synthetic
+data). In PR#1 the confidence-gate (fix A2) is the safety net: off-profile quantities are extracted
+but flagged `requires_review=True`, never silently trusted; the geometric-nearest DESC ownership
+(fix B) is the silent-drop guard. PR#2 task: replace the profile-based confidence-gate with true
+column-anchored ownership + confidence once real polygon geometry is available, and revisit whether
+off-profile (KG≥1000, integer RD/Rollo) qtys can then be promoted to confident.
 
 **Canonical-matching cross-check (verified against the skill):** the parser emits
 `description_raw` = the **full DESC cell text** (e.g. `BARRA A615A706 G60 3/4" DOB APL`), then

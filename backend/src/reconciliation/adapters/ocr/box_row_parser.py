@@ -93,8 +93,23 @@ _CONFIDENCE_THRESHOLD: Final[float] = 0.85
 # UNIT cell in its row band (the unit-suffix disambiguator, _is_qty_integer).
 # This keeps lote 119 / guía code 408916 / diameter lead 1" out, while
 # admitting 25 RD / 5800 KG.
+# A1 (round-2 fix): fractional part capped at 1-3 digits. The corpus declared
+# max is 3 decimals; a 4-digit fraction is a year/date shape (`12.2024`,
+# `01.2025`), NOT a quantity — structurally rejected here. Integer part stays
+# open (`\d+`) so >=1000 KG (`5800.00`) is still EXTRACTED (then flagged by the
+# A2 confidence-gate as off-profile).
 _QTY_DECIMAL_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\d+[.,]\d+$"
+    r"^\d+[.,]\d{1,3}$"
+)
+
+# A2 (round-2 fix): the empirically-validated CONFIDENT profile — a decimal
+# with integer-part 1-3 digits AND fractional 1-3 digits (the in-corpus TN
+# shape, range 0.068-8.976, 177 real tokens). A quantity OUTSIDE this profile
+# (bare-integer-promoted, or decimal integer-part >=4 digits) is still
+# EXTRACTED but emitted with requires_review=True — off the TN-only validated
+# corpus and/or not column-anchored yet (PR#2). Never silently trusted.
+_QTY_CONFIDENT_PROFILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d{1,3}[.,]\d{1,3}$"
 )
 
 # Bare integer (no decimal separator). Only treated as a QTY when a UNIT cell
@@ -165,6 +180,18 @@ def _is_qty_decimal(text: str) -> bool:
     quantity — see :func:`_is_qty_integer` for the unit-adjacent integer path.
     """
     return bool(_QTY_DECIMAL_RE.match(text.strip()))
+
+
+def _is_in_confident_profile(text: str) -> bool:
+    """Return True iff *text* matches the validated-corpus CONFIDENT profile.
+
+    A2 (round-2 confidence-gate): only a decimal with integer-part 1-3 digits
+    AND fractional 1-3 digits (`\\d{1,3}[.,]\\d{1,3}`) is inside the
+    empirically-validated TN quantity envelope and may be emitted confident
+    (requires_review=False). Bare-integer-promoted quantities and decimals with
+    a >=4-digit integer part are OFF-profile → flagged for review.
+    """
+    return bool(_QTY_CONFIDENT_PROFILE_RE.match(text.strip().replace(",", ".")))
 
 
 def _is_qty_integer(text: str) -> bool:
@@ -283,25 +310,59 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
 
     lines: list[MaterialLine] = []
 
-    used_qty: set[int] = set()
     used_unit: set[int] = set()
 
-    # Sort DESC cells by cy so we process rows top-to-bottom, giving each
-    # DESC cell first claim on the nearest QTY in its band.
-    for desc in sorted(desc_cells, key=lambda c: c.cy):
-        # Find the nearest QTY cell in the row band, to the right of desc,
-        # and not already claimed by a previous DESC row.
-        candidates = [
-            (i, q) for i, q in enumerate(qty_cells)
-            if abs(q.cy - desc.cy) <= band and q.cx > desc.cx and i not in used_qty
-        ]
-        if not candidates:
-            continue
+    _BAND_MISS: Final[float] = float("inf")
 
-        # Nearest by vertical proximity first (same row), then by horizontal
-        # distance (prefer the closer column when vertical ties exist).
-        idx, qty = min(candidates, key=lambda iq: (abs(iq[1].cy - desc.cy), iq[1].cx - desc.cx))
-        used_qty.add(idx)
+    def _nearest_unit_dy(c: Cell) -> float:
+        """Vertical distance from *c* to the nearest in-band unit cell.
+
+        FIX B tie-break: when two descs are equidistant from a qty, the real
+        material row is the one whose row carries the unit cell — i.e. the
+        smaller |Δcy| to a unit. Returns +inf when no unit is in band so a
+        unit-less noise desc never wins the tie over a real material row.
+        """
+        in_band = [abs(u.cy - c.cy) for u in unit_cells if abs(u.cy - c.cy) <= band]
+        return min(in_band) if in_band else _BAND_MISS
+
+    # FIX B (round-2 WARNING-3, never-silent-drop): assign each QTY to the
+    # GEOMETRICALLY NEAREST eligible DESC, instead of letting the top-most DESC
+    # greedily claim it first. A noise/header desc (`OBSERVACIONES`, stamp text)
+    # higher up in the same band must NOT steal a real material row's qty and
+    # cause that real row to silently vanish. Ownership is decided per QTY by
+    # vertical proximity, with deterministic tie-breaks:
+    #   1. smaller |Δcy| (nearest row),
+    #   2. the desc whose row also carries a unit cell (the real material row),
+    #   3. smaller horizontal gap (qty column just right of detalle),
+    #   4. stable cy then original index — fully deterministic.
+    qty_owner: dict[int, int] = {}  # qty index -> desc index
+    desc_index = {id(d): i for i, d in enumerate(desc_cells)}
+    for qi, qty in enumerate(qty_cells):
+        eligible = [
+            d for d in desc_cells
+            if abs(qty.cy - d.cy) <= band and qty.cx > d.cx
+        ]
+        if not eligible:
+            continue
+        owner = min(
+            eligible,
+            key=lambda d: (
+                abs(qty.cy - d.cy),
+                _nearest_unit_dy(d),
+                qty.cx - d.cx,
+                d.cy,
+                desc_index[id(d)],
+            ),
+        )
+        qty_owner[qi] = desc_index[id(owner)]
+
+    # Emit rows in deterministic top-to-bottom order of the owning DESC, then
+    # by qty index for stability when one desc owns multiple qtys.
+    for idx, desc_idx in sorted(
+        qty_owner.items(), key=lambda kv: (desc_cells[kv[1]].cy, kv[0])
+    ):
+        desc = desc_cells[desc_idx]
+        qty = qty_cells[idx]
 
         # Resolve unit. Preferred column order is DESC | QTY | UNIT, so the
         # unit cell should be in the same row band AND right of the qty column.
@@ -383,6 +444,14 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
         except InvalidOperation:
             logger.debug("box_row_parser: invalid qty '%s' — skipping", qty_str)
             continue
+
+        # A2 confidence-gate (round-2): a quantity OUTSIDE the validated-corpus
+        # profile (bare-integer-promoted, or decimal with integer-part >=4
+        # digits) is EXTRACTED but MUST NOT be emitted confident — it is off the
+        # TN-only validated corpus and/or not column-anchored yet (deferred to
+        # PR#2). Flag it for human review; never silently trust it.
+        if not _is_in_confident_profile(qty.text):
+            requires_review = True
 
         # Apply confidence threshold from EXT-004 (retained for all engines).
         # Use the minimum of desc and qty confidences for the row.

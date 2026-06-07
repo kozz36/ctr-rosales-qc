@@ -79,6 +79,65 @@ def _make_empty_engine() -> object:
     return _make_engine([], [], [])
 
 
+class _NdarrayLikeBoxes:
+    """Faithful stub of RapidOCROutput.boxes (np.ndarray of shape (N,4,2)).
+
+    Reproduces the exact runtime contract of a real ``numpy.ndarray`` with
+    more than one element WITHOUT requiring numpy installed:
+
+    - ``__bool__`` RAISES ``ValueError`` (numpy's "truth value of an array with
+      more than one element is ambiguous") — this is what makes the legacy
+      ``not result.boxes`` guard crash on every real multi-box page.
+    - ``__len__`` / ``__iter__`` work over the N 4-point polygon rows, so a
+      None/len()==0 guard and ``zip`` iteration both behave like the real array.
+    """
+
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+
+    def __bool__(self) -> bool:  # pragma: no cover - exercised via guard
+        raise ValueError(
+            "The truth value of an array with more than one element is ambiguous. "
+            "Use a.any() or a.all()"
+        )
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        return iter(self._rows)
+
+
+def _make_ndarray_like_engine(
+    desc: str = "BARRA CORRUGADA 3/8",
+    qty: str = "0.136",
+    unit: str = "TN",
+    conf: float = 0.92,
+    y_base: float = 150.0,
+) -> object:
+    """Engine whose result.boxes mimics a real numpy ndarray (truthiness raises).
+
+    txts/scores are TUPLES (the real RapidOCROutput types), not lists.
+    """
+    def _box(cx: float, cy: float) -> list[list[float]]:
+        return [
+            [cx - 5, cy - 5],
+            [cx + 5, cy - 5],
+            [cx + 5, cy + 5],
+            [cx - 5, cy + 5],
+        ]
+
+    rows = [_box(100, y_base), _box(250, y_base), _box(320, y_base)]
+    result = MagicMock()
+    result.boxes = _NdarrayLikeBoxes(rows)
+    result.txts = (desc, qty, unit)
+    result.scores = (conf, conf, conf)
+
+    engine = MagicMock()
+    engine.return_value = result
+    return engine
+
+
 def _dummy_rotate(image: bytes, angle: int) -> object:
     """No-op rotate_fn injected in tests — returns a sentinel object.
 
@@ -279,3 +338,90 @@ class TestRapidOCRAdapterOrientation:
             "Retry must pick the rotation with the most rows (at least 1)"
         )
         assert engine.call_count > 1, "Retry must have been triggered (>1 call)"
+
+
+# ---------------------------------------------------------------------------
+# Tests — REAL RapidOCROutput shape (C1: ndarray boxes, tuple txts/scores)
+# ---------------------------------------------------------------------------
+
+
+class TestRapidOCRAdapterRealOutputShape:
+    """C1 regression: the real ``RapidOCROutput.boxes`` is an ``np.ndarray``
+    of shape ``(N,4,2)`` (NOT a Python list), and ``txts``/``scores`` are
+    tuples.  ``not result.boxes`` raises ``ValueError`` on a multi-box ndarray,
+    which the blanket ``except`` swallowed → the adapter silently returned []
+    on EVERY real guía page (the exact #40 quantity-accuracy failure).
+    """
+
+    def test_ndarray_like_boxes_do_not_silently_drop_rows(self) -> None:
+        """RED-then-green: ndarray-truthiness boxes must yield real rows, not [].
+
+        The faithful stub's ``__bool__`` raises ValueError exactly like a real
+        multi-element ndarray.  Against the legacy ``if not result.boxes`` guard
+        this raises (caught by extract_printed_table → []), so the assertion
+        ``lines`` is empty → FAIL.  After the explicit None/len() guard +
+        numpy-agnostic centroid, the adapter parses the row → PASS.
+        """
+        from reconciliation.adapters.ocr.rapid_table import RapidOCRAdapter
+
+        engine = _make_ndarray_like_engine()
+        adapter = RapidOCRAdapter(_engine=engine, _rotate_fn=_dummy_rotate)
+        lines = adapter.extract_printed_table(b"\x89PNG")
+
+        assert lines, (
+            "ndarray-shaped boxes must parse to real MaterialLines, not [] — "
+            "the legacy `not result.boxes` guard crashed on ndarray truthiness "
+            "and silently dropped every real guía page (C1)."
+        )
+        assert str(lines[0].cantidad) == "0.136"
+        assert lines[0].unidad == "TN"
+
+    def test_numpy_real_ndarray_boxes(self) -> None:
+        """Same contract using a REAL numpy ndarray when numpy is importable.
+
+        Guarded by importorskip so the suite still runs with numpy uninstalled
+        (the adapter purity contract).  Proves the centroid math and guard work
+        on a genuine ``(N,4,2)`` float array, not just the stub.
+        """
+        np = pytest.importorskip("numpy")
+        from reconciliation.adapters.ocr.rapid_table import RapidOCRAdapter
+
+        def _box(cx: float, cy: float) -> list[list[float]]:
+            return [
+                [cx - 5, cy - 5],
+                [cx + 5, cy - 5],
+                [cx + 5, cy + 5],
+                [cx - 5, cy + 5],
+            ]
+
+        boxes = np.array(
+            [_box(100, 150), _box(250, 150), _box(320, 150)], dtype="float64"
+        )
+        assert boxes.shape == (3, 4, 2)
+        result = MagicMock()
+        result.boxes = boxes
+        result.txts = ("BARRA CORRUGADA 3/8", "0.136", "TN")
+        result.scores = (0.92, 0.92, 0.92)
+        engine = MagicMock(return_value=result)
+
+        adapter = RapidOCRAdapter(_engine=engine, _rotate_fn=_dummy_rotate)
+        lines = adapter.extract_printed_table(b"\x89PNG")
+
+        assert lines, "Real (N,4,2) ndarray boxes must parse to MaterialLines"
+        assert str(lines[0].cantidad) == "0.136"
+        assert lines[0].unidad == "TN"
+
+    def test_none_txts_with_present_boxes_is_defensive(self) -> None:
+        """Defensive: boxes present but txts/scores None → graceful [], no crash."""
+        from reconciliation.adapters.ocr.rapid_table import RapidOCRAdapter
+
+        rows = [[[95.0, 145.0], [105.0, 145.0], [105.0, 155.0], [95.0, 155.0]]]
+        result = MagicMock()
+        result.boxes = _NdarrayLikeBoxes(rows)
+        result.txts = None
+        result.scores = None
+        engine = MagicMock(return_value=result)
+
+        adapter = RapidOCRAdapter(_engine=engine, _rotate_fn=_dummy_rotate)
+        lines = adapter.extract_printed_table(b"\x89PNG")
+        assert lines == [], "None txts/scores must degrade to [] without raising"

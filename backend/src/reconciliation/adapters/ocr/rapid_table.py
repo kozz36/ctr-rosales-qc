@@ -41,8 +41,11 @@ logged; ``extract_printed_table`` returns ``[]`` (never raises).  Empty result
     })
     result = engine(img_array)   # result.boxes / result.txts / result.scores
 
-``result.boxes`` is a list of 4-point polygon arrays (shape (4, 2), float64).
-``result.txts`` and ``result.scores`` are parallel lists of str and float.
+``result.boxes`` is a ``np.ndarray`` of shape ``(N, 4, 2)`` (float64) — N
+4-point polygons (NOT a Python list).  ``result.txts`` is a ``tuple[str]`` and
+``result.scores`` is a ``tuple[float]`` (parallel, length N).  All three are
+``Optional`` (``None`` when the engine recognises nothing).  Confirmed against
+rapidocr 3.8.x ``rapidocr/utils/output.py::RapidOCROutput``.
 """
 
 from __future__ import annotations
@@ -184,19 +187,30 @@ class RapidOCRAdapter:
     def _run_engine(self, img_array: object) -> list:
         """Run the RapidOCR engine on *img_array* and return a list of Cell objects.
 
-        Converts ``result.boxes`` (4-point polygon arrays) + ``result.txts`` +
-        ``result.scores`` into the :class:`~box_row_parser.Cell` shape the
-        parser expects.
+        Converts ``result.boxes`` (``np.ndarray`` of shape ``(N, 4, 2)``) +
+        ``result.txts`` (``tuple[str]``) + ``result.scores`` (``tuple[float]``)
+        into the :class:`~box_row_parser.Cell` shape the parser expects.
 
         The centroid (cx, cy) of each polygon is derived from the mean of the
         4 corner points (real polygon centroid, NOT a bounding-box midpoint).
+
+        **numpy-agnostic** (C1): ``result.boxes`` is a numpy array at runtime,
+        so a truthiness test (``not result.boxes``) raises ``ValueError`` on a
+        multi-element array. The guard uses an explicit ``None`` / ``len() == 0``
+        check, and the centroid is computed with PLAIN PYTHON over the 4 points
+        so it works whether each box/point is a numpy array OR a list — numpy is
+        NEVER imported here (it stays lazy/optional, only in :meth:`_rotate`).
         """
         from reconciliation.adapters.ocr.box_row_parser import Cell  # noqa: PLC0415
 
         engine = self._get_engine()
         result = engine(img_array)
 
-        if result is None or not result.boxes:
+        if result is None or result.boxes is None or len(result.boxes) == 0:
+            return []
+        # txts/scores are Optional and parallel to boxes; if either is absent
+        # while boxes are present there is no recognised text to pair → degrade.
+        if result.txts is None or result.scores is None:
             return []
 
         cells: list[Cell] = []

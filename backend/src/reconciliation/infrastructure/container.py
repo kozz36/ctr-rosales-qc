@@ -388,6 +388,24 @@ def build_pipeline(
             "build_pipeline: OCR DISABLED (config.ocr.enabled=False) — "
             "NullOcrExtractor injected; paddle_table.py NOT imported"
         )
+    elif getattr(config.ocr, "engine", "paddle") != "paddle":
+        # Non-paddle engine (e.g. rapidocr): bypass CompositeExtractionAdapter.__init__
+        # which unconditionally imports paddle_table.py.  Use the same __new__ bypass
+        # as the enabled=False path (Design §8 — container.py wiring).
+        from reconciliation.adapters.ocr.factory import build_ocr_extractor  # noqa: PLC0415
+        from reconciliation.adapters.pdf.digital_text_extractor import (  # noqa: PLC0415
+            DigitalTextExtractionAdapter,
+        )
+
+        extractor = CompositeExtractionAdapter.__new__(CompositeExtractionAdapter)
+        extractor._declared_adapter = DigitalTextExtractionAdapter()  # type: ignore[attr-defined]
+        extractor._ocr_adapter = build_ocr_extractor(config.ocr)  # type: ignore[attr-defined]
+        logger.info(
+            "build_pipeline: OCR engine=%r — %s injected via factory; "
+            "paddle_table.py NOT imported",
+            config.ocr.engine,
+            type(extractor._ocr_adapter).__name__,
+        )
     else:
         extractor = CompositeExtractionAdapter()
 
@@ -437,15 +455,27 @@ def build_pipeline(
         vision = build_vision_adapter(config)
 
     # --- Deskew adapter (lazy PaddleOCR; None when ML deps absent at import time) ---
-    # When ocr.enabled=False, skip DeskewAdapter entirely — no paddle import whatsoever.
+    # When ocr.enabled=False OR engine='rapidocr', skip DeskewAdapter entirely:
+    #   - enabled=False: no paddle import whatsoever.
+    #   - engine='rapidocr': RapidOCRAdapter owns orientation via self-scoring rotation
+    #     (EXT-030, Design §6); the paddle DeskewAdapter is not needed and must not
+    #     be imported (avoids paddle dependency on the rapidocr deploy path).
     # Classification falls back to QR Condition-A / heuristic Condition-B (primary path);
     # title-OCR Condition-C is the only capability lost.
-    if not config.ocr.enabled:
+    _ocr_engine = getattr(config.ocr, "engine", "paddle")
+    if not config.ocr.enabled or _ocr_engine != "paddle":
         deskew: object | None = None
-        logger.info(
-            "build_pipeline: deskew DISABLED (config.ocr.enabled=False) — "
-            "DeskewAdapter skipped; classify uses QR/heuristic conditions only"
-        )
+        if not config.ocr.enabled:
+            logger.info(
+                "build_pipeline: deskew DISABLED (config.ocr.enabled=False) — "
+                "DeskewAdapter skipped; classify uses QR/heuristic conditions only"
+            )
+        else:
+            logger.info(
+                "build_pipeline: deskew DISABLED (engine=%r) — "
+                "RapidOCRAdapter owns orientation; DeskewAdapter NOT imported",
+                _ocr_engine,
+            )
     else:
         # The DeskewAdapter itself loads PaddleOCR lazily on first call; it won't
         # crash here.  We pass it to the pipeline so H-5 wiring exists; if PaddleOCR

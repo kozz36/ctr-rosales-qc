@@ -214,28 +214,43 @@ class SunatConfig(BaseSettings):
 
 
 class OcrConfig(BaseSettings):
-    """PaddleOCR on/off switch (local-first / broken-paddle recovery).
+    """OCR engine selection and on/off switch.
 
     OFF state (``enabled=False``): the pipeline injects a NullOcrExtractor
     whose ``extract_printed_table`` always returns ``[]`` WITHOUT importing or
-    instantiating PaddleOCR.  Deskew is also disabled (``deskew=None``).
+    instantiating any OCR engine.  Deskew is also disabled (``deskew=None``).
     Classification falls back to the primary QR Condition-A / heuristic
     Condition-B path — title-OCR (Condition C) is the only loss.
 
-    ON state (``enabled=True``, default): byte-for-byte identical to the
-    previous behaviour.  PaddleOCR is loaded lazily by PrintedTableAdapter and
-    DeskewAdapter on first call.
+    ON state (``enabled=True``, default): loads the selected engine lazily on
+    first call.
 
-    Intended use-case: machines where PaddleOCR crashes on load (oneDNN / PIR
-    initialisation failure) while SUNAT supplies authoritative quantities via
+    ``engine`` selects the concrete OCR backend:
+
+    - ``"paddle"`` (default): existing PaddleOCR behaviour — backward-compatible.
+    - ``"rapidocr"``: RapidOCR PP-OCRv5-server (ONNX, no paddle runtime
+      required).  Selected by ``RECONCILIATION__OCR__ENGINE=rapidocr``.
+      Requires the ``[ocr]`` optional-dependency group (PR#3).
+
+    When ``enabled=False``, ``engine`` is ignored — NullOcrExtractor is always
+    injected regardless.
+
+    Intended use-case: re-enabling deterministic OCR (SDD#1) without the paddle
+    runtime on the deploy image.  Also: machines where PaddleOCR crashes on load
+    (oneDNN / PIR init failure) while SUNAT supplies authoritative quantities via
     ``sunat.enabled=True``.
 
-    Env override: ``RECONCILIATION__OCR__ENABLED=false``.
+    Env overrides:
+        RECONCILIATION__OCR__ENABLED=false
+        RECONCILIATION__OCR__ENGINE=rapidocr
     """
 
     model_config = SettingsConfigDict(extra="allow")
 
     enabled: bool = True
+    # EXT-027: engine selector.  Default "paddle" preserves existing behaviour.
+    # Env: RECONCILIATION__OCR__ENGINE=rapidocr
+    engine: Literal["paddle", "rapidocr"] = "paddle"
 
 
 class DeskewConfig(BaseSettings):

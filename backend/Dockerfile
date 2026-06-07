@@ -54,8 +54,15 @@ EOF
 # ─── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
-# Install system runtime dependency for pyzbar (libzbar0)
-# zxing-cpp, Pillow, and numpy are pure Python wheels — no extra apt deps needed.
+# Install system runtime dependency for pyzbar (libzbar0).
+# CRITICAL-B (JD): NO libGL/libglib needed. rapidocr 3.8.1 transitively pins the
+# FULL opencv-python (links libGL.so.1 / libglib-2.0.so.0), but the
+# `[tool.uv] override-dependencies` in pyproject.toml forces that requirement to a
+# never-resolving marker, so ONLY opencv-python-headless is installed — and
+# headless links NO libGL/libglib (verified via `ldd cv2.abi3.so`). This keeps a
+# truly libGL-free air-gap image. The build-time real-inference assertion below
+# is the guard: if a future change ever lets the FULL opencv back into the
+# closure, the build FAILS here instead of production.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libzbar0 && \
     rm -rf /var/lib/apt/lists/*
@@ -77,7 +84,25 @@ RUN /app/.venv/bin/python -c "import pyzbar.pyzbar; import zxingcpp; print('iden
 
 # rapidocr + offline model availability assertion — build FAILS if rapidocr absent
 # or if the warm-up models are not bundled (air-gap guarantee).
+#
+# CRITICAL-B (JD): the prior assertion only CONSTRUCTED RapidOCR (no inference),
+# so it did NOT exercise the cv2 native-lib path. The `cv2` namespace is provided
+# by opencv-python-headless (the uv override removes the FULL opencv that rapidocr
+# transitively pins). This assertion now (1) explicitly imports cv2 (exercises
+# the native-lib load in THIS slim stage — proves headless needs no libGL/libglib),
+# (2) runs a real cv2 op, and (3) runs ONE real OCR inference on a tiny synthetic
+# image — so if the FULL opencv ever sneaks back into the closure (it WOULD need
+# libGL absent from this slim runtime), the build FAILS HERE instead of in prod.
 RUN /app/.venv/bin/python - <<'EOF'
+import numpy as np
+import cv2  # CRITICAL-B: exercise the native-lib load in the slim runtime
+print("cv2 import OK:", cv2.__file__, cv2.__version__)
+# Real cv2 op — fails fast if the native libs (libGL/libglib) are missing,
+# which would mean the FULL opencv leaked back past the uv override.
+img = (np.random.rand(64, 200, 3) * 255).astype("uint8")
+_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+print("cv2 cvtColor OK:", _gray.shape)
+
 import rapidocr
 from rapidocr import RapidOCR, OCRVersion, ModelType
 # Construct engine offline to confirm models are present in the venv cache
@@ -87,7 +112,10 @@ engine = RapidOCR(params={
     "Rec.ocr_version": OCRVersion.PPOCRV5,
     "Rec.model_type": ModelType.SERVER,
 })
-print("rapidocr + PP-OCRv5-server models OK — CONT-S03b PASS")
+# Run ONE real inference (tiny synthetic page) — exercises the full cv2 + ONNX
+# path, so a native-lib gap surfaces at BUILD time, not at the first prod OCR.
+_ = engine(img)
+print("rapidocr + PP-OCRv5-server REAL inference OK — CONT-S03b PASS (cv2 native libs present)")
 EOF
 
 # paddle absence assertion — build FAILS if paddle is somehow present
@@ -121,7 +149,8 @@ CMD ["uvicorn", "reconciliation.infrastructure.api.main:app", "--host", "0.0.0.0
 # Build:  docker build --target test -t ctr-backend:test ./backend
 FROM builder AS test
 
-# pyzbar needs libzbar0 at runtime (same as the runtime stage)
+# pyzbar needs libzbar0. NO libGL/libglib: the uv override keeps only the
+# headless opencv (no libGL) — same CRITICAL-B air-gap guarantee as runtime.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libzbar0 && \
     rm -rf /var/lib/apt/lists/*

@@ -331,16 +331,29 @@ class RapidOCRAdapter:
         # Step 4-5: retry all four cardinal angles, pick the most-confident.
         # Seed the best with the default -90° attempt so a fully-flagged but
         # parseable default read is not discarded when no rotation is confident.
+        #
+        # Ranking (deterministic, -90° seed first):
+        #   1. PRIMARY: most CONFIDENT rows (requires_review is False).
+        #   2. SECONDARY tie-break (SUGGESTION-2): when confident counts tie —
+        #      including the degenerate all-flagged case where every angle scores
+        #      0 confident — prefer the rotation with the most RAW parsed rows
+        #      (len(rows)). Without this, the strict ``>`` keeps the -90° seed even
+        #      when another angle parsed strictly MORE flagged rows → partial
+        #      under-extraction in the all-flagged case (never confident-wrong).
+        #   3. True tie on both keys → stable by _RETRY_ANGLES order (seed wins).
         best_rows: list[MaterialLine] = rows
         best_count = self._confident_row_count(rows)
+        best_raw = len(rows)
 
         for angle in _RETRY_ANGLES:
             img_array = self._to_array(image, angle)
             cells = self._run_engine(img_array)
             rows = parse(cells, self._dpi)
             count = self._confident_row_count(rows)
-            if count > best_count:
+            raw = len(rows)
+            if count > best_count or (count == best_count and raw > best_raw):
                 best_count = count
+                best_raw = raw
                 best_rows = rows
 
         return best_rows

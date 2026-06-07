@@ -564,3 +564,77 @@ class TestRapidOCRAdapterOrientationOracleConfidence:
             "The selected rotation must be the all-confident one, not the "
             "rotation with more review-flagged rows (W1)."
         )
+
+    def test_all_flagged_picks_most_raw_rows_as_tiebreak(self) -> None:
+        """SUGGESTION-2: when EVERY rotation yields 0 confident rows, the oracle
+        secondary tie-break prefers the rotation with the MOST raw parsed rows.
+
+        Degenerate all-flagged case: the primary confident-count ranking ties at
+        zero across all angles, so the strict ``count > best_count`` keeps the
+        -90° seed even if another angle parsed strictly MORE (flagged) rows →
+        partial under-extraction.  The secondary tie-break (most ``len(rows)``)
+        must select the richer flagged read.
+
+        Sequence (all relaxed/flagged — unit LEFT of qty → requires_review=True):
+          - call 1 = default -90° : ONE flagged row  (seed).
+          - angle 0   : empty.
+          - angle 90  : THREE flagged rows  (most raw rows → must win).
+          - angle 180 : empty.
+          - angle 270 : empty.
+
+        Legacy strict ``>`` keeps the 1-row -90° seed.  The tie-break must
+        return the 3-row angle-90 read, deterministically.
+        """
+        from reconciliation.adapters.ocr.rapid_table import RapidOCRAdapter
+
+        def _flagged_rows(n: int, txts_qty: list[tuple[str, str, str]]):
+            """Build n relaxed (unit-left-of-qty → flagged) rows."""
+            boxes: list = []
+            txts: list = []
+            for i, (desc, qty, unit) in enumerate(txts_qty[:n]):
+                y = 150.0 + i * 100.0
+                # desc(left) | qty(right) | unit(middle, left of qty) → relaxed → flagged
+                boxes += [_box(100, y), _box(320, y), _box(250, y)]
+                txts += [desc, qty, unit]
+            scores = tuple(0.92 for _ in txts)
+            return boxes, tuple(txts), scores
+
+        triples = [
+            ("BARRA CORRUGADA 3/8", "0.136", "TN"),
+            ("BARRA CORRUGADA 1/2", "0.250", "TN"),
+            ("BARRA CORRUGADA 5/8", "0.500", "TN"),
+        ]
+        seed_one = _flagged_rows(1, triples)
+        rich_three = _flagged_rows(3, triples)
+        empty = ([], (), ())
+
+        sequence = [
+            seed_one,    # -90° default → 1 flagged row (seed)
+            empty,       # angle 0
+            rich_three,  # angle 90 → 3 flagged rows (most raw → must win)
+            empty,       # angle 180
+            empty,       # angle 270
+        ]
+        idx = {"n": 0}
+
+        def _side_effect(_img):  # type: ignore[no-untyped-def]
+            boxes, txts, scores = sequence[idx["n"]]
+            idx["n"] += 1
+            result = MagicMock()
+            result.boxes = boxes
+            result.txts = txts
+            result.scores = scores
+            return result
+
+        engine = MagicMock(side_effect=_side_effect)
+        adapter = RapidOCRAdapter(_engine=engine, _rotate_fn=_dummy_rotate)
+        lines = adapter.extract_printed_table(b"\x89PNG")
+
+        assert len(lines) == 3, (
+            f"All-flagged tie-break must prefer the richest raw read (3 rows), "
+            f"not keep the 1-row -90° seed; got {len(lines)} rows."
+        )
+        assert all(line.requires_review for line in lines), (
+            "All rows are relaxed → every row must remain requires_review=True "
+            "(this is the degenerate all-flagged case)."
+        )

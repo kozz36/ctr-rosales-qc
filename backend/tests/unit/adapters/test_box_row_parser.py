@@ -881,15 +881,65 @@ class TestIntegerPromotionColumnGuard:
         assert rows[0].unidad == "RD"
 
 
-class TestNoiseFloorDrop:
-    """Rows with overall confidence below _MIN_EMIT_CONFIDENCE (0.65) are
-    dropped rather than emitted as requires_review garbage.
+class TestSemanticNoiseFilterNotConfidenceDrop:
+    """CRITICAL-A (dual-judge): a low-confidence REAL material row MUST be
+    emitted with requires_review=True — NEVER silently dropped on a confidence
+    number. Footer/stamp NOISE is excluded SEMANTICALLY (a denylist of
+    non-material GRE/Forma labels), not by a confidence floor.
 
-    Real-data source: page 156 "REVISADO POR + 4.8" footer pair had conf=0.584.
+    This INVERTS the prior `_MIN_EMIT_CONFIDENCE` noise-floor drop, which
+    silently dropped any row with row_conf < 0.65 — a never-silent-drop and
+    false-MATCH-hole violation (a dropped MISMATCH row becomes a confident
+    false MATCH with no review signal; defeats reconciliation-is-the-gate).
     """
 
-    def test_very_low_confidence_row_not_emitted(self) -> None:
-        # row_conf = min(desc.conf=0.60, qty.conf=0.55) = 0.55 < 0.65 floor
+    def test_low_confidence_real_material_row_emitted_with_review(self) -> None:
+        # CRITICAL-A test #1: a REAL material row at qty conf 0.60 (row_conf 0.60,
+        # below the old 0.65 floor) MUST now be EMITTED with requires_review=True.
+        # Previously returned [] (silent drop — the bug).
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=100, cy=150, conf=0.95),
+            _cell("0.408", cx=250, cy=152, conf=0.60),
+            _cell("TNE", cx=320, cy=150, conf=0.95),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.408")
+        assert rows[0].requires_review is True
+
+    def test_low_confidence_bare_integer_real_row_emitted_with_review(self) -> None:
+        # CRITICAL-A test #2: a bare-integer real row (`VARILLA` + `25` + `RD`)
+        # at conf 0.60 → emitted with requires_review=True (not dropped on the
+        # confidence number). Scoped to the CONFIDENCE path: the bare integer is
+        # already off-profile so requires_review=True via the A2 gate too; the
+        # point of THIS test is that the low confidence does NOT cause a drop.
+        cells = [
+            _cell("VARILLA LISA 10mm", cx=100, cy=150, conf=0.60),
+            _cell("25", cx=250, cy=152, conf=0.60),
+            _cell("RD", cx=320, cy=150, conf=0.95),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("25")
+        assert rows[0].unidad == "RD"
+        assert rows[0].requires_review is True
+
+    def test_footer_noise_revisado_por_excluded_semantically(self) -> None:
+        # CRITICAL-A test #3: a footer-noise row (`REVISADO POR` + `4.8`) is
+        # EXCLUDED as non-material via the SEMANTIC denylist — NOT via confidence.
+        # Even at HIGH confidence the footer label must never become a material
+        # row (proving the exclusion is semantic, not a confidence artifact).
+        cells = [
+            _cell("REVISADO POR", cx=726, cy=999, conf=0.95),
+            _cell("4.8", cx=1121, cy=981, conf=0.95),
+            _cell("TN", cx=1200, cy=990, conf=0.95),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []
+
+    def test_footer_noise_at_low_confidence_also_excluded(self) -> None:
+        # The original page-156 observation: "REVISADO POR + 4.8" at conf 0.584.
+        # Still excluded — but now by the denylist, not the (removed) floor.
         cells = [
             _cell("REVISADO POR", cx=726, cy=999, conf=0.60),
             _cell("4.8", cx=1121, cy=981, conf=0.55),
@@ -898,9 +948,56 @@ class TestNoiseFloorDrop:
         rows = parse_box_rows(cells, dpi=200)
         assert rows == []
 
+    def test_recibido_conforme_footer_excluded(self) -> None:
+        # Another real GRE footer label — accent/case-insensitive substring match.
+        cells = [
+            _cell("Recibido Conforme", cx=80, cy=900, conf=0.90),
+            _cell("0.500", cx=300, cy=900, conf=0.90),
+            _cell("TN", cx=380, cy=900, conf=0.90),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []
+
+    def test_observaciones_footer_excluded(self) -> None:
+        # `OBSERVACIONES` is a GRE section label, not a material descriptor.
+        cells = [
+            _cell("OBSERVACIONES", cx=80, cy=900, conf=0.90),
+            _cell("0.500", cx=300, cy=900, conf=0.90),
+            _cell("TN", cx=380, cy=900, conf=0.90),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []
+
+    def test_garbled_stamp_noise_below_conf_no_anchor_excluded(self) -> None:
+        # CRITICAL-A real-data (page 156): the reception-stamp paragraph OCRs to
+        # gibberish (`acacpen enfuin aeococl vignte` @0.573) that no CLEAN
+        # denylist token survives, paired with a stray `4.8`. Secondary signal:
+        # BELOW _NOISE_CONFIDENCE (0.65) AND NO material anchor → excluded.
+        cells = [
+            _cell("acacpen enfuin aeococl vignte", cx=80, cy=999, conf=0.573),
+            _cell("4.8", cx=1121, cy=999, conf=0.90),
+            _cell("TN", cx=1200, cy=999, conf=0.90),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []
+
+    def test_low_conf_garbled_text_WITH_material_anchor_still_emitted(self) -> None:
+        # The secondary signal MUST NOT drop a real material row: a low-confidence
+        # DESC that carries a material anchor (BARRA) is emitted with review even
+        # if the rest of the OCR text is garbled. Never-silent-drop holds.
+        cells = [
+            _cell("BARRA a615 g6d garbledtail", cx=80, cy=999, conf=0.55),
+            _cell("0.408", cx=1121, cy=999, conf=0.55),
+            _cell("TN", cx=1200, cy=999, conf=0.55),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.408")
+        assert rows[0].requires_review is True
+
     def test_border_confidence_row_above_floor_emitted_with_review(self) -> None:
-        # row_conf = min(0.70, 0.68) = 0.68 ≥ 0.65 floor but < 0.85 threshold
-        # → emitted with requires_review=True.
+        # row_conf = min(0.70, 0.68) = 0.68 < 0.85 threshold → emitted with
+        # requires_review=True (unchanged behavior).
         cells = [
             _cell("BARRA A615 G60 5/8\"", cx=100, cy=150, conf=0.70),
             _cell("0.191", cx=250, cy=152, conf=0.68),

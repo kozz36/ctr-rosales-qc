@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Final
@@ -77,14 +78,90 @@ logger = logging.getLogger(__name__)
 
 _CONFIDENCE_THRESHOLD: Final[float] = 0.85
 
-# Minimum overall confidence to EMIT a row at all. Below this the row is
-# almost certainly a noise/footer false positive and is dropped with a debug
-# log rather than emitted as requires_review=True. This threshold was set from
-# real-data observation: page 156 "REVISADO POR + 4.8" footer noise pair had
-# row_conf=0.584 — well below any real material row on the same page (0.701+).
-# Any row_conf in [0.65, 0.85) is uncertain but plausibly material → emit with
-# requires_review=True. Below 0.65 → noise floor → drop.
-_MIN_EMIT_CONFIDENCE: Final[float] = 0.65
+# CRITICAL-A (dual-judge JD): SEMANTIC noise filter replaces the prior pure
+# confidence floor (`_MIN_EMIT_CONFIDENCE = 0.65`). That floor SILENTLY DROPPED
+# any row whose row_conf fell below 0.65 — violating the never-silent-drop
+# invariant (this file's own principle, see the no-unit path below: "emit with
+# requires_review=True rather than silently dropping it") AND opening a
+# false-MATCH hole: a dropped row that would have made a group MISMATCH instead
+# yields a confident false MATCH with no review signal, defeating
+# "reconciliation is the validation gate".
+#
+# The floor was incidentally suppressing FOOTER/STAMP NOISE (e.g. page-156
+# `REVISADO POR` conf 0.584 paired with a stray number). `REVISADO POR` has a
+# >=3-letter run so it passes the generalized DESC matcher and would otherwise
+# become a SPURIOUS material row that breaks the EXACT-quantity reconciliation
+# gate. The correct fix is to exclude such cells SEMANTICALLY (they are not
+# materials), NOT by a confidence number:
+#   - DESC text matching this denylist → EXCLUDED as non-material noise (this is
+#     NOT a silent-drop of a real material row — a footer label is not a
+#     material; it is logged when excluded).
+#   - A NON-denylisted (real-looking material) DESC with LOW confidence → EMITTED
+#     with requires_review=True (never dropped on a confidence number).
+#
+# Tokens are NON-MATERIAL footer/header/stamp labels that appear as DESC text on
+# CTR Forma / SUNAT GRE sheets. Matched case-insensitively, accent-insensitively,
+# as a SUBSTRING of the normalized DESC text. Real-corpus-confirmed: `REVISADO
+# POR` (page 156 footer) and `CREATED BY ... AUTODESK FORMA` (page-148/156 Forma
+# footer, see TestIntegerPromotionColumnGuard). The remainder are standard GRE
+# section/stamp labels from the same Forma/GRE template family.
+_DESC_NOISE_DENYLIST: Final[tuple[str, ...]] = (
+    "REVISADO POR",
+    "RECIBIDO CONFORME",
+    "CONFORME",
+    "OBSERVACIONES",
+    "OBSERVACION",
+    "CREATED BY",
+    "AUTODESK",
+    "FORMA",
+    "DESTINATARIO",
+    "SENOR(ES)",
+    "SENORES",
+    "FECHA",
+    "GUIA DE REMISION",
+    "REMISION",
+    "TRANSPORTISTA",
+    "CONDUCTOR",
+    "PLACA",
+    "PUNTO DE PARTIDA",
+    "PUNTO DE LLEGADA",
+    "MOTIVO",
+)
+
+# Secondary noise signal — GARBLED footer/stamp text the clean-substring denylist
+# CANNOT catch (CRITICAL-A real-data, page 156): the reception-stamp paragraph
+# OCRs to gibberish like `acacpen enfuin aeococl vignte` (no clean denylist
+# token survives the garble) and paired with a stray `4.8` it would leak into
+# the EXACT-quantity reconciliation multiset. The former `_MIN_EMIT_CONFIDENCE`
+# floor is RETAINED here ONLY as a SECONDARY SIGNAL (never a blanket drop): a
+# DESC is treated as noise iff it is BOTH (a) below this confidence AND (b)
+# carries NO recognized material anchor. A real-looking material row — ANY DESC
+# with a material/spec anchor, OR any DESC at/above this confidence — is NEVER
+# excluded here; it emits with requires_review=True. This preserves the
+# never-silent-drop invariant for real material rows while keeping the
+# reconciliation gate EXACT.
+# PR#4: real `DESC|UNIDAD|CANTIDAD` column-anchoring will localize the table
+# region and make this stamp-garble heuristic redundant (the stamp paragraph is
+# outside the material-table column band).
+_NOISE_CONFIDENCE: Final[float] = 0.65
+
+# Material-family / spec ANCHORS — a positive signal that a DESC is a real
+# material descriptor (NOT a footer/stamp). This is deliberately a SMALL set of
+# family roots + the rebar spec marker, accent/case-insensitive substring match.
+# It is used ONLY as the (b) clause of the secondary noise signal above — it does
+# NOT replace the generalized `_is_desc` matcher and is NEVER an allowlist gate
+# on its own (a high-confidence non-rebar material with no anchor still emits).
+_MATERIAL_ANCHORS: Final[tuple[str, ...]] = (
+    "BARRA",
+    "FIERRO",
+    "ALAMBRE",
+    "ACERO",
+    "VARILLA",
+    "CLAVO",
+    "MALLA",
+    "A615",
+    "A706",
+)
 
 # QTY (decimal shape): one-or-more integer digits, a decimal separator (. or ,),
 # one-or-more fractional digits — NO artificial caps. This admits 2.5 (one
@@ -229,6 +306,43 @@ def _is_desc(text: str) -> bool:
     return bool(_DESC_ALPHA_RE.search(text))
 
 
+def _strip_accents(text: str) -> str:
+    """Return *text* with diacritics removed (NFD decomposition + drop marks).
+
+    Pure-stdlib (``unicodedata``) — keeps the parser SDK-free. Used so the
+    semantic noise denylist matches accent variants (``SEÑORES`` ≈ ``SENORES``,
+    ``REMISIÓN`` ≈ ``REMISION``) without an accented duplicate per entry.
+    """
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", text)
+        if unicodedata.category(ch) != "Mn"
+    )
+
+
+def _is_desc_noise(text: str) -> bool:
+    """Return True iff *text* is a non-material footer/header/stamp label.
+
+    CRITICAL-A semantic noise filter: matches a denylisted GRE/Forma label
+    case-insensitively, accent-insensitively, as a SUBSTRING of the DESC text.
+    A match means the cell is NOT a material descriptor → the row is excluded as
+    noise (NOT a silent-drop of a real material row).
+    """
+    normalized = _strip_accents(text).upper()
+    return any(token in normalized for token in _DESC_NOISE_DENYLIST)
+
+
+def _has_material_anchor(text: str) -> bool:
+    """Return True iff *text* contains a recognized material-family/spec anchor.
+
+    Positive material signal (accent/case-insensitive substring). Used ONLY to
+    distinguish a real low-confidence material row from garbled footer/stamp
+    OCR text in the secondary noise signal — never as a standalone allowlist
+    gate (a high-confidence non-anchored material still emits).
+    """
+    normalized = _strip_accents(text).upper()
+    return any(anchor in normalized for anchor in _MATERIAL_ANCHORS)
+
+
 def _normalise_unit(raw: str) -> str | None:
     """Normalise a raw unit token to the canonical domain literal.
 
@@ -304,6 +418,20 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
         elif _is_qty_integer(text):
             int_qty_cells.append(cell)  # provisional; needs adjacent unit
         elif _is_desc(text):
+            # CRITICAL-A semantic noise filter: a DESC cell whose text is a
+            # non-material footer/header/stamp label (REVISADO POR, CREATED BY
+            # ... AUTODESK FORMA, OBSERVACIONES, ...) is EXCLUDED here so it can
+            # never pair with a stray number and become a spurious material row.
+            # This is NOT a silent-drop of a real material row — a footer label
+            # is not a material. It is logged at a visible (info) level.
+            if _is_desc_noise(text):
+                logger.info(
+                    "box_row_parser: excluded non-material noise label '%s' "
+                    "(semantic denylist) at cy=%.1f",
+                    text,
+                    cell.cy,
+                )
+                continue
             desc_cells.append(cell)
         # OTHER cells (short alpha-less tokens) are discarded.
 
@@ -494,20 +622,32 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
         if row_conf < _CONFIDENCE_THRESHOLD:
             requires_review = True
 
-        # Noise floor: below _MIN_EMIT_CONFIDENCE the row is almost certainly a
-        # footer/signature noise pair (e.g. "REVISADO POR + 4.8" at conf=0.584).
-        # Drop it with a debug log rather than emitting requires_review garbage —
-        # the reconciliation gate never sees these phantom rows.
-        if row_conf < _MIN_EMIT_CONFIDENCE:
-            logger.debug(
-                "box_row_parser: row conf %.3f below emit floor (%.2f) — "
-                "dropping noise pair: desc='%s' qty='%s'",
+        # CRITICAL-A (dual-judge JD): the prior `_MIN_EMIT_CONFIDENCE` pure
+        # confidence-floor DROP is REMOVED as a blanket drop. A real-looking
+        # material row is NEVER dropped on a confidence number — a LOW confidence
+        # only forces requires_review=True (via the threshold gate above). Clean
+        # footer/stamp NOISE is excluded SEMANTICALLY at DESC classification
+        # (`_is_desc_noise`). This restores the never-silent-drop invariant and
+        # closes the false-MATCH hole (a dropped MISMATCH row no longer becomes a
+        # confident false MATCH with no review signal).
+        #
+        # SECONDARY noise signal (garbled stamp text the clean denylist cannot
+        # catch — page-156 real data): a DESC that is BOTH below _NOISE_CONFIDENCE
+        # AND carries NO material anchor is OCR-garbled footer/stamp gibberish
+        # (e.g. `acacpen enfuin aeococl vignte` @0.573) — exclude it as noise.
+        # A real material row (any DESC WITH an anchor, or any DESC at/above
+        # _NOISE_CONFIDENCE) is NEVER excluded here — it emits requires_review.
+        if row_conf < _NOISE_CONFIDENCE and not _has_material_anchor(desc.text):
+            logger.info(
+                "box_row_parser: excluded low-confidence non-material noise "
+                "(conf %.3f, no material anchor): desc='%s' qty='%s'",
                 row_conf,
-                _MIN_EMIT_CONFIDENCE,
                 desc.text.strip(),
                 qty.text.strip(),
             )
             continue
+        # PR#4: real `DESC|UNIDAD|CANTIDAD` column-anchoring will localize the
+        # material-table region and make this stamp-garble heuristic redundant.
 
         desc_raw = desc.text.strip()
         lines.append(

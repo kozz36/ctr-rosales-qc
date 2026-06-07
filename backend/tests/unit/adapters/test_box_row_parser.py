@@ -264,6 +264,19 @@ class TestIncidentalNumbersNotQty:
         assert len(rows) == 1
         assert rows[0].cantidad == Decimal("0.191")
 
+    def test_compound_diameter_fraction_not_qty(self) -> None:
+        """Named contract case (design §5): a compound diameter like '1 3/8\"'
+        (whole number + fraction) must NEVER be classified as a quantity."""
+        cells = [
+            _cell("1 3/8\"", cx=60, cy=150),       # compound diameter — not a qty
+            _cell("BARRA A615 G60 1 3/8\"", cx=150, cy=150),  # description
+            _cell("0.041", cx=300, cy=150),         # the real qty (has fraction)
+            _cell("TN", cx=370, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.041")
+
 
 # ---------------------------------------------------------------------------
 # 1.1.7  Generalized DESC matcher — EXT-029/S029e, Design §5

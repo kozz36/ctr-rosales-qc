@@ -382,8 +382,33 @@ class TestPureImportNoSdk:
         assert "paddleocr" not in sys.modules
 
     def test_numpy_not_imported(self) -> None:
-        # numpy is in the identity extra, not base deps — parser must not pull it
-        assert "numpy" not in sys.modules
+        # numpy is in the identity extra, not base deps — parser must not pull it.
+        #
+        # W2: the prior `assert "numpy" not in sys.modules` was order-dependent —
+        # sibling tests in this package load PIL, which pulls numpy into the
+        # process-global sys.modules, so the assertion passed in isolation but
+        # FAILED in the combined `tests/unit/adapters/` run. Importing
+        # box_row_parser in a FRESH subprocess proves the REAL contract (the
+        # module itself does not import numpy) independent of what other tests
+        # loaded earlier in this process.
+        import subprocess  # noqa: PLC0415
+
+        code = (
+            "import importlib, sys; "
+            "importlib.import_module("
+            "'reconciliation.adapters.ocr.box_row_parser'); "
+            "assert 'numpy' not in sys.modules, "
+            "'box_row_parser must NOT import numpy'"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, (
+            "Importing box_row_parser pulled numpy into sys.modules "
+            f"(stdout={proc.stdout!r} stderr={proc.stderr!r})"
+        )
 
 
 # ---------------------------------------------------------------------------

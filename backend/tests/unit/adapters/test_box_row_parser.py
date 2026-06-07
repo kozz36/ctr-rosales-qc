@@ -387,34 +387,7 @@ class TestPureImportNoSdk:
 
 
 # ---------------------------------------------------------------------------
-# 1.1.10  count_valid_rows orientation oracle — Design §2.1
-# ---------------------------------------------------------------------------
-
-
-class TestCountValidRowsOrientationOracle:
-    """count_valid_rows(cells, dpi) must equal len(parse_box_rows(cells, dpi))."""
-
-    def test_count_equals_parse_len_populated(self) -> None:
-        cells = [
-            _cell("BARRA A615 3/8\"", cx=100, cy=150),
-            _cell("0.008", cx=280, cy=151),
-            _cell("TN", cx=350, cy=150),
-            _cell("BARRA A615 1/2\"", cx=100, cy=200),
-            _cell("0.136", cx=280, cy=201),
-            _cell("TN", cx=350, cy=200),
-        ]
-        assert count_valid_rows(cells, 200) == len(parse_box_rows(cells, 200))
-
-    def test_count_equals_parse_len_empty(self) -> None:
-        assert count_valid_rows([], 200) == len(parse_box_rows([], 200))
-
-    def test_count_equals_parse_len_no_pairs(self) -> None:
-        cells = [_cell("FECHA: 10/05/2024", cx=100, cy=100)]
-        assert count_valid_rows(cells, 200) == len(parse_box_rows(cells, 200))
-
-
-# ---------------------------------------------------------------------------
-# 1.1.11  Geometry guard: QTY must be right of DESC — Design §2.1 qcx > dcx
+# 1.1.10  Geometry guard: QTY must be right of DESC — Design §2.1 qcx > dcx
 # ---------------------------------------------------------------------------
 
 
@@ -443,3 +416,223 @@ class TestEmptyCellsReturnsEmptyList:
 
     def test_empty_count(self) -> None:
         assert count_valid_rows([], 200) == 0
+
+
+# ---------------------------------------------------------------------------
+# 1.1.13  FIX 1 — corrected quantity contract (JD CRITICAL)
+# ---------------------------------------------------------------------------
+
+
+class TestCorrectedQuantityContract:
+    """The qty contract is: decimal-shape ANY digits OR unit-adjacent integer.
+
+    The previous `^\\d{1,3}[.,]\\d{2,3}$` regex silently dropped real declared
+    data: `2.5 TN` (one fractional digit) and `5800.00 KG` (>=1000 integer part).
+    The declared-side extractor accepts `(\\d+(?:[.,]\\d+)?)` — the OCR side MUST
+    align. Empirically (177 real qty tokens, pages 378-379) no thousands
+    separators exist; `,`->`.` is a SAFE decimal normalization.
+
+    NOTE (domain-authority, NOT corpus-validated): the integer+unit cases
+    (`25 RD`, `5800 KG`) are synthetic. This corpus is TN-only with no integer
+    quantities; the domain model declares KG/TN/RD/Rollo, so the contract MUST
+    accept them. Labelled synthetic so a future reader knows they aren't
+    corpus-validated.
+    """
+
+    def test_single_fractional_digit_accepted(self) -> None:
+        # `2.5 TN` — one fractional digit. The old {2,3} minimum dropped it.
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=100, cy=150),
+            _cell("2.5", cx=250, cy=152),
+            _cell("TN", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("2.5")
+
+    def test_large_decimal_qty_accepted(self) -> None:
+        # `5800.00 KG` — 4-digit integer part. The old {1,3} cap dropped it.
+        cells = [
+            _cell("BARRA A615 G60 3/8\"", cx=100, cy=150),
+            _cell("5800.00", cx=250, cy=152),
+            _cell("KG", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("5800.00")
+
+    def test_bare_integer_with_adjacent_unit_accepted(self) -> None:
+        # SYNTHETIC (domain-authority, not corpus): `25 RD` — bare integer
+        # disambiguated by the adjacent unit cell (the unit-suffix rule).
+        cells = [
+            _cell("VARILLA LISA 10mm", cx=100, cy=150),
+            _cell("25", cx=250, cy=152),
+            _cell("RD", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("25")
+        assert rows[0].unidad == "RD"
+
+    def test_bare_integer_kg_with_adjacent_unit_accepted(self) -> None:
+        # SYNTHETIC (domain-authority, not corpus): `5800 KG` — bare integer
+        # disambiguated by the adjacent unit cell.
+        cells = [
+            _cell("BARRA A615 G60 3/8\"", cx=100, cy=150),
+            _cell("5800", cx=250, cy=152),
+            _cell("KG", cx=320, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("5800")
+        assert rows[0].unidad == "KG"
+
+    def test_bare_integer_without_unit_still_rejected(self) -> None:
+        # Incidental-number guard MUST hold: a bare integer with NO adjacent
+        # unit (`119`, `408916`) is NOT a quantity.
+        cells = [
+            _cell("119", cx=20, cy=150),
+            _cell("408916", cx=60, cy=150),
+            _cell("BARRA A615 G60 1/2\"", cx=150, cy=150),
+            _cell("0.037", cx=280, cy=150),
+            _cell("KG", cx=350, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.037")
+
+    def test_compound_diameter_still_rejected(self) -> None:
+        # Incidental-number guard MUST hold: `1 3/8"` is never a quantity.
+        cells = [
+            _cell("1 3/8\"", cx=60, cy=150),
+            _cell("BARRA A615 G60 1 3/8\"", cx=150, cy=150),
+            _cell("0.041", cx=300, cy=150),
+            _cell("TN", cx=370, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.041")
+
+    def test_malformed_numeric_token_does_not_crash(self) -> None:
+        # A degenerate qty-shaped token must drop-with-log, never raise.
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=100, cy=150),
+            _cell("1.2.3", cx=250, cy=152),  # not a valid Decimal
+            _cell("TN", cx=320, cy=150),
+        ]
+        # Must not raise; the malformed row is simply not emitted.
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# 1.1.14  FIX 2 — relaxed-unit fallback must flag review; no cross-row theft
+# ---------------------------------------------------------------------------
+
+
+class TestRelaxedUnitFallbackFlagsReview:
+    """A unit claimed OUT of column order is positional-evidence-violating and
+    MUST NOT produce a confident line — it sets requires_review=True.
+    """
+
+    def test_left_column_unit_flags_review(self) -> None:
+        # UNIT sits LEFT of the qty (cx=10) — wrong column. The relaxed
+        # fallback may still adopt it, but MUST flag requires_review=True.
+        cells = [
+            _cell("KG", cx=10, cy=150),
+            _cell("BARRA A615 G60 3/8\"", cx=100, cy=150),
+            _cell("0.037", cx=300, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].requires_review is True
+
+
+class TestNoCrossRowUnitTheft:
+    """3 rows packed tighter than the band — each keeps its own unit; a
+    mis-OCR'd unit on row1 MUST NOT cause row2/row3 units to be stolen.
+    """
+
+    def test_packed_rows_keep_own_units(self) -> None:
+        # band(200)=40. Rows 30px apart (packed tighter than the band).
+        # Row1 unit is mis-OCR'd (not a recognised unit token) → row1 may flag
+        # review, but rows 2 and 3 MUST each keep their own correct unit and
+        # MUST NOT have it stolen by the greedy nearest-across-bands fallback.
+        cells = [
+            # Row 1 — cy=100, unit garbled
+            _cell("BARRA A615 G60 3/8\"", cx=80, cy=100),
+            _cell("0.008", cx=300, cy=100),
+            _cell("T1N", cx=380, cy=100),  # garbled unit (not recognised)
+            # Row 2 — cy=130
+            _cell("BARRA A615 G60 1/2\"", cx=80, cy=130),
+            _cell("0.136", cx=300, cy=130),
+            _cell("KG", cx=380, cy=130),
+            # Row 3 — cy=160
+            _cell("BARRA A615 G60 5/8\"", cx=80, cy=160),
+            _cell("0.191", cx=300, cy=160),
+            _cell("RD", cx=380, cy=160),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        by_qty = {r.cantidad: r for r in rows}
+        # Row 2 keeps KG; row 3 keeps RD — neither stolen by row 1.
+        assert by_qty[Decimal("0.136")].unidad == "KG"
+        assert by_qty[Decimal("0.191")].unidad == "RD"
+
+
+# ---------------------------------------------------------------------------
+# 1.1.15  FIX 3 — adversarial corpus (degenerate / tie-break / oracle meaning)
+# ---------------------------------------------------------------------------
+
+
+class TestAdversarialCorpus:
+    """Cases the original mock-theatre suite could not exercise."""
+
+    def test_degenerate_only_units(self) -> None:
+        # Only unit cells, no desc/qty → empty, no crash.
+        cells = [_cell("KG", cx=100, cy=150), _cell("TN", cx=200, cy=150)]
+        assert parse_box_rows(cells, dpi=200) == []
+
+    def test_equidistant_qty_deterministic_tiebreak(self) -> None:
+        # A qty exactly equidistant (in cy) between two desc rows must
+        # associate deterministically (same result across runs), and exactly
+        # one desc claims it — never both.
+        cells = [
+            _cell("BARRA A615 G60 3/8\"", cx=80, cy=140),
+            _cell("BARRA A615 G60 1/2\"", cx=80, cy=160),
+            _cell("0.136", cx=300, cy=150),  # equidistant: |150-140|=|160-150|=10
+            _cell("TN", cx=380, cy=150),
+        ]
+        first = parse_box_rows(cells, dpi=200)
+        second = parse_box_rows(cells, dpi=200)
+        # Deterministic: identical across calls.
+        assert [r.cantidad for r in first] == [r.cantidad for r in second]
+        # The single qty is claimed exactly once.
+        claimed = [r for r in first if r.cantidad == Decimal("0.136")]
+        assert len(claimed) == 1
+
+
+class TestOrientationOracleMeaningful:
+    """The orientation oracle must distinguish a correctly-oriented page from
+    a degenerate one: a cell set that parses 0 rows scores lower than one that
+    parses its rows correctly.
+    """
+
+    def test_correct_orientation_scores_higher_than_degenerate(self) -> None:
+        good = [
+            _cell("BARRA A615 G60 3/8\"", cx=80, cy=120),
+            _cell("0.008", cx=300, cy=121),
+            _cell("TN", cx=380, cy=120),
+            _cell("BARRA A615 G60 1/2\"", cx=80, cy=160),
+            _cell("0.136", cx=300, cy=161),
+            _cell("TN", cx=380, cy=160),
+        ]
+        # Degenerate: qty cells are LEFT of desc (a wrong rotation scenario)
+        # → no valid pairing → 0 rows.
+        degenerate = [
+            _cell("0.008", cx=80, cy=120),
+            _cell("BARRA A615 G60 3/8\"", cx=300, cy=120),
+            _cell("0.136", cx=80, cy=160),
+            _cell("BARRA A615 G60 1/2\"", cx=300, cy=160),
+        ]
+        assert count_valid_rows(good, 200) > count_valid_rows(degenerate, 200)
+        assert count_valid_rows(degenerate, 200) == 0

@@ -13,7 +13,8 @@ importable and testable without rapidocr or onnxruntime installed.
 **Algorithm (Design §2.1, §4, §5)**:
 1. Compute centroid (cx, cy) per cell from the raw polygon.
 2. Classify each cell into DESC / QTY / UNIT / OTHER using positive-only
-   regex patterns (_QTY_RE, _UNIT_RE).  The DESC classifier is the remainder
+   regex patterns (_QTY_DECIMAL_RE / _QTY_INTEGER_RE, _UNIT_CELL_RE).
+   The DESC classifier is the remainder
    (cells that have a >=3-char alphabetic run) to avoid the corpus-specific
    keyword allowlist from the PoC.
 3. For each DESC cell, find the nearest QTY cell satisfying:
@@ -21,19 +22,35 @@ importable and testable without rapidocr or onnxruntime installed.
    - cx_qty > cx_desc               (quantity column is to the RIGHT)
 4. For each paired DESC+QTY, find the UNIT cell on the same row band:
    - |cy_desc - cy_unit| <= band_px
-   - cx_unit > cx_qty               (unit column is furthest right) — preferred
-   - Fallback: scan any UNIT cell within band regardless of column order
+   - cx_unit > cx_qty               (unit column is furthest right) — preferred,
+     yields a CONFIDENT line
+   - Relaxed fallback: any UNIT cell within band regardless of column order →
+     positional evidence violated → requires_review=True (never confident).
+   - A unit is only claimed by the desc that OWNS it (band-nearest desc), so a
+     unit is never stolen across rows packed tighter than the band.
 5. Normalise TNE → TN (label only; cantidad is NEVER changed).
 6. Emit MaterialLine(description_raw, description_canonical, unidad, cantidad,
    confidence, requires_review).
 
-**Incidental-number guard**:
-The QTY pattern _QTY_RE requires a mandatory decimal fraction (\\d{1,3}[.,]\\d{2,3}).
-This excludes:
-- Single/multi digit integers without fractions: ``1``, ``119``, ``408916``
-- Diameter leads that begin with digits: ``1"``  (no fraction → not matched)
-- Any cell whose text contains non-digit characters: text classification as
-  DESC handles those automatically.
+**Quantity contract (corrected — JD CRITICAL)**:
+A cell is a QUANTITY iff:
+  (a) it matches the decimal shape ``^\\d+[.,]\\d+$`` (one-or-more integer
+      digits, one-or-more fractional digits — NO artificial caps). This admits
+      ``2.5`` (one fractional digit, real declared data), ``0.008``, ``7.163``,
+      ``5800.00`` (>=1000), ``1234.56`` — aligned with the declared-side
+      extractor (``digital_text_extractor._MATERIAL_LINE_RE``); OR
+  (b) it is a BARE INTEGER ``^\\d+$`` AND has an adjacent UNIT cell in its row
+      band (the unit-suffix disambiguator) — admits ``25 RD`` / ``5800 KG``.
+
+**Incidental-number guard** (still holds): a bare integer with NO adjacent unit
+is NOT a quantity. This excludes:
+- Line-item / lote numbers and guía codes: ``1``, ``119``, ``408916``.
+- Diameter leads: ``1"``, ``3/8"`` (non-digit chars → DESC classification).
+
+**Decimal separator** (evidence-backed, 177 real qty tokens, full PDF): NO
+thousands separators exist anywhere; ``.`` is always the decimal separator, so
+a ``,`` is treated as a DECIMAL separator (``replace(",", ".")``). A malformed
+token is dropped-with-log, never raised.
 
 **Units (domain invariant)**:
 KG / TN / RD / Rollo are summed independently by the reconciliation engine.
@@ -60,11 +77,30 @@ logger = logging.getLogger(__name__)
 
 _CONFIDENCE_THRESHOLD: Final[float] = 0.85
 
-# QTY: mandatory decimal fraction — integers, codes, and diameter leads excluded.
-# Pattern: 1–3 leading digits, decimal separator (. or ,), 2–3 fractional digits.
-# This guards lote 119 (no fraction), 408916 (no fraction), 1" (no fraction).
-_QTY_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\d{1,3}[.,]\d{2,3}$"
+# QTY (decimal shape): one-or-more integer digits, a decimal separator (. or ,),
+# one-or-more fractional digits — NO artificial caps. This admits 2.5 (one
+# fractional digit, real declared data pages 378-379), 0.008, 7.163, 5800.00
+# (>=1000 KG), 1234.56. The declared-side extractor uses the same any-digit
+# shape (digital_text_extractor._MATERIAL_LINE_RE: (\d+(?:[.,]\d+)?)); the OCR
+# side MUST align so quantities are never silently dropped.
+#
+# Empirical (177 real qty tokens, full 493-page PDF): NO thousands separators
+# anywhere; `.` is always the decimal separator, so a `,` is treated as a
+# DECIMAL separator (replace ","->".") — evidence-backed, not an assumption.
+#
+# Incidental-number guard preserved: a BARE integer (no decimal separator) is
+# NOT matched here. It is only accepted as a quantity when it has an adjacent
+# UNIT cell in its row band (the unit-suffix disambiguator, _is_qty_integer).
+# This keeps lote 119 / guía code 408916 / diameter lead 1" out, while
+# admitting 25 RD / 5800 KG.
+_QTY_DECIMAL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+[.,]\d+$"
+)
+
+# Bare integer (no decimal separator). Only treated as a QTY when a UNIT cell
+# is adjacent in the row band (resolved geometrically in parse_box_rows).
+_QTY_INTEGER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+$"
 )
 
 # UNIT: exact match for recognised unit tokens (case-insensitive).
@@ -77,7 +113,7 @@ _UNIT_CELL_RE: Final[re.Pattern[str]] = re.compile(
 # DESC: a cell is a descriptor if it contains a run of >=3 consecutive letters.
 # This includes all material family names (BARRA, FIERRO, ALAMBRE, ACERO, VARILLA,
 # diameter notation like 3/8", A615/A706, lote labels, etc.) while excluding
-# pure-numeric cells not matched by _QTY_RE.
+# pure-numeric cells not matched by the qty patterns.
 _DESC_ALPHA_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-záéíóúÁÉÍÓÚñÑ]{3,}")
 
 # TNE normalisation map
@@ -122,9 +158,23 @@ class Cell:
 # ---------------------------------------------------------------------------
 
 
-def _is_qty(text: str) -> bool:
-    """Return True iff *text* matches the QTY pattern (mandatory fraction)."""
-    return bool(_QTY_RE.match(text.strip()))
+def _is_qty_decimal(text: str) -> bool:
+    """Return True iff *text* is a decimal-shape quantity (any digit count).
+
+    Admits 2.5, 0.008, 5800.00, 1234.56. A bare integer is NOT a decimal
+    quantity — see :func:`_is_qty_integer` for the unit-adjacent integer path.
+    """
+    return bool(_QTY_DECIMAL_RE.match(text.strip()))
+
+
+def _is_qty_integer(text: str) -> bool:
+    """Return True iff *text* is a BARE integer (no decimal separator).
+
+    A bare integer is only a QUANTITY when an adjacent UNIT cell disambiguates
+    it (resolved geometrically in :func:`parse_box_rows`). Standalone, it is an
+    incidental number (lote 119, guía code 408916) and is NOT a quantity.
+    """
+    return bool(_QTY_INTEGER_RE.match(text.strip()))
 
 
 def _is_unit(text: str) -> bool:
@@ -198,21 +248,35 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
     band = _band_px(dpi)
 
     # Partition cells by role.
+    #   - decimal qty cells: unconditional quantities (2.5, 0.008, 5800.00).
+    #   - integer qty cells: CANDIDATE quantities — only promoted when a UNIT
+    #     cell is adjacent in their row band (the unit-suffix disambiguator).
+    #   - unit cells / desc cells as before.
     desc_cells: list[Cell] = []
     qty_cells: list[Cell] = []
+    int_qty_cells: list[Cell] = []
     unit_cells: list[Cell] = []
 
     for cell in cells:
         text = cell.text.strip()
         if not text:
             continue
-        if _is_qty(text):
+        if _is_qty_decimal(text):
             qty_cells.append(cell)
         elif _is_unit(text):
             unit_cells.append(cell)
+        elif _is_qty_integer(text):
+            int_qty_cells.append(cell)  # provisional; needs adjacent unit
         elif _is_desc(text):
             desc_cells.append(cell)
-        # OTHER cells (short tokens, codes without fractions) are discarded.
+        # OTHER cells (short alpha-less tokens) are discarded.
+
+    # Promote integer candidates to quantities only when a unit cell sits in
+    # their row band (unit-suffix disambiguator). Without an adjacent unit an
+    # integer stays an incidental number (lote 119, code 408916) and is dropped.
+    for int_cell in int_qty_cells:
+        if any(abs(u.cy - int_cell.cy) <= band for u in unit_cells):
+            qty_cells.append(int_cell)
 
     if not desc_cells or not qty_cells:
         return []
@@ -239,28 +303,49 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
         idx, qty = min(candidates, key=lambda iq: (abs(iq[1].cy - desc.cy), iq[1].cx - desc.cx))
         used_qty.add(idx)
 
-        # Resolve unit: look for a UNIT cell in the same row band, to the
-        # right of the QTY cell (preferred column order: DESC | QTY | UNIT).
+        # Resolve unit. Preferred column order is DESC | QTY | UNIT, so the
+        # unit cell should be in the same row band AND right of the qty column.
+        # A unit found there is positional evidence → confident.
+        #
+        # Cross-row-theft guard: a unit cell is only eligible for THIS desc if
+        # this desc is the band-nearest desc to that unit. Otherwise the unit
+        # belongs to another row and must not be stolen by a greedy
+        # nearest-across-bands pick (rows packed tighter than the band).
+        def _owns(u: Cell, _desc: Cell = desc) -> bool:
+            my_dy = abs(u.cy - _desc.cy)
+            return all(
+                my_dy <= abs(u.cy - other.cy)
+                for other in desc_cells
+                if other is not _desc
+            )
+
         unit_cell: Cell | None = None
         unit_cell_idx: int | None = None
+        relaxed = False
         unit_candidates_right = [
             (i, u) for i, u in enumerate(unit_cells)
-            if abs(u.cy - desc.cy) <= band and u.cx > qty.cx and i not in used_unit
+            if abs(u.cy - desc.cy) <= band
+            and u.cx > qty.cx
+            and i not in used_unit
+            and _owns(u)
         ]
         if unit_candidates_right:
             unit_cell_idx, unit_cell = min(
                 unit_candidates_right, key=lambda iu: (abs(iu[1].cy - desc.cy), iu[1].cx - qty.cx)
             )
         else:
-            # Fallback: any UNIT cell within the row band (relaxed column order).
+            # Relaxed fallback: any UNIT cell within the band that this desc
+            # owns, regardless of column order. Positional evidence is violated
+            # → the resulting line is NOT confident (requires_review=True).
             unit_candidates_any = [
                 (i, u) for i, u in enumerate(unit_cells)
-                if abs(u.cy - desc.cy) <= band and i not in used_unit
+                if abs(u.cy - desc.cy) <= band and i not in used_unit and _owns(u)
             ]
             if unit_candidates_any:
                 unit_cell_idx, unit_cell = min(
-                    unit_candidates_any, key=lambda iu: abs(iu[1].cy - desc.cy)
+                    unit_candidates_any, key=lambda iu: (abs(iu[1].cy - desc.cy), iu[1].cx)
                 )
+                relaxed = True
 
         if unit_cell is None:
             # No unit resolved — flag for review but emit the row with
@@ -284,7 +369,10 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
                 )
                 continue
             unit_literal = normalised
-            requires_review = False
+            # A relaxed (out-of-column) unit pick violated positional evidence
+            # → must NOT be a confident line. The preferred-column path is
+            # confident; the no-unit path above already flags review.
+            requires_review = relaxed
             if unit_cell_idx is not None:
                 used_unit.add(unit_cell_idx)
 

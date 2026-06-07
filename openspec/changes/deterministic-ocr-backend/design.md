@@ -262,32 +262,52 @@ contain those tokens — a silent data loss the moment the corpus widens.
 **Design — classify by POSITIVE quantity-shape + column geometry, NOT by a keyword allowlist.**
 
 ```python
-_QTY_RE = re.compile(r"^\d{1,3}[.,]\d{2,3}$")   # amount shape: 0.008, 1.616, 12.50 — from PoC
+# Decimal qty: any-digit integer + any-digit fraction. NO artificial caps —
+# admits 2.5 (one fractional digit, real declared data), 0.008, 5800.00 (>=1000),
+# 1234.56. Aligned with the declared-side _MATERIAL_LINE_RE: (\d+(?:[.,]\d+)?).
+_QTY_DECIMAL_RE = re.compile(r"^\d+[.,]\d+$")
+# Bare integer: only a QTY when an adjacent UNIT cell disambiguates it.
+_QTY_INTEGER_RE = re.compile(r"^\d+$")
 _UNIT_RE = re.compile(r"^(TNE|TN|KG|RD|Rollo)$", re.IGNORECASE)  # unit-column cell (TNE label-normalized)
 ```
 
 Three-way cell classification:
 
-1. **QTY cell** ⇔ `_QTY_RE.fullmatch(text)` — a bare decimal amount with 2–3 fractional digits.
-   The `\d{1,3}` integer part + mandatory `[.,]\d{2,3}` fraction is the discriminator. This is a
-   *positive* shape test, not a material keyword.
+1. **QTY cell** ⇔ EITHER (a) `_QTY_DECIMAL_RE.fullmatch(text)` — a bare decimal amount with
+   one-or-more integer digits and one-or-more fractional digits (NO `{1,3}`/`{2,3}` caps), OR
+   (b) `_QTY_INTEGER_RE.fullmatch(text)` (a bare integer) AND a UNIT cell sits in its row band
+   (the unit-suffix disambiguator). This is a *positive* shape test, not a material keyword.
 2. **UNIT cell** ⇔ `_UNIT_RE.fullmatch(text)`.
 3. **DESC cell** ⇔ "the rest": a cell that is NEITHER a QTY nor a UNIT cell AND contains at least
    one alphabetic run of ≥3 letters (`re.search(r"[A-Za-z]{3,}", text)`). The ≥3-letter run
    rejects stray punctuation/number-only header cells from being mistaken for descriptions.
 
-**Incidental-number guard (the critical correctness property):** `lote 119` and diameter leads
-`1"`, `1 3/8"` MUST NOT be read as quantities.
+**Why any-digit (JD CRITICAL FIX):** the prior `^\d{1,3}[.,]\d{2,3}$` SILENTLY DROPPED real
+declared data — `2.5 TN` (one fractional digit, pages 378-379) failed the `\d{2,3}` minimum, and
+`5800.00 KG` (>=1000) failed the `\d{1,3}` cap. The OCR side MUST mirror the declared-side
+`(\d+(?:[.,]\d+)?)` shape or reconciliation produces false MISMATCH/drops. Empirically (177 real
+qty tokens, full 493-page PDF) NO thousands separators exist — `.` is always the decimal
+separator, so `,`→`.` (`replace(",", ".")`) treats a comma as a DECIMAL separator (evidence-backed,
+not an assumption). A malformed token is dropped-with-log, never raised.
 
-- `lote 119` → `119` has NO decimal fraction → fails `_QTY_RE` (which REQUIRES `[.,]\d{2,3}`).
-  The whole `lote 119` cell contains a ≥3-letter run (`lote`) → classified as DESC text, fed
-  intact to the normalizer. The canonical matcher already ignores `lote NNN` (incidental number,
-  per the material-canonical-matching skill §"incidental numbers like lote 119 are NOT grade
-  contexts"). PASS.
-- `1"` / `1 3/8"` → no `[.,]\d{2,3}` fraction; the `"` and fraction slash break the amount shape
-  → fails `_QTY_RE`. They live inside the DESC cell as diameter text → the canonical matcher's
-  diameter normalization consumes `1 3/8"` correctly (JD CRITICAL FIX #2: the `{2,3}` quantifier
-  in the grade detector already excludes single-digit diameter leads). PASS.
+**Incidental-number guard (the critical correctness property):** `lote 119`, guía codes, and
+diameter leads `1"`, `1 3/8"` MUST NOT be read as quantities.
+
+- `lote 119` → `119` is a BARE integer with NO adjacent unit → NOT promoted to QTY. The whole
+  `lote 119` cell contains a ≥3-letter run (`lote`) → classified as DESC text, fed intact to the
+  normalizer. The canonical matcher already ignores `lote NNN` (incidental number, per the
+  material-canonical-matching skill §"incidental numbers like lote 119 are NOT grade contexts").
+  A standalone `408916` (guía code) is likewise a bare integer with no adjacent unit → dropped. PASS.
+- `1"` / `1 3/8"` → the `"` and fraction slash break BOTH qty shapes (decimal and bare-integer)
+  → never a quantity. They live inside the DESC cell as diameter text → the canonical matcher's
+  diameter normalization consumes `1 3/8"` correctly (the `{2,3}` quantifier in the grade detector
+  already excludes single-digit diameter leads). PASS.
+
+**Unit-fallback guard (JD CRITICAL FIX):** the preferred unit pick (same row band, RIGHT of the
+qty column) yields a CONFIDENT line. A relaxed/out-of-column unit pick violates positional evidence
+→ the line is emitted with `requires_review=True`, NEVER confident (consistent with the no-unit
+path). A unit is claimed only by the desc that OWNS it (band-nearest desc) and exactly once, so a
+unit is never STOLEN across rows packed tighter than the band.
 
 **Geometry refinement (qty column):** beyond shape, the association in §2.1 already requires
 `qcx > dcx` (the quantity column is physically to the RIGHT of the detalle column) and same row

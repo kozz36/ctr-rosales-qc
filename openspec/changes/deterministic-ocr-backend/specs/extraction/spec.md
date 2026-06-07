@@ -159,9 +159,15 @@ importable and unit-testable with NO OCR SDK installed.
    `row_band_px = round(40 * (dpi / 200))` where `dpi` is the render DPI of the image.
    Two cells are in the same row band when `|centroid_y_A − centroid_y_B| <= row_band_px`.
 3. For each row band, classify cells as:
-   - **QTY**: text matches a numeric quantity pattern (e.g., decimal number, possibly with
-     comma or space as thousands separator; NOT a standalone integer that is clearly a
-     line-item number or diameter lead like `1`, `3`, `8`).
+   - **QTY**: text is EITHER (a) a decimal number of shape `^\d+[.,]\d+$` — one-or-more
+     integer digits and one-or-more fractional digits, with NO artificial digit caps (admits
+     `2.5`, `0.008`, `5800.00`, `1234.56`; aligned with the declared-side extractor
+     `(\d+(?:[.,]\d+)?)`), OR (b) a bare integer `^\d+$` that has an adjacent UNIT cell in its
+     row band (the unit-suffix disambiguator; admits `25 RD`, `5800 KG`). A bare integer with
+     NO adjacent unit is NOT a QTY — it is an incidental number (line-item / lote `119`, guía
+     code `408916`) or a diameter lead (`1`, `3`, `8`). Empirically (177 real qty tokens, full
+     PDF) there are NO thousands separators; `.` is always the decimal separator, so a `,` is
+     treated as a DECIMAL separator (`,`→`.`).
    - **DESC**: text matches a material descriptor pattern that is broader than the original
      corpus `_DESC_RE` (MUST recognize at least: `BARRA`, `ACERO`, `A615`, `A706`, `FIERRO`,
      `VARILLA`, `ALAMBRE`, codes like `40xxxx`, and any token containing a diameter notation
@@ -171,7 +177,12 @@ importable and unit-testable with NO OCR SDK installed.
    be the description for that quantity. A QTY cell with no DESC cell to its left in the
    same row band MUST be ignored (not emitted as a row).
 5. Unit: taken from a UNIT cell (`TN`, `KG`, `RD`, `Rollo`, `TNE` — see unit normalization
-   below) in the same row band as the QTY cell, or parsed from the DESC text if absent.
+   below) in the same row band as the QTY cell. A unit found in the PREFERRED column position
+   (same band, RIGHT of the qty column) yields a CONFIDENT line. A unit claimed via a relaxed
+   out-of-column fallback violates positional evidence and MUST set `requires_review=True`
+   (NEVER confident — consistent with the no-unit-found path). A unit cell MUST be claimed only
+   by the DESC row that OWNS it (the band-nearest DESC) and exactly once, so a unit is never
+   STOLEN by a greedy nearest-across-bands pick when rows are packed tighter than the band.
 
 **Unit normalization (label-only — NOT a conversion):**
 
@@ -182,12 +193,13 @@ No other unit conversion is permitted. KG, TN, RD, Rollo MUST remain as-is.
 **Incidental-number guard (MUST):**
 
 Standalone integers that match the following patterns MUST NOT be classified as QTY:
-- Single digits (`1`, `2`, … `9`) appearing in a position consistent with a table line-item
-  number (leftmost column, no decimal point).
+- Bare integers with NO adjacent unit cell: line-item / lote numbers (`1`, `119`) and guía
+  codes (`408916`).
 - Diameter leads: a number immediately followed by `"` (inch) or `mm` / `MM` in the same
-  token.
-A valid QTY MUST contain a decimal separator (`.` or `,`) or be accompanied by a unit
-suffix that removes ambiguity.
+  token (e.g. `1"`, `1 3/8"`).
+A valid QTY MUST EITHER contain a decimal separator (`.` or `,`) OR be a bare integer
+accompanied by an adjacent UNIT cell in its row band (the unit-suffix disambiguator) that
+removes the ambiguity.
 
 The parser function MUST accept a `dpi: int` parameter (default `200`) so the caller can
 pass the actual render DPI without hardcoding.

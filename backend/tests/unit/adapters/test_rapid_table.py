@@ -425,3 +425,99 @@ class TestRapidOCRAdapterRealOutputShape:
         adapter = RapidOCRAdapter(_engine=engine, _rotate_fn=_dummy_rotate)
         lines = adapter.extract_printed_table(b"\x89PNG")
         assert lines == [], "None txts/scores must degrade to [] without raising"
+
+
+# ---------------------------------------------------------------------------
+# Tests — orientation oracle scores CONFIDENT rows, not raw count (W1)
+# ---------------------------------------------------------------------------
+
+
+def _box(cx: float, cy: float) -> list[list[float]]:
+    return [
+        [cx - 5, cy - 5],
+        [cx + 5, cy - 5],
+        [cx + 5, cy + 5],
+        [cx - 5, cy + 5],
+    ]
+
+
+class TestRapidOCRAdapterOrientationOracleConfidence:
+    """W1: the orientation oracle must score by CONFIDENT rows (requires_review
+    is False), NOT raw parsed-row count.
+
+    A garbage rotation that produces parseable-but-flagged rows
+    (requires_review=True) must score BELOW a rotation producing confident,
+    in-profile rows — otherwise the wrong orientation can tie/win and surface
+    review-flagged quantities as the chosen page read.
+    """
+
+    def test_confident_rotation_beats_more_flagged_rows(self) -> None:
+        """A rotation with FEWER confident rows must still beat a rotation with
+        MORE rows that are ALL requires_review=True.
+
+        Call 1 = default -90°: empty (forces the retry loop over {0,90,180,270}).
+        Then within the retry loop we feed, in _RETRY_ANGLES order:
+          - angle 0   -> TWO relaxed (unit-left-of-qty) rows => 2 flagged rows,
+                         0 confident.
+          - angle 90  -> ONE clean DESC|QTY|UNIT row => 1 confident row.
+          - angle 180 -> empty.
+          - angle 270 -> empty.
+
+        Raw-count scoring would pick angle 0 (2 rows) and return flagged rows.
+        Confident-count scoring must pick angle 90 (1 confident row) and return
+        exactly that single confident, non-review row.
+        """
+        from reconciliation.adapters.ocr.rapid_table import RapidOCRAdapter
+
+        # Two relaxed rows: unit is LEFT of qty (cx_unit < cx_qty) -> relaxed
+        # fallback path in parse_box_rows -> requires_review=True, but parseable.
+        flagged_boxes = [
+            _box(100, 150), _box(320, 150), _box(250, 150),   # row 1: desc, qty(right), unit(left of qty)
+            _box(100, 250), _box(320, 250), _box(250, 250),   # row 2: same shape
+        ]
+        flagged_txts = (
+            "BARRA CORRUGADA 3/8", "0.136", "TN",
+            "BARRA CORRUGADA 1/2", "0.250", "TN",
+        )
+        flagged_scores = (0.92,) * 6
+
+        # One clean confident row: DESC | QTY | UNIT, cx ascending -> confident.
+        confident_boxes = [_box(100, 150), _box(250, 150), _box(320, 150)]
+        confident_txts = ("BARRA CORRUGADA 3/8", "0.136", "TN")
+        confident_scores = (0.92, 0.92, 0.92)
+
+        empty = ([], (), ())
+
+        # Sequence: call 1 = default -90° (empty), then the four retry angles.
+        sequence = [
+            empty,                                                  # -90° default
+            (flagged_boxes, flagged_txts, flagged_scores),          # angle 0
+            (confident_boxes, confident_txts, confident_scores),    # angle 90
+            empty,                                                  # angle 180
+            empty,                                                  # angle 270
+        ]
+        idx = {"n": 0}
+
+        def _side_effect(_img):  # type: ignore[no-untyped-def]
+            boxes, txts, scores = sequence[idx["n"]]
+            idx["n"] += 1
+            result = MagicMock()
+            result.boxes = boxes
+            result.txts = txts
+            result.scores = scores
+            return result
+
+        engine = MagicMock(side_effect=_side_effect)
+        adapter = RapidOCRAdapter(_engine=engine, _rotate_fn=_dummy_rotate)
+        lines = adapter.extract_printed_table(b"\x89PNG")
+
+        # Confident-count scoring picks angle 90 (1 confident row), NOT angle 0
+        # (2 flagged rows). The winning page is the all-confident one.
+        assert len(lines) == 1, (
+            f"Expected the confident rotation (1 confident row) to win, got "
+            f"{len(lines)} rows: {[(l.description_raw, l.requires_review) for l in lines]}"
+        )
+        assert lines[0].requires_review is False, (
+            "The selected rotation must be the all-confident one, not the "
+            "rotation with more review-flagged rows (W1)."
+        )

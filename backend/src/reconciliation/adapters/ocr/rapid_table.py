@@ -176,13 +176,22 @@ class RapidOCRAdapter:
 
         return parse_box_rows
 
-    def _count_valid_rows(self, cells: list) -> int:
-        """Count valid rows in *cells* using the orientation oracle."""
-        from reconciliation.adapters.ocr.box_row_parser import (  # noqa: PLC0415
-            count_valid_rows,
-        )
+    @staticmethod
+    def _confident_row_count(rows: list[MaterialLine]) -> int:
+        """Orientation-oracle score: the number of CONFIDENT rows in *rows*.
 
-        return count_valid_rows(cells, self._dpi)
+        W1: the oracle scores by rows the parser is CONFIDENT about
+        (``requires_review is False``), NOT the raw parsed-row count. A garbage
+        rotation can produce parseable-but-flagged rows (e.g. unit-left-of-qty
+        relaxed pairings); counting those raw would let a wrong orientation
+        tie/beat the correct one. The rotation that yields the most real,
+        in-profile readable quantities wins.
+
+        This reads ``requires_review`` ONLY to count it for orientation
+        selection — it never sets or clears the flag (the parser's confidence
+        gate is authoritative).
+        """
+        return sum(1 for row in rows if row.requires_review is False)
 
     def _run_engine(self, img_array: object) -> list:
         """Run the RapidOCR engine on *img_array* and return a list of Cell objects.
@@ -280,30 +289,36 @@ class RapidOCRAdapter:
         Algorithm:
           1. Try default rotation -90° (guías are typically scanned portrait-left).
           2. Parse cells → rows.
-          3. If rows > 0 → return immediately (fast path).
+          3. If there is at least one CONFIDENT row → return immediately
+             (fast path). The oracle is the confident-row count (W1), not the
+             raw parsed-row count: a rotation producing only review-flagged rows
+             does not short-circuit and does not win on raw count.
           4. Otherwise retry all four cardinal angles {0, 90, 180, 270}.
-          5. Pick the angle with the most valid rows; return those rows.
+          5. Pick the angle with the most CONFIDENT rows; return those rows.
              Tie-break: lowest index in _RETRY_ANGLES (deterministic).
-          6. If no angle yields rows → return [].
+          6. If no angle yields confident rows → return the best-effort rows
+             from the most-confident attempt (may be flagged) or [].
         """
         parse = self._get_parser()
 
-        # Step 1-3: default -90° first.
+        # Step 1-3: default -90° first. Short-circuit only on a CONFIDENT read.
         img_array = self._to_array(image, -90)
         cells = self._run_engine(img_array)
         rows = parse(cells, self._dpi)
-        if rows:
+        if self._confident_row_count(rows) > 0:
             return rows
 
-        # Step 4-5: retry all four cardinal angles, pick best.
-        best_rows: list[MaterialLine] = []
-        best_count = 0
+        # Step 4-5: retry all four cardinal angles, pick the most-confident.
+        # Seed the best with the default -90° attempt so a fully-flagged but
+        # parseable default read is not discarded when no rotation is confident.
+        best_rows: list[MaterialLine] = rows
+        best_count = self._confident_row_count(rows)
 
         for angle in _RETRY_ANGLES:
             img_array = self._to_array(image, angle)
             cells = self._run_engine(img_array)
             rows = parse(cells, self._dpi)
-            count = len(rows)
+            count = self._confident_row_count(rows)
             if count > best_count:
                 best_count = count
                 best_rows = rows

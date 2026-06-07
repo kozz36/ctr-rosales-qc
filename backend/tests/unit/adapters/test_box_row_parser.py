@@ -833,3 +833,80 @@ class TestNoSilentDropOnNoiseDescContention:
         assert len(barra) == 1
         assert barra[0].cantidad == Decimal("0.136")
         assert barra[0].unidad == "TN"
+
+
+# ---------------------------------------------------------------------------
+# PR#3 real-data fixes — integer-promotion column guard + noise-floor drop
+# ---------------------------------------------------------------------------
+
+
+class TestIntegerPromotionColumnGuard:
+    """Integer candidates must be RIGHT of ALL desc cells in their row band.
+
+    Real-data failure on page 0148/0156: a long footer desc at cx≈67 (far left)
+    was in the same row band as the material rows. Item/código integers at
+    cx≈347/426 were right of the footer desc (cx=67) → promoted. But they were
+    LEFT of the BARRA desc at cx≈600. The fix: right-of-ALL-descs in band.
+    """
+
+    def test_left_column_integer_with_far_left_footer_desc_not_promoted(self) -> None:
+        # Footer desc far left (cx=67), código integer (cx=426), BARRA (cx=605).
+        # 408916 is right of the footer (67) but LEFT of BARRA (605) →
+        # must NOT be promoted to quantity.
+        cells = [
+            _cell("Created by Sandra Sopla with Autodesk Forma", cx=67, cy=589),  # footer
+            _cell("408916", cx=426, cy=595),          # código — left of BARRA
+            _cell("BARRA A615 G60 3/8\" DOB", cx=605, cy=595),
+            _cell("TNE", cx=1143, cy=598),
+            _cell("0.037", cx=1295, cy=598),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        quantities = [r.cantidad for r in rows]
+        # 0.037 must be extracted; 408916 must NOT appear
+        assert Decimal("0.037") in quantities
+        assert Decimal("408916") not in quantities
+        assert len(rows) == 1
+
+    def test_right_column_integer_is_still_promoted(self) -> None:
+        # Integer in the QTY column (far right, cx=1295), right of ALL descs.
+        # This is the valid "25 RD" case — must still be promoted.
+        cells = [
+            _cell("VARILLA LISA 10mm", cx=100, cy=150),
+            _cell("25", cx=280, cy=152),
+            _cell("RD", cx=340, cy=150),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("25")
+        assert rows[0].unidad == "RD"
+
+
+class TestNoiseFloorDrop:
+    """Rows with overall confidence below _MIN_EMIT_CONFIDENCE (0.65) are
+    dropped rather than emitted as requires_review garbage.
+
+    Real-data source: page 156 "REVISADO POR + 4.8" footer pair had conf=0.584.
+    """
+
+    def test_very_low_confidence_row_not_emitted(self) -> None:
+        # row_conf = min(desc.conf=0.60, qty.conf=0.55) = 0.55 < 0.65 floor
+        cells = [
+            _cell("REVISADO POR", cx=726, cy=999, conf=0.60),
+            _cell("4.8", cx=1121, cy=981, conf=0.55),
+            _cell("TN", cx=1200, cy=990, conf=0.90),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert rows == []
+
+    def test_border_confidence_row_above_floor_emitted_with_review(self) -> None:
+        # row_conf = min(0.70, 0.68) = 0.68 ≥ 0.65 floor but < 0.85 threshold
+        # → emitted with requires_review=True.
+        cells = [
+            _cell("BARRA A615 G60 5/8\"", cx=100, cy=150, conf=0.70),
+            _cell("0.191", cx=250, cy=152, conf=0.68),
+            _cell("TN", cx=320, cy=150, conf=0.95),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].requires_review is True
+        assert rows[0].cantidad == Decimal("0.191")

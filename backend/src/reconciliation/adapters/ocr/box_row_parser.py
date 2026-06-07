@@ -77,6 +77,15 @@ logger = logging.getLogger(__name__)
 
 _CONFIDENCE_THRESHOLD: Final[float] = 0.85
 
+# Minimum overall confidence to EMIT a row at all. Below this the row is
+# almost certainly a noise/footer false positive and is dropped with a debug
+# log rather than emitted as requires_review=True. This threshold was set from
+# real-data observation: page 156 "REVISADO POR + 4.8" footer noise pair had
+# row_conf=0.584 — well below any real material row on the same page (0.701+).
+# Any row_conf in [0.65, 0.85) is uncertain but plausibly material → emit with
+# requires_review=True. Below 0.65 → noise floor → drop.
+_MIN_EMIT_CONFIDENCE: Final[float] = 0.65
+
 # QTY (decimal shape): one-or-more integer digits, a decimal separator (. or ,),
 # one-or-more fractional digits — NO artificial caps. This admits 2.5 (one
 # fractional digit, real declared data pages 378-379), 0.008, 7.163, 5800.00
@@ -298,11 +307,27 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
             desc_cells.append(cell)
         # OTHER cells (short alpha-less tokens) are discarded.
 
-    # Promote integer candidates to quantities only when a unit cell sits in
-    # their row band (unit-suffix disambiguator). Without an adjacent unit an
-    # integer stays an incidental number (lote 119, code 408916) and is dropped.
+    # Promote integer candidates to quantities only when BOTH conditions hold:
+    #   1. A UNIT cell is adjacent in the row band (unit-suffix disambiguator).
+    #   2. The integer is to the RIGHT of ALL DESC cells in the same row band.
+    #      This mirrors the decimal-QTY column requirement (qty.cx > desc.cx) at
+    #      promotion time. An integer that is LEFT of any DESC cell in its band
+    #      is in the ITEM or CODIGO column, NOT the quantity column.
+    #
+    #      Real-data failure: codes 408916 (cx≈426) and item numbers 1/2 (cx≈347)
+    #      were promoted because a long footer desc (cx≈67) was in the row band.
+    #      Requiring the integer to be right of ALL descs in the band (not just any)
+    #      rejects these column-left integers while preserving "25 RD"-style
+    #      integers that are genuinely in the quantity column (no desc to their right).
     for int_cell in int_qty_cells:
-        if any(abs(u.cy - int_cell.cy) <= band for u in unit_cells):
+        has_unit = any(abs(u.cy - int_cell.cy) <= band for u in unit_cells)
+        in_band_descs = [d for d in desc_cells if abs(d.cy - int_cell.cy) <= band]
+        # No descs in band at all: no material row → skip (lote/code/other).
+        if not in_band_descs:
+            continue
+        # Integer must be RIGHT of every desc in the band.
+        right_of_all_descs = all(int_cell.cx > d.cx for d in in_band_descs)
+        if has_unit and right_of_all_descs:
             qty_cells.append(int_cell)
 
     if not desc_cells or not qty_cells:
@@ -468,6 +493,21 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
             row_conf = min(row_conf, unit_cell.conf)
         if row_conf < _CONFIDENCE_THRESHOLD:
             requires_review = True
+
+        # Noise floor: below _MIN_EMIT_CONFIDENCE the row is almost certainly a
+        # footer/signature noise pair (e.g. "REVISADO POR + 4.8" at conf=0.584).
+        # Drop it with a debug log rather than emitting requires_review garbage —
+        # the reconciliation gate never sees these phantom rows.
+        if row_conf < _MIN_EMIT_CONFIDENCE:
+            logger.debug(
+                "box_row_parser: row conf %.3f below emit floor (%.2f) — "
+                "dropping noise pair: desc='%s' qty='%s'",
+                row_conf,
+                _MIN_EMIT_CONFIDENCE,
+                desc.text.strip(),
+                qty.text.strip(),
+            )
+            continue
 
         desc_raw = desc.text.strip()
         lines.append(

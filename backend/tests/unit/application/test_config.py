@@ -373,6 +373,24 @@ class TestOcrConfig:
         cfg = AppConfig()
         assert cfg.ocr.enabled is True
 
+    def test_ocr_config_engine_default_is_paddle(self) -> None:
+        """S027e (config): OcrConfig.engine defaults to 'paddle' (backward-compat)."""
+        cfg = AppConfig()
+        assert cfg.ocr.engine == "paddle"
+
+    def test_ocr_config_engine_rapidocr(self) -> None:
+        """OcrConfig accepts engine='rapidocr'."""
+        c = OcrConfig(enabled=True, engine="rapidocr")
+        assert c.engine == "rapidocr"
+
+    def test_ocr_config_engine_from_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """S027e: RECONCILIATION__OCR__ENGINE=rapidocr is wired to cfg.ocr.engine."""
+        monkeypatch.setenv("RECONCILIATION__OCR__ENGINE", "rapidocr")
+        cfg = AppConfig()
+        assert cfg.ocr.engine == "rapidocr"
+
 
 # ---------------------------------------------------------------------------
 # R10.5: VisionConfig.max_tokens, SunatConfig.cache_dir

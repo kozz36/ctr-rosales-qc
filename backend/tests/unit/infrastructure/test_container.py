@@ -1040,3 +1040,153 @@ class TestBuildReprocessService:
         # Result should be a ReprocessService (or None if adapter import fails gracefully)
         # — we accept None here because the import may fail in test env without network deps
         assert result is None or isinstance(result, ReprocessService)
+
+
+# ---------------------------------------------------------------------------
+# PR#2: RapidOCR engine wiring (EXT-027 / Design §8)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPipelineRapidOcrWiring:
+    """build_pipeline wires RapidOCRAdapter when engine='rapidocr'.
+
+    Invariants verified:
+    - engine='rapidocr' → _ocr_adapter is RapidOCRAdapter  (S027a)
+    - engine='rapidocr' → deskew=None (no paddle DeskewAdapter)
+    - engine='paddle' (default) → existing wiring unchanged
+    - enabled=False → still NullOcrExtractor (unchanged by engine field)
+    - pipeline.py is NOT touched (architecture invariant)
+    """
+
+    def _patched_build_pipeline_rapid(self, config: AppConfig):
+        """Call build_pipeline with engine='rapidocr' wiring.
+
+        Uses the __new__ bypass path — does NOT patch CompositeExtractionAdapter.__init__
+        because rapidocr path uses __new__ + factory injection (same as OCR-disabled path).
+        Patches only PDF source and vision/identity adapters.
+        """
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        with patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.vision.factory.build_vision_adapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+        return pipeline
+
+    def test_rapidocr_engine_wires_rapidocr_adapter(self) -> None:
+        """S027a (container): engine='rapidocr' → _ocr_adapter is RapidOCRAdapter."""
+        from reconciliation.application.config import OcrConfig
+        from reconciliation.adapters.ocr.rapid_table import RapidOCRAdapter  # noqa: PLC0415
+
+        config = AppConfig(ocr=OcrConfig(enabled=True, engine="rapidocr"))
+        pipeline = self._patched_build_pipeline_rapid(config)
+        assert isinstance(pipeline._extractor._ocr_adapter, RapidOCRAdapter), (
+            f"Expected RapidOCRAdapter, got {type(pipeline._extractor._ocr_adapter).__name__}"
+        )
+
+    def test_rapidocr_engine_sets_deskew_none(self) -> None:
+        """engine='rapidocr' → pipeline._deskew is None (RapidOCR owns orientation)."""
+        from reconciliation.application.config import OcrConfig
+
+        config = AppConfig(ocr=OcrConfig(enabled=True, engine="rapidocr"))
+        pipeline = self._patched_build_pipeline_rapid(config)
+        assert pipeline._deskew is None, (
+            "RapidOCR engine must set deskew=None (adapter owns orientation; "
+            f"no DeskewAdapter needed). Got: {pipeline._deskew!r}"
+        )
+
+    def test_paddle_engine_unchanged(self) -> None:
+        """Default (engine='paddle') wiring is unchanged — PrintedTableAdapter injected."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        config = AppConfig()  # default: engine='paddle', enabled=True
+        assert config.ocr.engine == "paddle"
+
+        with patch(
+            "reconciliation.infrastructure.container.CompositeExtractionAdapter"
+        ) as mock_composite, patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.vision.factory.build_vision_adapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.ocr.paddle_deskew.DeskewAdapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            mock_composite.return_value._declared_adapter = MagicMock()
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+
+        # CompositeExtractionAdapter.__init__ was called (the normal paddle path)
+        mock_composite.assert_called_once()
+
+    def test_enabled_false_still_null_extractor(self) -> None:
+        """enabled=False → NullOcrExtractor regardless of engine value."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+        from reconciliation.application.config import OcrConfig
+
+        config = AppConfig(ocr=OcrConfig(enabled=False, engine="rapidocr"))
+
+        fake_pdf = MagicMock()
+        fake_pdf.contents_offsets.return_value = {}
+        fake_pdf.page_count.return_value = 1
+
+        with patch(
+            "reconciliation.adapters.pdf.pymupdf_source.PdfStructureAdapter",
+            return_value=fake_pdf,
+        ), patch(
+            "reconciliation.adapters.vision.factory.build_vision_adapter",
+            return_value=MagicMock(),
+        ), patch(
+            "reconciliation.adapters.identity.qr_barcode.QrBarcodeExtractionAdapter",
+            return_value=MagicMock(),
+        ):
+            from reconciliation.infrastructure.container import build_pipeline  # noqa: PLC0415
+            pipeline, ctx, _ = build_pipeline(Path("/fake/test.pdf"), config)
+
+        assert isinstance(pipeline._extractor._ocr_adapter, NullOcrExtractor), (
+            "enabled=False must always inject NullOcrExtractor, even when engine='rapidocr'"
+        )
+
+    def test_pipeline_imports_zero_concrete_adapters(self) -> None:
+        """Architecture invariant: pipeline.py MUST NOT import RapidOCRAdapter or PrintedTableAdapter.
+
+        Verified by inspecting the module namespace post-import.
+        """
+        import importlib
+        import sys
+
+        # Import pipeline in a clean context (it may be cached from earlier test runs,
+        # but we can still check what names are bound in the module).
+        import reconciliation.application.pipeline as pipeline_mod
+
+        ns = vars(pipeline_mod)
+        forbidden = {"RapidOCRAdapter", "PrintedTableAdapter", "RapidOCR", "PaddleOCR"}
+        leaked = forbidden & set(ns.keys())
+        assert not leaked, (
+            f"pipeline.py MUST NOT import concrete adapters; found: {leaked}. "
+            "Pipeline depends ONLY on ExtractionPort (Protocol)."
+        )

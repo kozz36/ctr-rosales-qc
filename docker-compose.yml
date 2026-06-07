@@ -2,7 +2,8 @@
 #
 # Cloud vision profile: provider=ollama → qwen3.5:397b-cloud via host Ollama daemon.
 # SUNAT fetch: opt-in (enabled=true); cross-run cache at /data/sunat-cache (named volume).
-# OCR: disabled (ocr.enabled=false) — quantities come from SUNAT; paddle never instantiated.
+# OCR: RapidOCR PP-OCRv5-server (deterministic, paddle-free, air-gap-capable).
+#      Engine=rapidocr — quantities come from deterministic OCR (SDD#1 deploy flip).
 #
 # Prerequisites:
 #   - make build (or docker compose build backend)
@@ -30,8 +31,11 @@ services:
     # directly). Verified: ollama + SUNAT both HTTP 200 from a --network host run.
     network_mode: host
     environment:
-      # OCR: disabled — SUNAT supplies authoritative quantities (paddle never loaded)
-      RECONCILIATION__OCR__ENABLED: "false"
+      # OCR: RapidOCR PP-OCRv5-server — deterministic printed-table extraction (SDD#1)
+      # Engine=rapidocr: ONNX, paddle-free, models bundled in image (air-gap-capable).
+      # Replaces the prior OCR-disabled mode; SUNAT now acts as supplementary source.
+      RECONCILIATION__OCR__ENABLED: "true"
+      RECONCILIATION__OCR__ENGINE: "rapidocr"
       # Vision: cloud via host Ollama (host networking → localhost reaches the daemon)
       RECONCILIATION__VISION__PROVIDER: "ollama"
       # Model + base URL are env-configurable (12-factor) so each host can point at

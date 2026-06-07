@@ -31,8 +31,15 @@ identity = [
     "Pillow>=10.0",
     "numpy>=1.26",
 ]
+ocr = [
+    "rapidocr>=3.8,<3.9",
+    "onnxruntime>=1.18",
+    "Pillow>=10.0",
+    "numpy>=1.26",
+    "opencv-python>=4.5.1.48",
+]
 all = [
-    "reconciliation[ml,llm,identity]",
+    "reconciliation[ml,llm,identity,ocr]",
 ]
 dev = [
     "pytest",

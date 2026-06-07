@@ -55,52 +55,52 @@ Chain strategy: pending
 
 ### Phase 1.1 — RED: Write failing tests for the pure parser (no implementation yet)
 
-- [ ] **1.1.1** Create `backend/tests/unit/adapters/test_box_row_parser.py`.
+- [x] **1.1.1** Create `backend/tests/unit/adapters/test_box_row_parser.py`.
   Write failing test `test_band_px_scaling` — assert `round(40*dpi/200)` == 40 at 200, 60 at 300, 30 at 150, 20 at 100.
   Spec: EXT-029 / EXT-S029g. Design: §4.
 
-- [ ] **1.1.2** Add failing test `test_desc_qty_pairing_multi_row` — 4-cell table at Y centroids [120,160,200,240] (DPI=200, band=40px); assert 4 `MaterialLine`-shaped rows with QTY values {0.008, 0.136, 0.191, 0.041} paired correctly, never cross-band.
+- [x] **1.1.2** Add failing test `test_desc_qty_pairing_multi_row` — 4-cell table at Y centroids [120,160,200,240] (DPI=200, band=40px); assert 4 `MaterialLine`-shaped rows with QTY values {0.008, 0.136, 0.191, 0.041} paired correctly, never cross-band.
   Spec: EXT-029 / EXT-S029a. Design: §2.1.
 
-- [ ] **1.1.3** Add failing test `test_unit_cell_association_same_band` — synthetic row with DESC cell at (cx=100,cy=150), QTY cell at (cx=250,cy=152), UNIT cell `TNE` at (cx=300,cy=150). Assert emitted row has `unidad="TN"` (TNE normalized). Also test `KG`, `RD`, `Rollo` remain unchanged.
+- [x] **1.1.3** Add failing test `test_unit_cell_association_same_band` — synthetic row with DESC cell at (cx=100,cy=150), QTY cell at (cx=250,cy=152), UNIT cell `TNE` at (cx=300,cy=150). Assert emitted row has `unidad="TN"` (TNE normalized). Also test `KG`, `RD`, `Rollo` remain unchanged.
   Spec: EXT-029 / EXT-S029b. Design: §5 (`_UNIT_RE`). **Design risk #2 mitigation — unit column explicit test.**
 
-- [ ] **1.1.4** Add failing test `test_unit_cell_row_scan_fallback` — row with no UNIT cell in the same band; assert `requires_review=True` on the emitted row OR row is dropped (document whichever the implementation chooses and lock it here).
+- [x] **1.1.4** Add failing test `test_unit_cell_row_scan_fallback` — row with no UNIT cell in the same band; assert `requires_review=True` on the emitted row OR row is dropped (document whichever the implementation chooses and lock it here).
   Design: §2.1 (fallback behaviour). Locks the unit-missing edge case before implementation.
 
-- [ ] **1.1.5** Add failing test `test_tne_not_a_numeric_conversion` — a row with unit `TNE`, cantidad `0.136`. Assert `unidad="TN"`, `cantidad==Decimal("0.136")` (value unchanged, multiply by nothing).
+- [x] **1.1.5** Add failing test `test_tne_not_a_numeric_conversion` — a row with unit `TNE`, cantidad `0.136`. Assert `unidad="TN"`, `cantidad==Decimal("0.136")` (value unchanged, multiply by nothing).
   Spec: EXT-029 / EXT-S029b + EXT-032. Domain invariant: units never converted.
 
-- [ ] **1.1.6** Add failing test `test_incidental_numbers_not_qty` — cells: `1` (leftmost, no decimal), `1"` (diameter), `408916` (product code), `0.037` (valid decimal). Assert only `0.037` classified as QTY; others are not.
+- [x] **1.1.6** Add failing test `test_incidental_numbers_not_qty` — cells: `1` (leftmost, no decimal), `1"` (diameter), `408916` (product code), `0.037` (valid decimal). Assert only `0.037` classified as QTY; others are not.
   Spec: EXT-029 / EXT-S029d. Design: §5 (`_QTY_RE` requires `[.,]\d{2,3}`).
 
-- [ ] **1.1.7** Add failing test `test_generalized_desc_matcher` — cells with text `FIERRO CORRUGADO 1/2"`, `ALAMBRE NEGRO`, `ACERO DIMENSIONADO`. Assert each classified as DESC (not IGNORED), even without rebar keywords.
+- [x] **1.1.7** Add failing test `test_generalized_desc_matcher` — cells with text `FIERRO CORRUGADO 1/2"`, `ALAMBRE NEGRO`, `ACERO DIMENSIONADO`. Assert each classified as DESC (not IGNORED), even without rebar keywords.
   Spec: EXT-029 / EXT-S029e. Design: §5 (≥3-letter alphabetic run rule).
 
-- [ ] **1.1.8** Add failing test `test_columnar_table_yields_rows` — synthetic cells arranged as a columnar GRE table where `_LINE_RE` would produce 0 matches (non-contiguous bounding boxes). Assert `≥1` row returned.
+- [x] **1.1.8** Add failing test `test_columnar_table_yields_rows` — synthetic cells arranged as a columnar GRE table where `_LINE_RE` would produce 0 matches (non-contiguous bounding boxes). Assert `≥1` row returned.
   Spec: EXT-029 / EXT-S029c.
 
-- [ ] **1.1.9** Add failing test `test_pure_import_no_sdk` — import `box_row_parser` inside a subprocess or with `sys.modules` mock; assert no `rapidocr`, `onnxruntime`, `paddleocr` in `sys.modules` after import.
+- [x] **1.1.9** Add failing test `test_pure_import_no_sdk` — import `box_row_parser` inside a subprocess or with `sys.modules` mock; assert no `rapidocr`, `onnxruntime`, `paddleocr` in `sys.modules` after import.
   Spec: EXT-029 / EXT-S029f + EXT-032 / EXT-S032c.
 
-- [ ] **1.1.10** Add failing test `test_count_valid_rows_orientation_oracle` — call `count_valid_rows(cells, dpi=200)`; assert returns `len(parse_box_rows(cells, dpi=200))` for the same synthetic input.
+- [x] **1.1.10** Add failing test `test_count_valid_rows_orientation_oracle` — call `count_valid_rows(cells, dpi=200)`; assert returns `len(parse_box_rows(cells, dpi=200))` for the same synthetic input.
   Design: §2.1 (`count_valid_rows` as orientation oracle). Required by PR#2 adapter retry loop.
 
-- [ ] **1.1.11** Add failing test `test_qty_right_of_desc_geometry_guard` — QTY cell at `cx=50` (LEFT of DESC at `cx=200`) in the same band. Assert this pair does NOT associate (qty must be right of desc).
+- [x] **1.1.11** Add failing test `test_qty_right_of_desc_geometry_guard` — QTY cell at `cx=50` (LEFT of DESC at `cx=200`) in the same band. Assert this pair does NOT associate (qty must be right of desc).
   Design: §2.1 (`qcx > dcx` rule).
 
-- [ ] **1.1.12** Add failing test `test_empty_cells_returns_empty_list` — call `parse_box_rows([], dpi=200)`. Assert `[]` returned without exception.
+- [x] **1.1.12** Add failing test `test_empty_cells_returns_empty_list` — call `parse_box_rows([], dpi=200)`. Assert `[]` returned without exception.
   Spec: EXT-029. Defensive edge case.
 
 ### Phase 1.2 — GREEN: Implement `box_row_parser.py`
 
-- [ ] **1.2.1** Create `backend/src/reconciliation/adapters/ocr/box_row_parser.py`.
+- [x] **1.2.1** Create `backend/src/reconciliation/adapters/ocr/box_row_parser.py`.
   Implement `Cell` frozen dataclass (`text: str, conf: float, cx: float, cy: float`).
   Implement `_QTY_RE`, `_UNIT_RE`, three-way cell classifier.
   Imports: only `stdlib` (`re`, `decimal`, `dataclasses`) + `reconciliation.domain.models.MaterialLine` + `reconciliation.domain.normalizer.MaterialNormalizer`. Zero SDK imports at module level.
   Spec: EXT-029. Design: §2.1, §5.
 
-- [ ] **1.2.2** Implement `parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]`:
+- [x] **1.2.2** Implement `parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]`:
   - `band_px = round(40 * dpi / 200)`
   - Group cells into row bands by centroid Y
   - For each QTY cell, find nearest DESC in same band with `dcx < qcx`
@@ -110,16 +110,16 @@ Chain strategy: pending
   - Return `[]` on no valid pairs (orientation oracle reads this as 0 valid rows)
   Design: §2.1, §4, §5.
 
-- [ ] **1.2.3** Implement `count_valid_rows(cells: list[Cell], dpi: int) -> int` as `len(parse_box_rows(cells, dpi))`.
+- [x] **1.2.3** Implement `count_valid_rows(cells: list[Cell], dpi: int) -> int` as `len(parse_box_rows(cells, dpi))`.
   Design: §2.1.
 
-- [ ] **1.2.4** Run `cd backend && uv run pytest tests/unit/adapters/test_box_row_parser.py -v` — all 12 tests must be GREEN. If any fail, fix before proceeding.
+- [x] **1.2.4** Run `cd backend && uv run pytest tests/unit/adapters/test_box_row_parser.py -v` — all 12 tests must be GREEN. If any fail, fix before proceeding.
   Spec: all EXT-029 scenarios, EXT-032 / S032c (domain purity). **No SDK installed — this is the purity gate.**
 
-- [ ] **1.2.5** Verify domain/ untouched: `git diff --name-only HEAD | grep domain/` must be empty.
+- [x] **1.2.5** Verify domain/ untouched: `git diff --name-only HEAD | grep domain/` must be empty.
   Spec: EXT-032 / EXT-S032c. Domain invariant check.
 
-- [ ] **1.2.6** Commit work-unit: `feat(ocr): add pure box-row parser with strict-TDD suite (PR#1)`.
+- [x] **1.2.6** Commit work-unit: `feat(ocr): add pure box-row parser with strict-TDD suite (PR#1)`.
   Conventional commit. No push (orchestrator-only — SA-3).
 
 ---
@@ -131,23 +131,23 @@ Chain strategy: pending
 
 ### Phase 2.1 — RED: Write failing tests (adapter, factory, config, container)
 
-- [ ] **2.1.1** Create `backend/tests/unit/adapters/test_rapid_table.py`.
+- [x] **2.1.1** Create `backend/tests/unit/adapters/test_rapid_table.py`.
   Write failing tests (using injected `_engine` mock mirroring `test_paddle_table.py::_make_ocr`):
   - `test_extract_declared_returns_empty_list` — EXT-028 / S028a.
   - `test_lazy_import_not_triggered_at_init` — assert `_engine is None` after `RapidOCRAdapter()` construction. EXT-028 / S028b.
   - `test_engine_failure_returns_empty_not_raises` — mock engine raises on `__call__`; assert `[]` returned and `_ocr_failed=True`. EXT-028 / design §2.2 graceful degradation.
   Design: §2.2, §9.
 
-- [ ] **2.1.2** Add failing tests for orientation logic (mocked engine):
+- [x] **2.1.2** Add failing tests for orientation logic (mocked engine):
   - `test_default_minus90_applied_first` — mock `_engine` returns boxes for -90° only; assert rows returned without retry.
   - `test_retry_triggered_on_zero_valid_rows` — mock returns boxes for 0° only; assert retry loop runs {0,90,180,270} and picks 0°.
   - `test_max_valid_rows_wins_on_retry` — mock: 90° yields 2 rows, 180° yields 4 rows; assert 4-row candidate returned.
   Spec: EXT-030 / S030a-c. Design: §6.
 
-- [ ] **2.1.3** Add failing test `test_confidence_below_threshold_sets_requires_review` — mock `_engine` returns a cell with `score=0.75` (< 0.85); assert emitted `MaterialLine` has `requires_review=True`.
+- [x] **2.1.3** Add failing test `test_confidence_below_threshold_sets_requires_review` — mock `_engine` returns a cell with `score=0.75` (< 0.85); assert emitted `MaterialLine` has `requires_review=True`.
   Spec: EXT-004 (confidence gate retained). Design: §2.2.
 
-- [ ] **2.1.4** Create `backend/tests/unit/adapters/test_ocr_factory.py`.
+- [x] **2.1.4** Create `backend/tests/unit/adapters/test_ocr_factory.py`.
   Write failing tests:
   - `test_rapidocr_engine_resolves_to_rapidocr_adapter` — EXT-027 / S027a.
   - `test_paddle_engine_resolves_to_printed_table_adapter` — EXT-027 / S027b.
@@ -156,34 +156,34 @@ Chain strategy: pending
   - `test_factory_module_imports_without_rapidocr_installed` — EXT-027 / S027d; assert no SDK in `sys.modules` at factory import time.
   Spec: EXT-027. Design: §2.3.
 
-- [ ] **2.1.5** Extend `backend/tests/unit/application/test_config.py`:
+- [x] **2.1.5** Extend `backend/tests/unit/application/test_config.py`:
   - `test_ocr_config_engine_default_is_paddle` — `OcrConfig().engine == "paddle"`.
   - `test_ocr_config_engine_from_env` — env `RECONCILIATION__OCR__ENGINE=rapidocr` → `engine="rapidocr"`. EXT-027 / S027e.
   Spec: EXT-027. Design: §8.
 
-- [ ] **2.1.6** Extend `backend/tests/unit/infrastructure/test_container.py`:
+- [x] **2.1.6** Extend `backend/tests/unit/infrastructure/test_container.py`:
   - `test_rapidocr_engine_wires_rapidocr_adapter` — build container with `engine=rapidocr`; assert `_ocr_adapter` is `RapidOCRAdapter` instance.
   - `test_rapidocr_engine_sets_deskew_none` — same config; assert `_deskew is None`.
   - `test_paddle_engine_unchanged` — build with `engine=paddle`; assert `_ocr_adapter` is `PrintedTableAdapter`, deskew is `DeskewAdapter`.
   - `test_enabled_false_still_null_extractor` — regression guard.
   Spec: EXT-027. Design: §8.
 
-- [ ] **2.1.7** Add failing test `test_pipeline_imports_zero_concrete_adapters` (extend `test_pipeline.py` or add to `test_config.py`):
+- [x] **2.1.7** Add failing test `test_pipeline_imports_zero_concrete_adapters` (extend `test_pipeline.py` or add to `test_config.py`):
   Import `backend.src.reconciliation.application.pipeline`; assert `RapidOCRAdapter` and `PrintedTableAdapter` NOT in the module's namespace.
   Spec: EXT-027 / S027d. Domain invariant.
 
 ### Phase 2.2 — GREEN: Implement adapter, factory, config, container changes
 
-- [ ] **2.2.1** Add `engine: Literal["paddle", "rapidocr"] = "paddle"` to `OcrConfig` in `backend/src/reconciliation/application/config.py`.
+- [x] **2.2.1** Add `engine: Literal["paddle", "rapidocr"] = "paddle"` to `OcrConfig` in `backend/src/reconciliation/application/config.py`.
   Ensure `extra="allow"` (already present). Additive only.
   Spec: EXT-027. Design: §8.
 
-- [ ] **2.2.2** Create `backend/src/reconciliation/adapters/ocr/factory.py`.
+- [x] **2.2.2** Create `backend/src/reconciliation/adapters/ocr/factory.py`.
   Implement `build_ocr_extractor(cfg) -> ExtractionPort` with lazy-import branches per design §2.3.
   Note: factory does NOT handle `enabled=False` — that stays in `container.py`.
   Spec: EXT-027. Design: §2.3.
 
-- [ ] **2.2.3** Create `backend/src/reconciliation/adapters/ocr/rapid_table.py`.
+- [x] **2.2.3** Create `backend/src/reconciliation/adapters/ocr/rapid_table.py`.
   Implement `RapidOCRAdapter(dpi=200, _engine=None)`:
   - `extract_declared` → `[]`
   - `_get_engine()` with `_INIT_LOCK` double-checked lazy init per design §3
@@ -192,7 +192,7 @@ Chain strategy: pending
   - `extract_printed_table(image: bytes)` orientation loop per design §6 (default -90°, retry on 0 rows, max-valid-rows)
   Spec: EXT-028 + EXT-030. Design: §2.2, §3, §6.
 
-- [ ] **2.2.4** Update `backend/src/reconciliation/infrastructure/container.py` (lines 378-392):
+- [x] **2.2.4** Update `backend/src/reconciliation/infrastructure/container.py` (lines 378-392):
   Replace two-branch with three-branch logic per design §8.
   `enabled=False` → `NullOcrExtractor` (unchanged).
   `enabled=True` → `build_ocr_extractor(config)` via `__new__` bypass, inject `_declared_adapter` + `_ocr_adapter`.
@@ -200,19 +200,19 @@ Chain strategy: pending
   **INVARIANT**: `pipeline.py` must not be touched.
   Spec: EXT-027. Design: §8.
 
-- [ ] **2.2.5** Run full adapter+factory+config+container test suite:
+- [x] **2.2.5** Run full adapter+factory+config+container test suite:
   `cd backend && uv run pytest tests/unit/adapters/test_rapid_table.py tests/unit/adapters/test_ocr_factory.py tests/unit/application/test_config.py tests/unit/infrastructure/test_container.py -v`
   All must be GREEN. No SDK installed requirement (injected mock).
 
-- [ ] **2.2.6** Run regression sweep on existing paddle tests:
+- [x] **2.2.6** Run regression sweep on existing paddle tests:
   `cd backend && uv run pytest tests/unit/adapters/test_paddle_table.py tests/unit/adapters/test_null_extractor.py -v`
   Must remain GREEN. PR#2 is additive; paddle path unchanged.
 
-- [ ] **2.2.7** Verify `git diff HEAD -- backend/src/reconciliation/domain/` is empty (domain purity).
+- [x] **2.2.7** Verify `git diff HEAD -- backend/src/reconciliation/domain/` is empty (domain purity).
   Verify `git diff HEAD -- backend/src/reconciliation/application/pipeline.py` is empty (pipeline zero concrete adapters).
   Spec: EXT-032 / S032c. Architecture invariant gate.
 
-- [ ] **2.2.8** Commit work-unit: `feat(ocr): add RapidOCRAdapter, factory, config engine field, container wiring (PR#2)`.
+- [x] **2.2.8** Commit work-unit: `feat(ocr): add RapidOCRAdapter, factory, config engine field, container wiring (PR#2)`.
   No push. (SA-3)
 
 ---

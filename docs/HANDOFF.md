@@ -4,8 +4,22 @@
 > original machine** and does NOT travel with the repo. This document (plus the other
 > files in `docs/`) is the versioned source of truth for continuing the work anywhere.
 
-Last session: **2026-06-06**. Current branch: `main`. All recent PRs merged.
-**Next action: start SDD#1 (deterministic OCR backend).** See §SDD-plan.
+Last session: **2026-06-07**. Current branch: `main`. All recent PRs merged.
+**SDD#1 (deterministic OCR backend) — PR#1/#2/#3 MERGED (#51/#52/#53). Next action: PR#4
+(geometric column anchoring → trusted/confident reads).** See §3.
+
+> **SDD#1 outcome**: deterministic OCR (RapidOCR PP-OCRv5-server, paddle-free) re-enabled as the
+> primary quantity extractor. The real-data gate (`backend/tests/integration/test_rapidocr_gate.py`,
+> run with `CTR_PDF_PATH=docs/eval/reg227_section.pdf`, ~5 min) reads the real scanned guías EXACT
+> (7/7; p148/156/160). **#40 root cause fixed.** Each PR was gated by dual-blind judgment-day, which
+> caught a real silent-data-loss CRITICAL on ALL THREE PRs that ctr-reviewer + sdd-verify passed over
+> — run full JD on parser-core / pipeline-wiring / real-data changes. **Known interim state**: the real
+> GRE layout is `DESC|UNIDAD|CANTIDAD` (unit middle), so the parser currently flags EVERY row
+> `requires_review=True` (relaxed unit-fallback) — correct but conservative. **PR#4** adds geometric
+> table-region/column anchoring to (a) exclude out-of-table stamp/footer garble by POSITION, (b) make
+> clean reads CONFIDENT (restore the trusted-read value vs vision), (c) close the latent integer-guard
+> edge, (d) add a unit test for the gate's no-confident-spurious clause. Ground it in real geometry;
+> strict-TDD + full dual-blind JD. After PR#4 → sdd-verify (full-change) + sdd-archive.
 
 ---
 

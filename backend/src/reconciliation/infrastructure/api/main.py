@@ -51,6 +51,48 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # In-memory run registry: {run_id → {status, ctx, review_service, ...}}
     run_registry: dict[str, Any] = {}
 
+    # --- Run history: scan existing run dirs and merge into registry (RH-002, D4) ---
+    try:
+        import datetime  # noqa: PLC0415
+
+        from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+            JsonManifestRunHistoryAdapter,
+        )
+
+        adapter = JsonManifestRunHistoryAdapter()
+        app.state.run_history = adapter
+
+        entries = adapter.scan(config.output_dir)
+        for entry in entries:
+            # Merge only if not already in registry (safety: no active runs at startup)
+            rid = entry["run_id"]
+            run_registry[rid] = entry
+
+        logger.info(
+            "run_history: startup scan merged %d run entries (output_dir=%s)",
+            len(entries), config.output_dir,
+        )
+
+        # Lazy 48 h sweep of old error-status runs at startup
+        try:
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=48)
+            deleted_ids = adapter.sweep_failed(config.output_dir, cutoff)
+            for rid in deleted_ids:
+                run_registry.pop(rid, None)
+            if deleted_ids:
+                logger.info("run_history: startup sweep removed %d old failed runs", len(deleted_ids))
+        except Exception as _sweep_exc:  # noqa: BLE001
+            logger.warning("run_history: startup sweep failed (non-fatal): %s", _sweep_exc)
+
+    except Exception as _scan_exc:  # noqa: BLE001
+        logger.warning("run_history: startup scan failed (non-fatal): %s", _scan_exc)
+        # Ensure run_history is set even on failure (sweep/write calls in routes.py are guarded)
+        if not hasattr(app.state, "run_history"):
+            from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+                JsonManifestRunHistoryAdapter,
+            )
+            app.state.run_history = JsonManifestRunHistoryAdapter()
+
     app.state.config = config
     app.state.run_registry = run_registry
 

@@ -52,6 +52,7 @@ from reconciliation.infrastructure.api.schemas import (
     RowEditResponse,
     RunCreateResponse,
     RunStatusResponse,
+    RunSummaryResponse,
     UnresolvedGuiaResponse,
     _row_id,
 )
@@ -235,6 +236,78 @@ def _require_vision_on_service(reprocess_service: Any, run_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Run history helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_run_manifest(
+    result: Any,
+    entry: dict[str, Any],
+    started_at: str,
+    run_id: str,
+) -> "RunManifest":  # type: ignore[name-defined]
+    """Build a RunManifest from a successful PipelineResult.
+
+    Derives registro_min/max by int-sorting the registro numbers from
+    result.declared; falls back to lexicographic sort when not all numeric.
+
+    Args:
+        result:     PipelineResult returned by pipeline.run().
+        entry:      Current registry entry (for vision_calls_made, warnings).
+        started_at: ISO-8601 UTC start timestamp.
+        run_id:     UUID string of the run.
+
+    Returns:
+        RunManifest ready for write_manifest().
+    """
+    import datetime  # noqa: PLC0415
+
+    from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
+
+    declared_items = getattr(result, "declared", []) or []
+    registros = [getattr(item, "registro", None) for item in declared_items]
+    registros = [r for r in registros if r is not None]
+
+    registro_min: str | None = None
+    registro_max: str | None = None
+    if registros:
+        try:
+            sorted_nums = sorted(registros, key=lambda r: int(r))
+        except (ValueError, TypeError):
+            sorted_nums = sorted(registros)
+        registro_min = sorted_nums[0]
+        registro_max = sorted_nums[-1]
+
+    rows = getattr(result, "rows", []) or []
+    warnings = getattr(result, "warnings", []) or []
+    vision_calls = entry.get("vision_calls_made", 0)
+
+    match_count = sum(
+        1 for r in rows if getattr(r, "status", None) == "MATCH"
+    )
+    mismatch_count = sum(
+        1 for r in rows if getattr(r, "status", None) == "MISMATCH"
+    )
+
+    return RunManifest(
+        schema_version=1,
+        run_id=run_id,
+        status="review",
+        started_at=started_at,
+        completed_at=datetime.datetime.now(datetime.UTC).isoformat(),
+        seq=1,  # placeholder — write_manifest overwrites with allocated seq
+        registro_min=registro_min,
+        registro_max=registro_max,
+        row_count=len(rows),
+        match_count=match_count,
+        mismatch_count=mismatch_count,
+        warnings=list(warnings),
+        vision_calls_made=vision_calls,
+        error=None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Background pipeline runner
 # ---------------------------------------------------------------------------
 
@@ -302,9 +375,40 @@ def _run_pipeline_background(
             }
         )
         logger.info("pipeline run %s completed; %d rows", run_id, len(result.rows))
+
+        # --- Run history manifest (D1: non-fatal side-channel in routes.py) ---
+        try:
+            from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+                JsonManifestRunHistoryAdapter,
+            )
+
+            run_history = JsonManifestRunHistoryAdapter()
+            manifest = _build_run_manifest(result, registry[run_id], started_at, run_id)
+            run_history.write_manifest(manifest, config.output_dir)
+        except Exception as _mex:  # noqa: BLE001
+            logger.warning("run_history: manifest write error for %s (non-fatal): %s", run_id, _mex)
+
     except Exception as exc:  # noqa: BLE001
         logger.exception("pipeline run %s failed", run_id)
         registry[run_id].update({"status": "error", "error": str(exc)})
+
+        # --- Failure manifest (D1: non-fatal; always try after registry update) ---
+        try:
+            from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+                JsonManifestRunHistoryAdapter,
+            )
+
+            run_history = JsonManifestRunHistoryAdapter()
+            run_history.write_failure_manifest(
+                run_id=run_id,
+                started_at=started_at,
+                error_str=str(exc),
+                output_dir=config.output_dir,
+            )
+        except Exception as _mex:  # noqa: BLE001
+            logger.warning(
+                "run_history: failure manifest write error for %s (non-fatal): %s", run_id, _mex
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +499,70 @@ async def create_run(
 
     logger.info("accepted run %s (%d bytes)", run_id, total_bytes)
     return RunCreateResponse(run_id=run_id, status="pending")
+
+
+@router.get(
+    "/runs",
+    response_model=list[RunSummaryResponse],
+    summary="List all known runs, sorted newest-first (RH-003).",
+)
+def list_runs(registry: RunRegistry, config: AppConfigDep) -> list[RunSummaryResponse]:
+    """Return summary of all known runs, sorted by started_at descending.
+
+    Runs without a started_at (legacy degraded entries) appear last.
+    Triggers a lazy 48 h sweep of error-status runs before assembling the list.
+    Spec: RH-003, D5.
+    """
+    import datetime  # noqa: PLC0415
+
+    # Lazy 48 h sweep: delete old error-status runs from disk + remove from registry.
+    try:
+        from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+            JsonManifestRunHistoryAdapter,
+        )
+
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=48)
+        adapter = JsonManifestRunHistoryAdapter()
+        deleted_ids = adapter.sweep_failed(config.output_dir, cutoff)
+        for rid in deleted_ids:
+            registry.pop(rid, None)
+            logger.info("run_history: swept run %s from registry", rid)
+    except Exception as _sweep_exc:  # noqa: BLE001
+        logger.warning("run_history: sweep error (non-fatal): %s", _sweep_exc)
+
+    def _sort_key(entry: dict[str, Any]) -> tuple[int, str]:
+        # Entries with started_at sort first (0), then by ts desc; null → last (1).
+        ts = entry.get("started_at") or ""
+        if ts:
+            return (0, ts)
+        return (1, "")
+
+    sorted_entries = sorted(registry.values(), key=_sort_key, reverse=False)
+    # We want desc by started_at: partition into has_ts (sort desc) + no_ts (at end)
+    has_ts = [e for e in sorted_entries if e.get("started_at")]
+    no_ts = [e for e in sorted_entries if not e.get("started_at")]
+    has_ts_desc = sorted(has_ts, key=lambda e: e.get("started_at", ""), reverse=True)
+    ordered = has_ts_desc + no_ts
+
+    return [
+        RunSummaryResponse(
+            run_id=e["run_id"],
+            status=e.get("status", "review"),
+            started_at=e.get("started_at"),
+            completed_at=e.get("completed_at"),
+            seq=e.get("seq"),
+            registro_min=e.get("registro_min"),
+            registro_max=e.get("registro_max"),
+            row_count=e.get("row_count", 0),
+            match_count=e.get("match_count", 0),
+            mismatch_count=e.get("mismatch_count", 0),
+            warnings_count=len(e.get("warnings", [])),
+            vision_calls_made=e.get("vision_calls_made", 0),
+            degraded=e.get("degraded", False),
+            error=e.get("error"),
+        )
+        for e in ordered
+    ]
 
 
 @router.get(

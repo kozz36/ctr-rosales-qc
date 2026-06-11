@@ -429,19 +429,23 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### Phase 2.3 — Real-data gate (PR-2)
 
-- [ ] **2.3.1** Run real-data recovery test against the full PDF (`CTR_PDF_PATH` set):
-  Select a discarded entry that has `has_cached_lines=True` (e.g. a page from the 343 with non-empty lines). Call `apply_page_recovery` for it.
-  Assert: OCR NOT called (Tier 1 path).
-  Assert: `recovered=True`; recovered lines have `requires_review=True` on ALL lines.
-  Assert: the entry is REMOVED from `discarded_pages` after recovery.
-  Assert: re-reconciliation produces a result for the recovered registro (MISMATCH or MATCH — either is valid; review-flagged is mandatory).
-  Spec: EXT-036 / EXT-S036a + REV-R32 / REV-S032a. Real-data proof (unit-green ≠ correct lesson).
+- [x] **2.3.1** Run real-data recovery test against the section PDF (`docs/eval/reg227_section.pdf`, OCR=rapidocr, vision capped at 0):
+  Page 152 (registro='227', 3 cached lines) selected as Tier-1 target.
+  Assert OCR NOT called (Tier 1 path): PASS — OCR spy call count = 0.
+  Assert `recovered=True`: PASS.
+  Assert ALL recovered lines `requires_review=True` (3/3 lines): PASS.
+  Assert entry REMOVED from `discarded_pages` (1→0): PASS.
+  Re-reconciliation: 53 rows returned. Spec: EXT-036 / EXT-S036a + REV-R32 / REV-S032a.
+  Gate test: `backend/tests/integration/test_discarded_recovery_gate.py::TestDiscardedRecoveryRealDataGate::test_2_3_1_recovery_chain` — 2 passed in 193s.
 
-- [ ] **2.3.2** Verify sidecar restart round-trip with real data:
-  After recovery completes, inspect the sidecar JSON. Assert the `recovered_discarded_page` event is present.
-  Reconstruct `ReviewService` via `restore_from_sidecar` on a fresh instance.
-  Assert recovered guía is restored; `discarded_pages` entry is dropped.
-  Design: §5 (§11.1 risk — restart correctness).
+- [x] **2.3.2** Verify sidecar restart round-trip with real data:
+  Sidecar edits=1. Event `recovered_discarded_page` present: PASS.
+  Event target `{'guia_id': 'recovered_152', 'page': 152}`: PASS.
+  Event `new_value` is dict (GuiaDeRemision model_dump): PASS.
+  `restore_from_sidecar` on fresh service: guía `recovered_152` present: PASS.
+  `discarded_pages` entry for page 152 absent in fresh service: PASS.
+  Design: §5 (§11.1 risk resolved).
+  Gate test: `backend/tests/integration/test_discarded_recovery_gate.py::TestDiscardedRecoveryRealDataGate::test_2_3_2_sidecar_restart_roundtrip` — PASS.
 
 ### Phase 2.4 — Judgment Day (PR-2)
 

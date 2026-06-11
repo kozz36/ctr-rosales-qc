@@ -472,93 +472,65 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### Phase 3a.1 — RED: Write failing vitest tests
 
-- [ ] **3a.1.1** Create `frontend/src/features/review/__tests__/DescartadasTab.test.ts` (or `.spec.ts`, matching project convention).
-  Write failing test `test_three_tabs_rendered_with_tab_order`:
-  Mount `ReviewPage` with a fixture `discardedPages=[{page:152, registro:"232", has_cached_lines:true}]`.
-  Assert 3 tabs visible: "Reconciliación", "Pendientes por procesar", "Descartadas para revisión".
-  Assert `TAB_ORDER = ['reconciliacion', 'pendientes', 'descartadas']` (type-level assertion or runtime check).
-  Assert default active tab is "Reconciliación" (index 0).
-  FAILS today: only 2 tabs exist.
-  Spec: REV-R27 / REV-R27-S01.
+- [x] **3a.1.1** Created `frontend/src/__tests__/features/ReviewPage.descartadasTab.test.ts` (project convention is `src/__tests__/features/`, not `src/features/review/__tests__/` — convention-match authorized by task text).
+  Test `renders three tabs in TAB_ORDER with Descartadas appended; default is Reconciliación`.
+  CONFIRMED RED: `expected [...] to have a length of 3 but got 2`. Spec: REV-R27 / REV-R27-S01.
 
-- [ ] **3a.1.2** Add failing test `test_descartadas_tab_badge_shows_count`:
-  2 discarded entries. Assert the "Descartadas" tab badge shows "2".
-  Spec: REV-R27 / REV-R27-S01.
+- [x] **3a.1.2** Test `shows the discarded count badge on the Descartadas tab` (2 entries → "2").
+  CONFIRMED RED: descartadas tab undefined. Spec: REV-R27 / REV-R27-S01.
 
-- [ ] **3a.1.3** Add failing test `test_zero_discarded_tab_present_no_badge`:
-  0 discarded entries. Assert "Descartadas" tab IS present. Assert badge shows "0" or is hidden.
-  Spec: REV-R27 / REV-R27-S02.
+- [x] **3a.1.3** Test `keeps the Descartadas tab present with zero entries; badge is hidden or "0"`.
+  CONFIRMED RED: 2 tabs instead of 3. Spec: REV-R27 / REV-R27-S02.
 
-- [ ] **3a.1.4** Add failing test `test_existing_tabs_behavior_unaffected`:
-  Assert `TAB_ORDER[0]="reconciliacion"`, `TAB_ORDER[1]="pendientes"` (indices preserved).
-  Assert Reconciliación and Pendientes tab behavior untouched (no broken existing scenarios).
-  Spec: REV-R27 / REV-R27-S03.
+- [x] **3a.1.4** Test `preserves existing tab indices and Pendientes behavior`.
+  Regression LOCK — passes against current code by design (locks REV-R27-S03 existing behavior; cannot fail-first by nature). Spec: REV-R27 / REV-R27-S03.
 
-- [ ] **3a.1.5** Create `frontend/src/features/review/__tests__/DescartadasTab.unit.test.ts`.
-  Write failing test `test_discarded_entries_grouped_by_contiguous_runs`:
-  Flat `discardedPages` input: pages 57,58,59,81,82 (two separate runs).
-  Assert computed `groups` property yields 2 groups: `[57,58,59]` and `[81,82]`.
-  Spec: A1 (grouping by contiguous page-index + registro-break).
-  FAILS today: `DescartadasTab` does not exist.
+- [x] **3a.1.5** Created `frontend/src/__tests__/features/DescartadasTab.test.ts` (component unit tests).
+  Test `groups discarded entries into contiguous page runs` (57,58,59 | 81,82 → 2 groups).
+  CONFIRMED RED: `Failed to resolve import "@/features/review/DescartadasTab.vue"` (whole suite — same ImportError RED convention as PR-1/PR-2). Spec: A1.
 
-- [ ] **3a.1.6** Add failing test `test_registro_break_splits_group`:
-  Pages 57 (`registro="232"`), 58 (`registro="233"`), 59 (`registro="233"`).
-  Assert groups: `[57]` and `[58,59]` (registro change breaks the run).
-  Design: A1.
+- [x] **3a.1.6** Test `splits a contiguous run when the registro changes` ([57] | [58,59]).
+  CONFIRMED RED: suite-level import failure. Design: A1.
 
-- [ ] **3a.1.7** Add failing test `test_groups_collapsed_by_default`:
-  Mount `DescartadasTab` with 2 groups. Assert no `<img>` elements rendered (collapsed = v-if, zero image fetches on mount).
-  Design: A2.
+- [x] **3a.1.7** Test `renders all groups collapsed by default — no <img> elements exist`.
+  CONFIRMED RED: suite-level import failure. Design: A2.
 
-- [ ] **3a.1.8** Add failing test `test_expand_group_renders_lazy_thumbnails`:
-  Expand a group. Assert `<img loading="lazy">` elements are rendered with correct `/pages/{page}/thumbnail` URLs.
-  Design: A2 (`<img loading="lazy">`, zero fetches until expand).
+- [x] **3a.1.8** Test `expanding a group renders <img loading="lazy"> with thumbnail URLs`
+  (asserts `/runs/run-123/pages/{57,58}/thumbnail`). CONFIRMED RED: suite import failure. Design: A2.
 
-- [ ] **3a.1.9** Add failing test `test_per_page_checkbox_selection`:
-  3 entries. Check one checkbox. Assert `selected` Set contains only that page's number.
-  Spec: REV-R29.
+- [x] **3a.1.9** Test `checking one per-page checkbox selects only that page`
+  (+ group header goes indeterminate). CONFIRMED RED: suite import failure. Spec: REV-R29.
 
-- [ ] **3a.1.10** Add failing test `test_per_group_tristate_selects_group`:
-  Group of 3 pages. Click group header checkbox. Assert all 3 page numbers in `selected`.
-  Assert group header checkbox state is "checked".
-  Design: A3 (per-group tri-state).
+- [x] **3a.1.10** Test `group header checkbox selects all pages of the run without expanding`
+  (tri-state usable COLLAPSED; asserts zero `<img>` forced). CONFIRMED RED: suite import failure. Design: A3.
 
-- [ ] **3a.1.11** Add failing test `test_global_select_all`:
-  2 groups, 5 pages total. Click global "Seleccionar todas (5)" control.
-  Assert all 5 pages in `selected`.
-  Spec: REV-R29 / REV-R29-S01. Design: A3.
+- [x] **3a.1.11** Test `global "Seleccionar todas (N)" selects every page across groups` (5 pages, 2 groups).
+  CONFIRMED RED: suite import failure. Spec: REV-R29-S01. Design: A3.
 
-- [ ] **3a.1.12** Add failing test `test_global_deselect_all`:
-  All 5 selected. Click global control again.
-  Assert `selected` is empty.
-  Spec: REV-R29 / REV-R29-S02.
+- [x] **3a.1.12** Test `global control toggles back to deselect all` (bulk disabled after).
+  CONFIRMED RED: suite import failure. Spec: REV-R29-S02.
 
-- [ ] **3a.1.13** Add failing test `test_bulk_button_disabled_when_no_selection`:
-  0 entries selected. Assert "Recuperar seleccionadas" button is disabled.
-  Spec: REV-R29.
+- [x] **3a.1.13** Test `disables "Recuperar seleccionadas" when nothing is selected`.
+  CONFIRMED RED: suite import failure. Spec: REV-R29.
 
-- [ ] **3a.1.14** Add failing test `test_single_page_recuperar_calls_single_endpoint`:
-  Click single-page "Recuperar" button for page 152.
-  Assert `recoverDiscardedPage(runId, 152)` is called.
-  Assert emit `'refetch'` after success.
-  Spec: REV-R31 (single-page UI action).
+- [x] **3a.1.14** Test `clicking "Recuperar" calls recoverDiscardedPage and emits refetch on success`
+  (asserts `recoverDiscardedPage('run-123', 152)`). PLUS extra honesty lock
+  `shows the failure reason honestly when recovered=false` (reason="empty" surfaced, no refetch).
+  CONFIRMED RED: suite import failure. Spec: REV-R31 UI.
 
-- [ ] **3a.1.15** Add failing test `test_empty_state_message_shown`:
-  0 discarded entries. Assert empty-state message is rendered.
-  Assert no checkboxes, no thumbnails rendered.
-  Spec: REV-R28 / REV-R28-S05.
+- [x] **3a.1.15** Test `renders the empty-state message with no checkboxes or thumbnails`.
+  CONFIRMED RED: suite import failure. Spec: REV-R28-S05.
 
-- [ ] **3a.1.16** Add failing test `test_registro_none_shows_sin_registro_label`:
-  1 entry with `registro=null`. Assert "sin registro" (or equivalent) label is shown.
-  Spec: REV-R28 / REV-R28-S03.
+- [x] **3a.1.16** Test `shows a "sin registro" label for entries without registro`.
+  CONFIRMED RED: suite import failure. Spec: REV-R28-S03.
 
-- [ ] **3a.1.17** Add failing test `test_reintentar_button_absent`:
-  Assert no "Reintentar SUNAT" / `retry_attempted` logic in `DescartadasTab` component.
-  Spec: REV-R33 MUST-NOT (REINTENTAR is exclusive to SUNAT retry path; structurally impossible via Option B but locked by test).
+- [x] **3a.1.17** Test `never renders a REINTENTAR / SUNAT-retry surface`.
+  CONFIRMED RED: suite import failure. Spec: REV-R33 MUST-NOT.
 
 ### Phase 3a.2 — GREEN: Implement PR-3a
 
-- [ ] **3a.2.1** Add `DiscardedPageResponse`, `RecoverPageResponse` + batch request/status TypeScript types to `frontend/src/api/types.ts`:
+- [x] **3a.2.1** VERIFIED already satisfied by PR-2 commit (4-site Literal lockstep): `types.ts` has `DiscardedPageResponse`, `RecoverPageResponse`, `DiscardedBatchResponse`, `DiscardedRecoverStatusResponse`, `ReconciliationTableResponse.discarded_pages` and `'operator'` in both `identity_source` unions. No change needed in PR-3a. Original spec follows:
+  Add `DiscardedPageResponse`, `RecoverPageResponse` + batch request/status TypeScript types to `frontend/src/api/types.ts`:
   ```typescript
   export interface DiscardedPageResponse {
     page: number
@@ -578,13 +550,15 @@ If PR-2 tests push the total past 400 lines, split as:
   Verify `identity_source` union in `types.ts` already has `'operator'` (set in 2.2.1).
   Design: §6 (D2 lockstep, frontend union).
 
-- [ ] **3a.2.2** Add API client functions to `frontend/src/api/client.ts`:
+- [x] **3a.2.2** DONE — three client functions added following the module's per-endpoint conventions (single-page recover uses a 120 s timeout: Tier-2 OCR/Tier-3 vision exceed the 30 s default). Original spec follows:
+  Add API client functions to `frontend/src/api/client.ts`:
   `recoverDiscardedPage(runId: string, page: number): Promise<RecoverPageResponse>` → `POST /runs/{runId}/discarded-pages/{page}/recover`.
   `recoverDiscardedBatch(runId: string, pages: number[]): Promise<{run_id: string, count: number}>` → `POST /runs/{runId}/discarded-pages/recover-batch`.
   `getDiscardedRecoverStatus(runId: string): Promise<{total: number, recovered: number, failed: number, done: boolean}>` → `GET /runs/{runId}/discarded-pages/recover-status`.
   Design: §6.
 
-- [ ] **3a.2.3** Extend `ReviewPage.vue` (`features/review/ReviewPage.vue:242-276`):
+- [x] **3a.2.3** DONE — TabKey + TAB_ORDER extended, `descartadasTabEl` ref + `tabElFor` switch, third tab button (role=tab, aria-selected, aria-controls, roving tabindex, badge mirrors `erroredCount` v-if pattern), `discardedPages`/`discardedCount` computeds, `tabpanel-descartadas` panel. `onTabKeydown` verified generic over 3 elements (modular arithmetic — zero logic change). Two pre-existing 2-tab assertions updated per REV-R27 [MODIFIED: REV-R23]: `ReviewPage.tabs.test.ts` (tab count 2→3) + `ReviewPage.tabsKeyboard.test.ts` (End → Descartadas is now the last tab; WAI-ARIA semantics unchanged). Original spec follows:
+  Extend `ReviewPage.vue` (`features/review/ReviewPage.vue:242-276`):
   Update `type TabKey` to include `'descartadas'`.
   Update `TAB_ORDER = ['reconciliacion', 'pendientes', 'descartadas']`.
   Add `descartadasTabEl` ref + `tabElFor` branch.
@@ -592,7 +566,8 @@ If PR-2 tests push the total past 400 lines, split as:
   `onTabKeydown` already uses `TAB_ORDER` modular arithmetic — verify it works with 3 elements without change.
   Spec: REV-R27. Design: §6 (D6).
 
-- [ ] **3a.2.4** Create `frontend/src/features/review/DescartadasTab.vue`:
+- [x] **3a.2.4** DONE — created per design A1/A2/A3 + D6. Deviations (noted): (a) `expanded` lives in a separate `Set<number>` keyed by group first-page, NOT a field on the computed group objects (a computed is re-derived — state on its items would reset; same derived-view-model intent); (b) bulk button is rendered with live count but gated by `BULK_FLOW_READY=false` so no dead-click path ships before PR-3b wires the confirm/batch flow (orchestrator-authorized "disabled/hidden pending PR-3b"); (c) honest failure reasons mapped es-PE for `empty` / `not_found` / `already_recovered` + network errors. Original spec follows:
+  Create `frontend/src/features/review/DescartadasTab.vue`:
   Props: `{ discardedPages: DiscardedPageResponse[], runId: string }`.
   Emits: `'refetch'`.
   Computed `groups`: O(n) pass over sorted `discardedPages`, break on page-index gap OR registro change. Returns `Array<{ registro: string|null, pages: DiscardedPageResponse[], expanded: boolean }>`.
@@ -607,19 +582,11 @@ If PR-2 tests push the total past 400 lines, split as:
   Reuse `PageSheetViewer.vue` (PR#48) for per-page sheet viewer action.
   Design: §6 (D6), A1, A2, A3.
 
-- [ ] **3a.2.5** Run PR-3a vitest suite:
-  ```
-  cd frontend && npm test -- --testPathPattern="DescartadasTab|ReviewPage.*descartadas"
-  ```
-  All 17 tests (3a.1.1–3a.1.17) MUST be GREEN.
+- [x] **3a.2.5** PR-3a vitest suite GREEN: `cd frontend && npm test -- DescartadasTab` (vitest positional filter, not jest `--testPathPattern`) → 2 files, **18/18 passed** (17 planned + 1 extra honesty lock on recovered=false).
 
-- [ ] **3a.2.6** Run full frontend vitest regression:
-  ```
-  cd frontend && npm test
-  ```
-  All 322 existing tests + new tests MUST be GREEN. No existing tab broken.
+- [x] **3a.2.6** Full frontend regression GREEN: `cd frontend && npm test` → **340/340 passed** (322 prior + 18 new). `npm run type-check` (vue-tsc --noEmit) → 0 errors.
 
-- [ ] **3a.2.7** Commit work-unit:
+- [x] **3a.2.7** Committed work-unit on branch `feat/discarded-pages-tab`:
   `feat(review): Descartadas tab — grouped list, collapsed thumbnails, tri-state selection, single-page recover (PR-3a)`
   No push (SA-3).
 

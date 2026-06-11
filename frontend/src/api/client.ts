@@ -13,12 +13,15 @@
 import axios, { type AxiosInstance } from 'axios'
 import type {
   AuditTrailResponse,
+  DiscardedBatchResponse,
+  DiscardedRecoverStatusResponse,
   ExportFormat,
   GuiaLineEditRequest,
   GuiaLineEditResponse,
   ReassignRequest,
   ReassignResponse,
   ReconciliationTableResponse,
+  RecoverPageResponse,
   ReprocessBatchResponse,
   ReprocessBatchStatusResponse,
   ReprocessGuiaResponse,
@@ -217,6 +220,58 @@ export async function getReprocessBatchStatus(
 ): Promise<ReprocessBatchStatusResponse> {
   const { data } = await http.get<ReprocessBatchStatusResponse>(
     `/runs/${runId}/registros/${encodeURIComponent(registro)}/reprocess-status`,
+  )
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// POST /runs/{run_id}/discarded-pages/{page}/recover — single-page recovery
+// (SDD#2 PR-3a / REV-R31). OCR-first: cached lines → OCR re-run → vision.
+// 200 with recovered=true/false (+ reason); 404 page not discarded; 409 not ready.
+// ---------------------------------------------------------------------------
+
+export async function recoverDiscardedPage(
+  runId: string,
+  page: number,
+): Promise<RecoverPageResponse> {
+  const { data } = await http.post<RecoverPageResponse>(
+    `/runs/${runId}/discarded-pages/${page}/recover`,
+    undefined,
+    {
+      // Tier-2 OCR (~10 s) or Tier-3 vision can exceed the default 30 s budget.
+      timeout: 120_000,
+    },
+  )
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// POST /runs/{run_id}/discarded-pages/recover-batch — operator-selected subset
+// (SDD#2 / REV-R30). 202: background batch started; client polls recover-status.
+// ---------------------------------------------------------------------------
+
+export async function recoverDiscardedBatch(
+  runId: string,
+  pages: number[],
+): Promise<DiscardedBatchResponse> {
+  const { data } = await http.post<DiscardedBatchResponse>(
+    `/runs/${runId}/discarded-pages/recover-batch`,
+    { pages },
+  )
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// GET /runs/{run_id}/discarded-pages/recover-status — REAL completion signal
+// (SA-5 shape). Terminal shape {total:0, recovered:0, failed:0, done:true}
+// when no batch fired — the client never hangs.
+// ---------------------------------------------------------------------------
+
+export async function getDiscardedRecoverStatus(
+  runId: string,
+): Promise<DiscardedRecoverStatusResponse> {
+  const { data } = await http.get<DiscardedRecoverStatusResponse>(
+    `/runs/${runId}/discarded-pages/recover-status`,
   )
   return data
 }

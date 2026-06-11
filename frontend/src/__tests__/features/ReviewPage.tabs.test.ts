@@ -167,8 +167,10 @@ describe('ReviewPage — tabs (F3 / REV-R23)', () => {
     const tablist = wrapper.find('[role="tablist"]')
     expect(tablist.exists()).toBe(true)
 
+    // SDD#2 REV-R27 [MODIFIED: REV-R23]: the tablist now has THREE tabs
+    // (Descartadas appended at index 2); the first two are unchanged.
     const tabs = wrapper.findAll('[role="tab"]')
-    expect(tabs).toHaveLength(2)
+    expect(tabs).toHaveLength(3)
     const labels = tabs.map((t) => t.text())
     expect(labels.some((l) => l.includes('Reconciliación'))).toBe(true)
     expect(labels.some((l) => l.includes('Pendientes'))).toBe(true)

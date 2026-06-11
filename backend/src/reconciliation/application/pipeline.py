@@ -83,6 +83,7 @@ from reconciliation.domain.classifier import PageClassifier
 from reconciliation.domain.date_floor import apply_delivery_floor
 from reconciliation.domain.date_inference import infer_reception_year
 from reconciliation.domain.models import (
+    DiscardedPage,
     ErroredGuia,
     GuiaDeRemision,
     GuiaIdentity,
@@ -227,6 +228,10 @@ class PipelineResult:
     vision_calls_made: int = 0
     warnings: list[str] = field(default_factory=list)
     errored_guias: list[ErroredGuia] = field(default_factory=list)
+    # EXT-034/035: GUIA-classified pages dropped by the rev-6 QR-evidence gate.
+    # Additive side-channel — never alters grouping key/status/delta/qty.
+    # Old serializations without this key hydrate via Pydantic default to [].
+    discarded_pages: list[DiscardedPage] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +362,11 @@ class ReconciliationPipeline:
         )
 
         # Stage 5b: assemble multi-page guía blocks; reuses cached DecodeOutcome map.
-        blocks = self._stage_assemble_blocks(raw_guias, classifications, decode_map=decode_map)
+        # Returns (blocks, discarded_pages): blocks ready for vision date extraction;
+        # discarded_pages are GUIA pages dropped by the rev-6 QR-evidence gate (EXT-034).
+        blocks, pipeline_discarded_pages = self._stage_assemble_blocks(
+            raw_guias, classifications, decode_map=decode_map
+        )
 
         # Determine stage_total dynamically: 6 when SUNAT is enabled (adds "Consulta SUNAT"
         # as stage 4 between OCR and vision), 5 otherwise (existing numbering unchanged).
@@ -429,7 +438,15 @@ class ReconciliationPipeline:
         rows = self._stage_reconcile(declared, guias)
 
         # Stage 9: persist sidecar (also appends the vision audit record)
-        self._stage_persist(ctx, classifications, declared, guias, rows, errored_guias)
+        self._stage_persist(
+            ctx,
+            classifications,
+            declared,
+            guias,
+            rows,
+            errored_guias,
+            pipeline_discarded_pages,
+        )
 
         # Final completion event — guarantees the progress bar reaches 100%.
         # stage_index == stage_total == _stage_total (6 with SUNAT, 5 without).
@@ -451,6 +468,7 @@ class ReconciliationPipeline:
             vision_calls_made=vision_calls_made,
             warnings=declared_date_warnings + ocr_warnings + warnings,
             errored_guias=errored_guias,
+            discarded_pages=pipeline_discarded_pages,
         )
 
     # ------------------------------------------------------------------
@@ -865,7 +883,7 @@ class ReconciliationPipeline:
         raw_guias: list[_RawGuia],
         classifications: list[PageClassification],
         decode_map: dict[int, DecodeOutcome] | None = None,
-    ) -> list[_GuiaBlock]:
+    ) -> tuple[list[_GuiaBlock], list[DiscardedPage]]:
         """Stage 5b: group per-page _RawGuia objects into multi-page GuiaBlocks.
 
         Algorithm (S1.5 / EXT-015, rev-3):
@@ -882,13 +900,19 @@ class ReconciliationPipeline:
            guia_id derived from page index (no QR data).
         7. hashqr_url propagation: first non-null value across block pages (D2).
 
-        Returns a list of _GuiaBlock objects ready for vision date extraction.
+        Returns:
+            Tuple of (blocks, discarded_pages):
+            - blocks: list of _GuiaBlock objects ready for vision date extraction.
+            - discarded_pages: list of DiscardedPage for GUIA pages that had no QR
+              evidence (EXT-034). Additive side-channel — gate blocking semantics
+              are UNCHANGED (the `continue` statement remains).
         """
         if not raw_guias:
-            return []
+            return [], []
 
         _decode = decode_map or {}
         blocks: list[_GuiaBlock] = []
+        discarded: list[DiscardedPage] = []
         current_block: _GuiaBlock | None = None
 
         for raw in raw_guias:
@@ -976,8 +1000,19 @@ class ReconciliationPipeline:
             has_guia_evidence = identity is not None or is_ocr_fallback_material
             if not has_guia_evidence:
                 logger.debug(
-                    "assemble_blocks: dropped non-guía page %d (no QR evidence)",
+                    "assemble_blocks: dropped non-guía page %d (no QR evidence) — "
+                    "emitting DiscardedPage (EXT-034)",
                     raw.source_page,
+                )
+                # EXT-034: emit a DiscardedPage entry instead of silently dropping.
+                # The `continue` stays — the rev-6 gate blocking semantics are UNCHANGED.
+                # The page still cannot open or extend a block at ANY position.
+                discarded.append(
+                    DiscardedPage(
+                        page=raw.source_page,
+                        registro=raw.registro,
+                        lines=list(raw.lines),
+                    )
                 )
                 continue
 
@@ -1064,8 +1099,13 @@ class ReconciliationPipeline:
         if current_block is not None:
             blocks.append(current_block)
 
-        logger.debug("assemble_blocks: %d blocks from %d pages", len(blocks), len(raw_guias))
-        return blocks
+        logger.debug(
+            "assemble_blocks: %d blocks, %d discarded from %d pages",
+            len(blocks),
+            len(discarded),
+            len(raw_guias),
+        )
+        return blocks, discarded
 
     def _stage_sunat_fetch(
         self,
@@ -1603,6 +1643,7 @@ class ReconciliationPipeline:
         guias: list[GuiaDeRemision],
         rows: list[ReconciliationRow],
         errored_guias: list[ErroredGuia] | None = None,
+        discarded_pages: list[DiscardedPage] | None = None,
     ) -> None:
         """Stage 9: write extraction cache + initial empty review sidecar.
 
@@ -1613,6 +1654,10 @@ class ReconciliationPipeline:
         reconciliation key/status/delta/qty. The live boundary surfaces it from
         the in-memory run registry (RunStatusResponse); the cache-load read side
         (build_review_service) is wired in change #3.
+
+        ``discarded_pages`` (EXT-034/035) is persisted as a second additive
+        side-channel (same pattern). Old caches without this key hydrate to []
+        via ``cache.get("discarded_pages", [])`` in build_review_service.
         """
         if not ctx.has_extraction_cache():
             cache_data: dict[str, Any] = {
@@ -1623,6 +1668,9 @@ class ReconciliationPipeline:
                 "rows": [row.model_dump(mode="json") for row in rows],
                 "errored_guias": [
                     eg.model_dump(mode="json") for eg in (errored_guias or [])
+                ],
+                "discarded_pages": [
+                    d.model_dump(mode="json") for d in (discarded_pages or [])
                 ],
             }
             ctx.write_extraction_cache(cache_data)

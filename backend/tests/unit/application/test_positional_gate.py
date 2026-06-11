@@ -175,7 +175,7 @@ class TestEXTS19aConditionBNoQrBlockNotAbsorbed:
             1: _decode_no_qr(),
         }
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0_qr, p1_heur], classifications, decode_map=decode_map
         )
 
@@ -206,7 +206,7 @@ class TestEXTS19aConditionBNoQrBlockNotAbsorbed:
             1: _decode_no_qr(),
         }
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0, p1], classifications, decode_map=decode_map
         )
 
@@ -264,7 +264,7 @@ class TestConditionCContinuationAbsorbed:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0, p1], classifications, decode_map=decode_map
         )
 
@@ -303,7 +303,7 @@ class TestEXTS19eRegistroMismatchNotAbsorbed:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0, p1], classifications, decode_map=decode_map
         )
 
@@ -332,7 +332,7 @@ class TestEXTS19eRegistroMismatchNotAbsorbed:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0, p1], classifications, decode_map=decode_map
         )
 
@@ -384,7 +384,7 @@ class TestEXTS19cGenuineContinuationRegression:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p151, p152], classifications, decode_map=decode_map
         )
 
@@ -409,7 +409,7 @@ class TestEXTS19cGenuineContinuationRegression:
         decode_map = {0: _decode_qr(qr), 1: _decode_no_qr()}
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0, p1], classifications, decode_map=decode_map
         )
 
@@ -502,7 +502,7 @@ class TestEXTS19bRealDataReg228PhotosNotAbsorbed:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p98, *photos], classifications, decode_map=decode_map
         )
 
@@ -555,7 +555,7 @@ class TestEXTS19fTrueMultiQRPageGuiaAbsorbed:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p10, p11], classifications, decode_map=decode_map
         )
 
@@ -624,8 +624,14 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b, p_c], classifications, decode_map=decode_map
+        )
+
+        # EXT-S034d lock: an ocr_fallback page (URL QR evidence + material) is ASSEMBLED
+        # into its own block — it must NEVER be double-surfaced as a DiscardedPage.
+        assert _discarded == [], (
+            "ocr_fallback (URL QR evidence) page must be assembled, not discarded"
         )
 
         # Three distinct blocks: A (QR), B (ocr_fallback), C (QR).
@@ -667,7 +673,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         decode_map = {0: _decode_qr(qr_a)}
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks([p_a], classifications, decode_map=decode_map)
+        blocks, _discarded = pipeline._stage_assemble_blocks([p_a], classifications, decode_map=decode_map)
 
         assert len(blocks) == 1
         assert blocks[0].identity_source == "qr"
@@ -691,7 +697,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         decode_map = {98: _decode_qr(qr), 99: _decode_no_qr()}
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p98, photo], classifications, decode_map=decode_map
         )
 
@@ -739,7 +745,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b], classifications, decode_map=decode_map
         )
 
@@ -789,7 +795,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b], classifications, decode_map=decode_map
         )
 
@@ -829,7 +835,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b], classifications, decode_map=decode_map
         )
 
@@ -857,8 +863,13 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a], classifications, decode_map=decode_map
+        )
+
+        # EXT-S034d lock: run-start ocr_fallback page is assembled, not double-surfaced.
+        assert _discarded == [], (
+            "run-start ocr_fallback (URL QR evidence) page must be assembled, not discarded"
         )
 
         assert len(blocks) == 1, (
@@ -895,8 +906,14 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b], classifications, decode_map=decode_map
+        )
+
+        # EXT-S034d lock: the ocr_fallback page (p1) is assembled into its own block —
+        # it must NEVER also appear in discarded (no double-surfacing).
+        assert _discarded == [], (
+            "ocr_fallback (URL QR evidence) page must be assembled, not discarded"
         )
 
         assert len(blocks) == 2, (

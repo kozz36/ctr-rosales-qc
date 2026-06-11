@@ -29,6 +29,7 @@ from typing import Any
 
 from reconciliation.domain.errors import ReconciliationError
 from reconciliation.domain.models import (
+    DiscardedPage,
     ErroredGuia,
     GuiaDeRemision,
     ReconciliationRow,
@@ -118,6 +119,7 @@ class ReviewService:
         rows: list[ReconciliationRow],
         ctx: RunContext,
         errored_guias: list[ErroredGuia] | None = None,
+        discarded_pages: list[DiscardedPage] | None = None,
     ) -> None:
         self._declared: list[Registro] = list(declared)
         self._guias: list[GuiaDeRemision] = list(guias)
@@ -126,6 +128,8 @@ class ReviewService:
         self._reconciler = ReconciliationService()
         self._audit_trail: list[EditEvent] = []
         self._errored_guias: list[ErroredGuia] = list(errored_guias) if errored_guias else []
+        # EXT-034/035: GUIA pages dropped by rev-6 QR-evidence gate (additive side-channel).
+        self._discarded_pages: list[DiscardedPage] = list(discarded_pages) if discarded_pages else []
 
     # ------------------------------------------------------------------
     # Read-only accessors
@@ -148,6 +152,15 @@ class ReviewService:
         Read-only constructor state — never modified by edit/reassign events.
         """
         return list(self._errored_guias)
+
+    @property
+    def discarded_pages(self) -> list[DiscardedPage]:
+        """GUIA pages dropped by the rev-6 QR-evidence gate (EXT-034).
+
+        Additive side-channel — read-only until recover_discarded_page is called (PR-2).
+        Returns a copy; mutating the returned list has no effect on internal state.
+        """
+        return list(self._discarded_pages)
 
     def get_audit_trail(self) -> list[dict[str, Any]]:
         """Return the ordered list of edit events as serialisable dicts."""
@@ -600,6 +613,7 @@ class ReviewService:
         rows: list[ReconciliationRow],
         ctx: RunContext,
         errored_guias: list[ErroredGuia] | None = None,
+        discarded_pages: list[DiscardedPage] | None = None,
     ) -> "ReviewService":
         """Reconstruct a ReviewService by replaying edits from the sidecar.
 
@@ -610,13 +624,17 @@ class ReviewService:
         ReviewService is returned.
 
         Args:
-            declared:      Registro list from the extraction cache.
-            guias:         GuiaDeRemision list from the extraction cache.
-            rows:          Initial ReconciliationRow list.
-            ctx:           RunContext with the sidecar path.
-            errored_guias: Guías that resolved to 0 lines (REV-E03).  Hydrated
-                           from the extraction cache by build_review_service;
-                           constructor state, NOT replayed as edit events.
+            declared:        Registro list from the extraction cache.
+            guias:           GuiaDeRemision list from the extraction cache.
+            rows:            Initial ReconciliationRow list.
+            ctx:             RunContext with the sidecar path.
+            errored_guias:   Guías that resolved to 0 lines (REV-E03).  Hydrated
+                             from the extraction cache by build_review_service;
+                             constructor state, NOT replayed as edit events.
+            discarded_pages: GUIA pages dropped by the rev-6 QR-evidence gate
+                             (EXT-034). Hydrated from the extraction cache by
+                             build_review_service; constructor state, NOT replayed
+                             as edit events (recovery events are replayed in PR-2).
 
         Returns:
             A ReviewService with all prior edits already applied.
@@ -627,6 +645,7 @@ class ReviewService:
             rows=rows,
             ctx=ctx,
             errored_guias=errored_guias,
+            discarded_pages=discarded_pages,
         )
         sidecar = ctx.read_review_sidecar()
         edits: list[dict[str, Any]] = sidecar.get("edits", [])

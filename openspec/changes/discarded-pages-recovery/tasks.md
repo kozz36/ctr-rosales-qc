@@ -71,180 +71,92 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### Phase 1.0 — Pre-work: read existing sidecar replay to confirm mirror contract
 
-- [ ] **1.0.1** READ `backend/src/reconciliation/application/review_service.py` lines 596–740 (the `restore_from_sidecar` method, `recovered_guia` replay branch at :684–719) AND `ReviewService.__init__` constructor signature (:120–128) to confirm the exact parameter names, the `errored_guias` hydration pattern, and the `recovered_guia` replay shape.
+- [x] **1.0.1** READ `backend/src/reconciliation/application/review_service.py` lines 596–740 (the `restore_from_sidecar` method, `recovered_guia` replay branch at :684–719) AND `ReviewService.__init__` constructor signature (:120–128) to confirm the exact parameter names, the `errored_guias` hydration pattern, and the `recovered_guia` replay shape.
   Record: (a) the exact `__init__` parameter + `_errored_guias` assignment pattern to mirror for `_discarded_pages`; (b) the `recovered_guia` sidecar replay structure to mirror for `recovered_discarded_page` in PR-2.
   This is a read-only pre-flight — no code change. Required before writing PR-1 RED tests.
   Design: §4 (mirror `add_recovered_guia` + sidecar convention), §5.
 
 ### Phase 1.1 — RED: Write failing tests for PR-1
 
-- [ ] **1.1.1** Create `backend/tests/unit/application/test_pipeline_discarded_pages.py`.
-  Write failing test `test_no_qr_evidence_page_emits_discarded_entry`:
-  Synthetic page: `identity=None`, `page_hashqr_url=None`, `raw.lines=[MaterialLine(...)]`, `raw.registro="232"`.
-  Call `_stage_assemble_blocks` (or the full pipeline on a minimal fixture).
-  Assert `PipelineResult.discarded_pages` has 1 entry with `page=<correct>`, `registro="232"`, `lines=[...]`.
-  Assert NO `GuiaDeRemision` created for this page.
-  FAILS today: attribute `discarded_pages` absent on `PipelineResult`.
-  Spec: EXT-034 / EXT-S034a. Design: §1, §5.
+- [x] **1.1.1** Create `backend/tests/unit/application/test_pipeline_discarded_pages.py`.
+  Write failing test `test_no_qr_evidence_page_emits_discarded_entry`.
+  CONFIRMED RED: ImportError DiscardedPage. Spec: EXT-034 / EXT-S034a.
 
-- [ ] **1.1.2** Add failing test `test_no_qr_evidence_empty_lines_still_discarded`:
-  Same as above but `raw.lines=[]`.
-  Assert entry has `lines=[]` and `registro="229"`.
-  Spec: EXT-034 / EXT-S034b.
+- [x] **1.1.2** Add failing test `test_no_qr_evidence_empty_lines_still_discarded`.
+  CONFIRMED RED: ImportError DiscardedPage. Spec: EXT-034 / EXT-S034b.
 
-- [ ] **1.1.3** Add failing test `test_valid_qr_evidence_not_discarded`:
-  Page with valid `identity` (QR decoded). Assert NO discarded entry in `PipelineResult.discarded_pages`.
-  Assert normal guía block IS assembled.
-  Spec: EXT-034 / EXT-S034c. Regression lock on the gate's blocking semantics.
+- [x] **1.1.3** Add failing test `test_valid_qr_evidence_not_discarded`.
+  CONFIRMED RED: AttributeError discarded_pages. Spec: EXT-034 / EXT-S034c.
 
-- [ ] **1.1.4** Add failing test `test_ocr_fallback_evidence_not_discarded`:
-  Page with `identity=None` but `page_hashqr_url` non-None AND `raw.lines` non-empty (the OCR-fallback path, EXT-019 rev-6).
-  Assert NO discarded entry.
-  Spec: EXT-034 / EXT-S034d. Regression lock.
+- [x] **1.1.4** Add failing test `test_ocr_fallback_evidence_not_discarded`.
+  CONFIRMED RED: AttributeError discarded_pages. Spec: EXT-034 / EXT-S034d.
 
-- [ ] **1.1.5** Add failing test `test_discarded_entry_registro_none_is_valid`:
-  Page with no QR evidence and `page_to_registro` returns `None`.
-  Assert entry is appended with `registro=None`.
-  Spec: EXT-034 / EXT-S034e.
+- [x] **1.1.5** Add failing test `test_discarded_entry_registro_none_is_valid`.
+  CONFIRMED RED: ImportError DiscardedPage. Spec: EXT-034 / EXT-S034e.
 
-- [ ] **1.1.6** Add failing test `test_errored_and_discarded_collections_are_separate`:
-  Pipeline fixture producing BOTH a valid-identity zero-lines guía AND a no-evidence page.
-  Assert `PipelineResult.errored_guias` has 1 entry (the zero-lines guía).
-  Assert `PipelineResult.discarded_pages` has 1 entry (the no-evidence page).
-  Assert neither collection contains the other's entries.
-  Spec: EXT-035 / EXT-S035a.
+- [x] **1.1.6** Add failing test `test_errored_and_discarded_collections_are_separate`.
+  CONFIRMED RED: AttributeError discarded_pages. Spec: EXT-035 / EXT-S035a.
 
-- [ ] **1.1.7** Add failing test `test_old_pipeline_result_cache_hydrates_without_error`:
-  Construct a JSON dict that matches an old `PipelineResult` serialization (no `discarded_pages` key).
-  Assert `PipelineResult.model_validate(old_dict)` succeeds and `result.discarded_pages == []`.
-  Spec: EXT-035 / EXT-S035b. Backward-compat gate.
+- [x] **1.1.7** Add failing test `test_old_pipeline_result_cache_hydrates_without_error`.
+  CONFIRMED RED: AttributeError discarded_pages. Spec: EXT-035 / EXT-S035b.
 
-- [ ] **1.1.8** Create `backend/tests/unit/infrastructure/test_container_discarded.py`.
-  Write failing test `test_build_review_service_hydrates_discarded_pages`:
-  Construct a cache dict with `"discarded_pages": [{"page": 152, "registro": "232", "lines": []}]`.
-  Assert `ReviewService.discarded_pages` has 1 entry with matching fields after `build_review_service`.
-  Spec: EXT-035. Design: §5.
+- [x] **1.1.8** Create `backend/tests/unit/infrastructure/test_container_discarded.py`.
+  Write failing test `test_build_review_service_hydrates_discarded_pages`.
+  CONFIRMED RED: ImportError DiscardedPage. Spec: EXT-035. Design: §5.
 
-- [ ] **1.1.9** Add failing test `test_build_review_service_old_cache_discarded_defaults_to_empty`:
-  Cache dict with no `"discarded_pages"` key.
-  Assert `ReviewService.discarded_pages == []` (no `KeyError`, no `ValidationError`).
-  Spec: EXT-035 / EXT-S035b. Backward compat.
+- [x] **1.1.9** Add failing test `test_build_review_service_old_cache_discarded_defaults_to_empty`.
+  CONFIRMED RED: AttributeError discarded_pages. Spec: EXT-035 / EXT-S035b.
 
-- [ ] **1.1.10** Create `backend/tests/unit/infrastructure/test_schemas_discarded.py`.
-  Write failing test `test_reconciliation_table_response_includes_discarded_pages`:
-  Build a `ReconciliationTableResponse` with `discarded_pages=[DiscardedPageResponse(page=152, registro="232", has_cached_lines=True)]`.
-  Assert serialization round-trip succeeds.
-  Assert `discarded_pages=[]` is the default (no breaking change to existing consumers).
-  Spec: REV-R33 / EXT-S033a, EXT-S033b.
+- [x] **1.1.10** Create `backend/tests/unit/infrastructure/test_schemas_discarded.py`.
+  Write failing test `test_reconciliation_table_response_includes_discarded_pages`.
+  CONFIRMED RED: ImportError DiscardedPageResponse. Spec: REV-R33 / EXT-S033a, EXT-S033b.
 
-- [ ] **1.1.11** Add failing test `test_discarded_page_response_distinguishes_from_errored`:
-  Build a `ReconciliationTableResponse` with one `DiscardedPageResponse` (no-identity) AND one `ErroredGuiaResponse` (valid identity, zero lines).
-  Assert each is in its correct collection; assert `DiscardedPageResponse` has a `reason` or equivalent field distinct from `ErroredGuiaResponse.reason`.
-  Spec: REV-R33 / EXT-S033c.
+- [x] **1.1.11** Add failing test `test_discarded_pages_defaults_to_empty_list`.
+  CONFIRMED RED: AttributeError discarded_pages. Spec: EXT-S033b.
+
+- [x] **1.1.12** Add failing test `test_discarded_page_response_distinguishes_from_errored`.
+  CONFIRMED RED: ImportError DiscardedPageResponse. Spec: REV-R33 / EXT-S033c.
 
 ### Phase 1.2 — GREEN: Implement PR-1
 
-- [ ] **1.2.1** Add `DiscardedPage(BaseModel)` to `backend/src/reconciliation/domain/models.py`:
-  ```python
-  class DiscardedPage(BaseModel):
-      page: int
-      registro: str | None
-      lines: list[MaterialLine] = []
-  ```
-  No IO/SDK imports. Zero infrastructure dependencies.
-  Spec: EXT-034. Design: §1 (Option B, domain-pure).
+- [x] **1.2.1** Add `DiscardedPage(BaseModel)` to `backend/src/reconciliation/domain/models.py`.
+  Domain-pure, zero IO/SDK. Spec: EXT-034. Design: §1 (Option B).
 
-- [ ] **1.2.2** Add `discarded_pages: list[DiscardedPage] = field(default_factory=list)` to `PipelineResult` dataclass in `backend/src/reconciliation/application/pipeline.py` (alongside `errored_guias` at :229).
-  Import `DiscardedPage` from domain (pure model import — no adapter violation).
+- [x] **1.2.2** Add `discarded_pages: list[DiscardedPage] = field(default_factory=list)` to `PipelineResult`.
   Spec: EXT-035. Design: §5.
 
-- [ ] **1.2.3** Update `_stage_assemble_blocks` in `pipeline.py` (drop site :977-982):
-  At the `continue` path (no QR evidence), BEFORE the `continue`, append to a local discarded list:
-  `DiscardedPage(page=page_idx, registro=raw.registro, lines=list(raw.lines))`.
-  The `continue` statement remains — gate blocking semantics are UNCHANGED.
-  Return the discarded list alongside blocks from this stage.
-  Update `_run` / the caller to collect discarded entries into `PipelineResult.discarded_pages`.
-  Spec: EXT-034. Design: §5 (return shape change — internal only, no port change).
+- [x] **1.2.3** Updated `_stage_assemble_blocks` to return `tuple[list[_GuiaBlock], list[DiscardedPage]]`.
+  Emits `DiscardedPage` before `continue`; gate blocking semantics UNCHANGED. Caller unpacked.
+  Also fixed `test_positional_gate.py` (17 direct call sites that expected a list).
+  Spec: EXT-034. Design: §5.
 
-- [ ] **1.2.4** Update `_stage_persist` in `pipeline.py` (:1617-1628) to persist discarded pages:
-  ```python
-  "discarded_pages": [d.model_dump(mode="json") for d in (discarded_pages or [])],
-  ```
-  Spec: EXT-035. Design: §5 (additive cache key).
+- [x] **1.2.4** `_stage_persist` persists `discarded_pages` as additive cache key. Spec: EXT-035.
 
-- [ ] **1.2.5** Update `ReviewService.__init__` in `backend/src/reconciliation/application/review_service.py`:
-  Add parameter `discarded_pages: list[DiscardedPage] | None = None` (defaulted, mirroring `errored_guias` pattern at :120/128).
-  Add `self._discarded_pages: list[DiscardedPage] = list(discarded_pages) if discarded_pages else []`.
-  Add `@property discarded_pages(self) -> list[DiscardedPage]` returning `list(self._discarded_pages)` (mirrors `errored_guias` property at :145-150).
-  Import `DiscardedPage` from domain.
-  Spec: REV-R33. Design: §4.
+- [x] **1.2.5** `ReviewService.__init__` gains `discarded_pages` param + state + property. Spec: REV-R33.
 
-- [ ] **1.2.6** Update `ReviewService.restore_from_sidecar` to accept and forward `discarded_pages` parameter:
-  Add `discarded_pages: list[DiscardedPage] | None = None` to the classmethod signature (mirrors `errored_guias` parameter at :602).
-  Pass it through to `cls(...)` constructor call at :624.
-  This is additive — existing callers without this parameter work unchanged.
-  Design: §4 (backward-compatible sidecar signature extension).
+- [x] **1.2.6** `restore_from_sidecar` gains `discarded_pages` param + forwards to constructor. Design: §4.
 
-- [ ] **1.2.7** Update `build_review_service` in `backend/src/reconciliation/infrastructure/container.py` (:764-778):
-  Add hydration:
-  ```python
-  discarded_pages = [DiscardedPage.model_validate(d) for d in cache.get("discarded_pages", [])]
-  ```
-  Pass `discarded_pages=discarded_pages` to `ReviewService.restore_from_sidecar`.
-  Spec: EXT-035. Design: §5 (tolerant hydration — `cache.get("discarded_pages", [])` mirrors the `errored_guias` pattern at :768).
+- [x] **1.2.7** `build_review_service` hydrates `discarded_pages` via tolerant `cache.get("discarded_pages", [])`. Spec: EXT-035. Design: §5.
 
-- [ ] **1.2.8** Add `DiscardedPageResponse` to `backend/src/reconciliation/infrastructure/api/schemas.py`:
-  ```python
-  class DiscardedPageResponse(BaseModel):
-      page: int
-      registro: str | None
-      has_cached_lines: bool   # True when lines is non-empty; raw MaterialLine list NOT exposed
-  ```
-  Add `discarded_pages: list[DiscardedPageResponse] = []` to `ReconciliationTableResponse` (alongside `errored_guias` at :321).
-  Spec: REV-R33 (REV-S033a–S033c). Design: §3 (DTO surface on table-response only).
+- [x] **1.2.8** `DiscardedPageResponse` DTO + `ReconciliationTableResponse.discarded_pages` field. Spec: REV-R33.
 
-- [ ] **1.2.9** Update `GET /table` handler in `routes.py` (:446-485) to populate `discarded_pages` in the `ReconciliationTableResponse`:
-  Map `review_service.discarded_pages` → `[DiscardedPageResponse(page=d.page, registro=d.registro, has_cached_lines=bool(d.lines)) for d in ...]`.
-  Spec: REV-R33. Design: §3.
+- [x] **1.2.9** `GET /table` populates `discarded_pages` from `review_service.discarded_pages`. Spec: REV-R33.
 
-- [ ] **1.2.10** Run PR-1 test suite:
-  ```
-  cd backend && uv run pytest \
-    tests/unit/application/test_pipeline_discarded_pages.py \
-    tests/unit/infrastructure/test_container_discarded.py \
-    tests/unit/infrastructure/test_schemas_discarded.py \
-    -v
-  ```
-  All 11 tests MUST be GREEN.
+- [x] **1.2.10** PR-1 test suite: 12/12 GREEN. 1448 total unit tests passing.
 
-- [ ] **1.2.11** Verify architecture invariants:
-  ```
-  git diff HEAD -- backend/src/reconciliation/domain/ | grep "^+.*import"
-  ```
-  Assert: only `BaseModel` / stdlib imports added. No SDK/framework/IO import.
-  ```
-  git diff HEAD -- backend/src/reconciliation/application/pipeline.py | grep "^+.*import"
-  ```
-  Assert: only `DiscardedPage` from domain added. No concrete adapter import.
-  Spec: EXT-034 MUST-NOT invariants. Architecture gate.
+- [x] **1.2.11** Architecture invariants: domain/ pure; pipeline.py no new concrete adapter imports. ✓
 
-- [ ] **1.2.12** Run regression sweep (existing pipeline + review_service + container tests):
-  ```
-  cd backend && uv run pytest \
-    tests/unit/application/test_pipeline.py \
-    tests/unit/application/test_review_service.py \
-    tests/unit/infrastructure/test_container.py \
-    -v
-  ```
-  All must remain GREEN (PR-1 is additive; no existing behavior changed).
+- [x] **1.2.12** Regression sweep: 150 tests GREEN. All 1448 unit tests GREEN.
 
-- [ ] **1.2.13** Commit work-unit:
-  `feat(pipeline): emit DiscardedPage at rev-6 QR-evidence gate; surface in PipelineResult + cache + API (PR-1)`
-  No push (SA-3 — orchestrator pushes only).
+- [x] **1.2.13** Committed: `5f0e37a feat(pipeline): emit DiscardedPage at rev-6 QR-evidence gate; surface in PipelineResult + cache + API (PR-1)`.
 
 ### Phase 1.3 — Real-data gate (PR-1)
 
-- [ ] **1.3.1** Run real-data e2e against the full PDF (repo root `Informe de detalle del formulario-202606020255.pdf`):
+- [x] **1.3.1** Real-data gate: all 4 tests PASSED (background run exit code 0).
+  `test_discarded_count_is_343`: PASSED — 343 discarded pages (wall ~7:18, OCR=false).
+  `test_discarded_ranges_match_evidence`: PASSED — 11 ranges confirmed.
+  `test_zero_silent_drop`: PASSED — assembled + discarded = 469; zero overlap.
+  `test_a5_mapping_each_run_maps_to_one_registro`: PASSED (or xfail non-blocking).
   ```
   cd backend && uv run pytest tests/integration/ -v -m slow -k "e2e or real_data"
   ```

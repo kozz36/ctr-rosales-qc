@@ -191,6 +191,10 @@ def _require_review_service(entry: Any, run_id: str) -> Any:
 # Sync endpoints run in Starlette's threadpool, so concurrent first-access
 # requests for the same cold entry could double-build the services. A thread
 # lock (not asyncio) is correct here. Local single-user → contention is trivial.
+# Tradeoff (M-2, accepted): the few async endpoints (reprocess_guia/registro)
+# call _get_hydrated_review_service synchronously, so a cold first-access build
+# briefly blocks the event loop; acceptable for the local single-user MVP — no
+# offload to a threadpool executor is added.
 _HYDRATION_LOCK = __import__("threading").Lock()
 
 # Module-level lock guarding the retry check-and-set (M-1 double-fire TOCTOU).
@@ -559,6 +563,9 @@ def _run_pipeline_background(
                 "vision_calls_made": result.vision_calls_made,
                 "warnings": result.warnings,
                 "errored_guias": result.errored_guias,
+                # L-1: a fresh in-process run is fully built — mark hydrated so the
+                # lazy-hydration guard never re-builds services for it.
+                "hydrated": True,
             }
         )
         logger.info("pipeline run %s completed; %d rows", run_id, len(result.rows))
@@ -567,7 +574,11 @@ def _run_pipeline_background(
         # Uses the single app.state.run_history adapter passed in from create_run.
         try:
             manifest = _build_run_manifest(result, registry[run_id], started_at, run_id)
-            run_history.write_manifest(manifest, config.output_dir)
+            # L-3: a same-day retry carries its original seq forward (stable #N).
+            preserved_seq = registry[run_id].get("preserved_seq")
+            run_history.write_manifest(
+                manifest, config.output_dir, force_seq=preserved_seq
+            )
         except Exception as _mex:  # noqa: BLE001
             logger.warning("run_history: manifest write error for %s (non-fatal): %s", run_id, _mex)
 
@@ -661,6 +672,9 @@ async def create_run(
 
     # --- Register the run (pending → processing transition in background) ---
     registry[run_id] = {
+        # Judge-A L3: list_runs reads e["run_id"]; a same-session entry created
+        # here MUST carry the run_id key or GET /runs raises a latent KeyError.
+        "run_id": run_id,
         "status": "pending",
         "pdf_path": str(pdf_path),
         "review_service": None,
@@ -703,7 +717,16 @@ def list_runs(
     # D1: reuse the single app.state.run_history adapter, not a fresh inline one.
     try:
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=48)
-        deleted_ids = run_history.sweep_failed(config.output_dir, cutoff)
+        # H-1: never sweep a run that the registry shows in-flight (pending/
+        # processing) — a retry may have reset it while the on-disk manifest
+        # still reads stale status=error. Skipping protects the live pipeline's
+        # PDF from rmtree. (Belt: retry also rewrites the manifest to pending.)
+        in_flight = {
+            rid
+            for rid, e in registry.items()
+            if e.get("status") in {"pending", "processing"}
+        }
+        deleted_ids = run_history.sweep_failed(config.output_dir, cutoff, skip_run_ids=in_flight)
         for rid in deleted_ids:
             registry.pop(rid, None)
             logger.info("run_history: swept run %s from registry", rid)
@@ -828,60 +851,111 @@ def retry_run(
             detail=f"run_id must be a valid UUID4; got {run_id!r}.",
         )
 
-    entry = registry.get(run_id)
-    if entry is None:
+    if registry.get(run_id) is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
 
-    status = entry.get("status", "unknown")
-    if status != "error":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Run '{run_id}' cannot be retried: status is {status!r}. "
-                "Retry is only valid for failed (error) runs."
+    # M-1: serialise the whole check-and-set so two concurrent POST /retry (sync
+    # endpoints → threadpool) cannot both pass the guards and both fire. Mirrors
+    # the batch check-and-set discipline. The status flip happens inside the lock.
+    with _RETRY_LOCK:
+        # Re-fetch under the lock: the loser of a concurrent double-fire must see
+        # the winner's status flip. Reading the pre-lock entry reference would let
+        # both threads observe the original 'error' status (TOCTOU).
+        entry = registry.get(run_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+        status = entry.get("status", "unknown")
+        if status != "error":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Run '{run_id}' cannot be retried: status is {status!r}. "
+                    "Retry is only valid for failed (error) runs."
+                ),
+            )
+
+        # RH-007-S04: single-pipeline rule. Reject if ANY OTHER run is currently
+        # pending/processing — never silently drop or queue concurrently.
+        busy = next(
+            (
+                rid
+                for rid, e in registry.items()
+                if rid != run_id and e.get("status") in {"pending", "processing"}
             ),
+            None,
         )
+        if busy is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot retry run '{run_id}': another run ({busy}) is currently "
+                    "in progress. Wait for it to finish (single-pipeline rule)."
+                ),
+            )
 
-    run_dir = config.output_dir / run_id
+        run_dir = config.output_dir / run_id
 
-    # Reset the run dir: delete cache/review/pages; keep pdf + sunat/.
-    for name in ("extraction_cache.json", "review.json"):
-        target = run_dir / name
-        if target.exists():
-            target.unlink()
+        # L-3: capture the original per-day seq BEFORE the reset so the same-day
+        # retry keeps its #N display identity (the prior manifest survives the
+        # reset; only cache/review/pages are deleted).
+        preserved_seq = run_history.read_seq(run_id, config.output_dir)
 
-    pages_dir = run_dir / "pages"
-    if pages_dir.exists():
-        shutil.rmtree(pages_dir, ignore_errors=True)
+        # Reset the run dir: delete cache/review/pages; keep pdf + sunat/.
+        for name in ("extraction_cache.json", "review.json"):
+            target = run_dir / name
+            if target.exists():
+                target.unlink()
 
-    # Resolve the PDF path — prefer the stored pdf_path, fall back to convention.
-    pdf_path_str: str | None = entry.get("pdf_path")
-    if pdf_path_str:
-        from pathlib import Path as _Path  # noqa: PLC0415
-        pdf_path = _Path(pdf_path_str)
-    else:
-        pdf_path = run_dir / f"{run_id}.pdf"
+        pages_dir = run_dir / "pages"
+        if pages_dir.exists():
+            shutil.rmtree(pages_dir, ignore_errors=True)
 
-    # Reset registry status to pending (background task will flip to processing).
-    registry[run_id] = {
-        **entry,
-        "status": "pending",
-        "review_service": None,
-        "reprocess_service": None,
-        "ctx": None,
-        "result": None,
-        "vision_calls_made": 0,
-        "warnings": [],
-        "errored_guias": [],
-        "error": None,
-        "hydrated": False,
-    }
+        # H-1 belt: make the on-disk manifest truthful (status='pending') so a
+        # concurrent sweep's error-only guard skips the in-flight dir even if the
+        # registry skip-set were somehow stale. Non-fatal side-channel.
+        try:
+            run_history.mark_pending(run_id, config.output_dir)
+        except Exception as _mex:  # noqa: BLE001
+            logger.warning(
+                "run_history: mark_pending failed for %s (non-fatal): %s", run_id, _mex
+            )
+
+        # Resolve the PDF path — prefer the stored pdf_path, fall back to convention.
+        pdf_path_str: str | None = entry.get("pdf_path")
+        if pdf_path_str:
+            from pathlib import Path as _Path  # noqa: PLC0415
+            pdf_path = _Path(pdf_path_str)
+        else:
+            pdf_path = run_dir / f"{run_id}.pdf"
+
+        # Reset registry to in-flight. L-1: drop stale degraded/completed_at/
+        # progress keys carried from the prior failed entry so the re-run starts
+        # clean. L-2: status is 'processing' to match the response value below.
+        # L-3: thread the preserved seq through so the completion manifest keeps it.
+        new_entry = {
+            **entry,
+            "status": "processing",
+            "review_service": None,
+            "reprocess_service": None,
+            "ctx": None,
+            "result": None,
+            "vision_calls_made": 0,
+            "warnings": [],
+            "errored_guias": [],
+            "error": None,
+            "hydrated": False,
+            "preserved_seq": preserved_seq,
+        }
+        for stale in ("degraded", "completed_at", "progress"):
+            new_entry.pop(stale, None)
+        registry[run_id] = new_entry
 
     background_tasks.add_task(
         _run_pipeline_background, run_id, pdf_path, config, registry, run_history
     )
 
     logger.info("run_history: retry fired for run %s", run_id)
+    # L-2: response matches the registry status just set (truthful).
     return RunRetryResponse(run_id=run_id, status="processing")
 
 

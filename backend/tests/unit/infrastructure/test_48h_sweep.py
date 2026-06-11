@@ -281,3 +281,72 @@ class TestGetRunsTriggersSweep:
         assert not run_dir.exists(), (
             "old failed run dir must be deleted from disk by GET /runs sweep"
         )
+
+
+# ---------------------------------------------------------------------------
+# H-1 — sweep must NOT delete a run dir mid-retry (in-flight protection)
+# ---------------------------------------------------------------------------
+
+
+class TestSweepSkipsInFlightRetry:
+    """A >48h failed run that has just been retried must survive GET /runs sweep.
+
+    Repro (Fable, live): the on-disk manifest still says status=error and is
+    >48h old, but a retry just fired and the registry status is now pending.
+    The lazy GET /runs sweep trusts the stale manifest → rmtree → the PDF and
+    the whole in-flight run dir are DELETED out from under the running pipeline.
+    """
+
+    def test_get_runs_sweep_skips_in_flight_retry(self, tmp_path: Path) -> None:
+        """retry (stub pipeline, status pending) then GET /runs → dir survives.
+
+        FAILS before H-1: GET /runs sweep consults only the stale on-disk error
+        manifest and deletes the dir even though the registry shows the run
+        pending/processing.
+        """
+        client = _make_client(tmp_path)
+        run_id = _fresh_run_id()
+        config = client.app.state.config  # type: ignore[attr-defined]
+
+        # A failed run dir, manifest >48h old (sweep-eligible by disk state),
+        # with a PDF the in-flight retry depends on.
+        run_dir = config.output_dir / run_id
+        run_dir.mkdir(parents=True)
+        old_ts = _utc_now() - datetime.timedelta(hours=49)
+        _write_manifest(run_dir, run_id, "error", _iso(old_ts))
+        pdf_path = run_dir / f"{run_id}.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+
+        client.app.state.run_registry[run_id] = {  # type: ignore[attr-defined]
+            "run_id": run_id,
+            "status": "error",
+            "started_at": _iso(old_ts),
+            "completed_at": _iso(old_ts),
+            "error": "crashed",
+            "hydrated": False,
+            "pdf_path": str(pdf_path),
+        }
+
+        # Fire retry with a stubbed pipeline so the run stays pending in-flight.
+        with patch(
+            "reconciliation.infrastructure.api.routes._run_pipeline_background"
+        ):
+            r_retry = client.post(f"/api/v1/runs/{run_id}/retry")
+        assert r_retry.status_code == 202, f"retry must accept: {r_retry.text}"
+
+        registry = client.app.state.run_registry  # type: ignore[attr-defined]
+        assert registry[run_id]["status"] in ("pending", "processing"), (
+            "after retry the registry status must be in-flight"
+        )
+
+        # Now GET /runs triggers the lazy sweep. The in-flight run MUST survive.
+        r_list = client.get("/api/v1/runs")
+        assert r_list.status_code == 200, f"GET /runs: {r_list.text}"
+
+        assert run_dir.exists(), (
+            "sweep must NOT delete a run dir that is pending/processing (mid-retry)"
+        )
+        assert pdf_path.exists(), "the in-flight run's PDF must survive the sweep"
+        assert run_id in client.app.state.run_registry, (  # type: ignore[attr-defined]
+            "in-flight retried run must NOT be swept from the registry"
+        )

@@ -204,6 +204,27 @@ class TestPostRuns:
         assert "run_id" in body
         assert body["status"] == "pending"
 
+    def test_create_run_then_list_runs_no_keyerror(self, client: TestClient) -> None:
+        """Judge-A L3: a same-session create_run entry carries run_id; GET /runs works.
+
+        FAILS before the fix: create_run seeded the entry WITHOUT a 'run_id' key,
+        so list_runs (which reads e['run_id']) raised a latent KeyError → 500 for
+        any session that had created a run before any scanned entry existed.
+        """
+        with patch("reconciliation.infrastructure.api.routes._run_pipeline_background"):
+            create = client.post(
+                "/api/v1/runs",
+                files={"file": ("test.pdf", b"%PDF-1.4 fake", "application/pdf")},
+            )
+        assert create.status_code == 202
+        run_id = create.json()["run_id"]
+
+        resp = client.get("/api/v1/runs")
+        assert resp.status_code == 200, f"GET /runs must not 500: {resp.text}"
+        assert any(item["run_id"] == run_id for item in resp.json()), (
+            "the just-created run must appear in GET /runs without a KeyError"
+        )
+
     def test_client_filename_not_used_on_disk(self, client: TestClient, tmp_path: Path) -> None:
         """The stored filename must be the run_id, never the client-supplied name."""
         with patch("reconciliation.infrastructure.api.routes._run_pipeline_background"):

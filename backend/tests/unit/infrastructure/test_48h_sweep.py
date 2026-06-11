@@ -350,3 +350,56 @@ class TestSweepSkipsInFlightRetry:
         assert run_id in client.app.state.run_registry, (  # type: ignore[attr-defined]
             "in-flight retried run must NOT be swept from the registry"
         )
+
+
+# ---------------------------------------------------------------------------
+# F-2(a) — suspenders, isolated: sweep_failed honours skip_run_ids directly
+# ---------------------------------------------------------------------------
+
+
+class TestSweepSkipRunIdsIsolated:
+    """Adapter-level proof of the H-1 'suspenders' guard, isolated from the belt.
+
+    The belt (mark_pending → status='pending' on disk) and the suspenders
+    (skip_run_ids passed to sweep_failed) mutually mask in the endpoint flow:
+    disabling EITHER alone leaves the endpoint suite green. This test exercises
+    ONLY the skip_run_ids set against an on-disk manifest that still reads
+    status='error' and is sweep-eligible by age — so it goes RED iff the
+    skip_run_ids branch in sweep_failed is removed, independent of mark_pending.
+    """
+
+    def test_sweep_failed_skips_id_in_skip_set(self, tmp_path: Path) -> None:
+        """An eligible (error, >48h) dir whose run_id is in skip_run_ids is NOT
+        deleted; an identical dir NOT in the set IS deleted.
+
+        FAILS if sweep_failed ignores skip_run_ids (the suspenders guard).
+        """
+        from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+            JsonManifestRunHistoryAdapter,
+        )
+
+        adapter = JsonManifestRunHistoryAdapter()
+        output_dir = tmp_path / "runs"
+        output_dir.mkdir(exist_ok=True)
+
+        old_ts = _iso(_utc_now() - datetime.timedelta(hours=49))
+
+        # Protected: error + old, but listed in skip_run_ids → must survive.
+        protected = _fresh_run_id()
+        protected_dir = output_dir / protected
+        protected_dir.mkdir()
+        _write_manifest(protected_dir, protected, "error", old_ts)
+
+        # Control: identical eligibility, NOT skipped → must be deleted.
+        control = _fresh_run_id()
+        control_dir = output_dir / control
+        control_dir.mkdir()
+        _write_manifest(control_dir, control, "error", old_ts)
+
+        cutoff = _utc_now() - datetime.timedelta(hours=48)
+        deleted = adapter.sweep_failed(output_dir, cutoff, skip_run_ids={protected})
+
+        assert protected not in deleted, "skip_run_ids member must NOT be swept"
+        assert protected_dir.exists(), "protected (skipped) dir must survive on disk"
+        assert control in deleted, "non-skipped eligible dir must be swept (sanity)"
+        assert not control_dir.exists(), "non-skipped dir must be deleted on disk"

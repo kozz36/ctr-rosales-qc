@@ -325,3 +325,140 @@ class TestLifespanRealE2E:
 
             # The single shared adapter is on app.state (D1).
             assert client.app.state.run_history is not None  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# F-1 — pending-zombie: scan coerces in-flight statuses to error on restart
+# ---------------------------------------------------------------------------
+
+
+class TestPendingZombieCoercion:
+    """A crash/shutdown mid-retry leaves the on-disk manifest status='pending'.
+
+    On restart a fresh process cannot own any in-flight run, yet the stale
+    'pending' (or 'processing') manifest makes the run unrecoverable via the
+    API: DELETE 409 (in-flight guard), RETRY 409 (not error), sweep skips it
+    (error-only). The scan path MUST coerce such statuses to 'error' with an
+    honest error string so the run becomes retryable + deletable + sweepable.
+    """
+
+    def test_real_lifespan_coerces_pending_manifest_to_error(
+        self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+    ) -> None:
+        """Real lifespan against a tmp dir holding a 'pending' manifest surfaces
+        the entry as status='error' with an interrupted-by-restart error, and
+        the coerced run is retryable (202) and deletable (204).
+
+        FAILS before F-1: scan returns status='pending' verbatim → DELETE 409,
+        RETRY 409 — unrecoverable.
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from fastapi.testclient import TestClient  # noqa: PLC0415
+
+        from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
+        from reconciliation.infrastructure.api.main import create_app  # noqa: PLC0415
+        from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+            JsonManifestRunHistoryAdapter,
+        )
+
+        output_dir = tmp_path / "runs"
+        output_dir.mkdir(exist_ok=True)
+
+        # A run interrupted mid-retry: production path is write a manifest then
+        # mark_pending (which writes status='pending' as raw JSON, bypassing the
+        # pydantic Literal), then a crash before completion. Reproduce exactly.
+        r_pending = _fresh_run_id()
+        (output_dir / r_pending).mkdir()
+        adapter = JsonManifestRunHistoryAdapter()
+        adapter.write_manifest(
+            RunManifest(
+                schema_version=1, run_id=r_pending, status="error",
+                started_at="2026-06-11T00:00:00+00:00", completed_at=None,
+                seq=1, registro_min=None, registro_max=None,
+                row_count=0, match_count=0, mismatch_count=0,
+                warnings=[], vision_calls_made=0,
+            ),
+            output_dir,
+            force_seq=1,
+        )
+        adapter.mark_pending(r_pending, output_dir)  # → status='pending' on disk
+        (output_dir / r_pending / f"{r_pending}.pdf").write_bytes(b"%PDF-1.4")
+
+        monkeypatch.setenv("RECONCILIATION_CONFIG", str(tmp_path / "no-such-config.yaml"))
+        monkeypatch.setenv("RECONCILIATION__OUTPUT_DIR", str(output_dir))
+
+        app = create_app()
+        with TestClient(app) as client:
+            registry = client.app.state.run_registry  # type: ignore[attr-defined]
+
+            # Coerced to error on scan.
+            assert r_pending in registry
+            assert registry[r_pending]["status"] == "error", (
+                f"pending manifest must be coerced to error on restart; "
+                f"got {registry[r_pending]['status']!r}"
+            )
+            assert registry[r_pending]["error"], "coerced run must carry an honest error string"
+
+            # On-disk manifest rewritten so GET /runs consistency + sweep eligibility.
+            manifest_path = output_dir / r_pending / "run_manifest.json"
+            disk = json.loads(manifest_path.read_text(encoding="utf-8"))
+            assert disk["status"] == "error", "coerced status must be persisted to disk"
+
+            # Retry now valid (no longer 409).
+            with patch(
+                "reconciliation.infrastructure.api.routes._run_pipeline_background"
+            ):
+                r_retry = client.post(f"/api/v1/runs/{r_pending}/retry")
+            assert r_retry.status_code == 202, (
+                f"coerced run must be retryable; got {r_retry.status_code}: {r_retry.text}"
+            )
+
+    def test_real_lifespan_coerced_run_is_deletable(
+        self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+    ) -> None:
+        """A 'pending' manifest coerced to error on restart can be DELETEd (204).
+
+        FAILS before F-1: status='pending' → DELETE 409 (in-flight guard).
+        """
+        from fastapi.testclient import TestClient  # noqa: PLC0415
+
+        from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
+        from reconciliation.infrastructure.api.main import create_app  # noqa: PLC0415
+        from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+            JsonManifestRunHistoryAdapter,
+        )
+
+        output_dir = tmp_path / "runs"
+        output_dir.mkdir(exist_ok=True)
+
+        r_pending = _fresh_run_id()
+        (output_dir / r_pending).mkdir()
+        JsonManifestRunHistoryAdapter().write_manifest(
+            RunManifest(
+                schema_version=1, run_id=r_pending, status="error",
+                started_at="2026-06-11T00:00:00+00:00", completed_at=None,
+                seq=1, registro_min=None, registro_max=None,
+                row_count=0, match_count=0, mismatch_count=0,
+                warnings=[], vision_calls_made=0,
+            ),
+            output_dir,
+            force_seq=1,
+        )
+        # Simulate a 'processing' on-disk state (raw JSON; pydantic Literal forbids it).
+        manifest_path = output_dir / r_pending / "run_manifest.json"
+        _data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        _data["status"] = "processing"
+        manifest_path.write_text(json.dumps(_data), encoding="utf-8")
+
+        monkeypatch.setenv("RECONCILIATION_CONFIG", str(tmp_path / "no-such-config.yaml"))
+        monkeypatch.setenv("RECONCILIATION__OUTPUT_DIR", str(output_dir))
+
+        app = create_app()
+        with TestClient(app) as client:
+            resp = client.delete(f"/api/v1/runs/{r_pending}")
+            assert resp.status_code == 204, (
+                f"coerced (processing→error) run must be deletable; "
+                f"got {resp.status_code}: {resp.text}"
+            )
+            assert not (output_dir / r_pending).exists()

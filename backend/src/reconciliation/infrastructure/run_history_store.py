@@ -170,6 +170,7 @@ class JsonManifestRunHistoryAdapter:
         started_at: str,
         error_str: str,
         output_dir: Path,
+        force_seq: int | None = None,
     ) -> None:
         """Write a failure manifest (status='error', counts 0) to disk.
 
@@ -180,6 +181,10 @@ class JsonManifestRunHistoryAdapter:
             started_at: ISO-8601 UTC start timestamp.
             error_str:  str(exc) from the except branch.
             output_dir: Root output directory.
+            force_seq:  F-4: when set (a same-day retry that fails AGAIN), reuse
+                        the run's ORIGINAL per-day seq instead of allocating a
+                        new one — a failed retry must keep its #N (symmetry with
+                        write_manifest). None → allocate fresh (cross-day path).
         """
         from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
 
@@ -187,7 +192,10 @@ class JsonManifestRunHistoryAdapter:
             prefix = _date_prefix(started_at)
             # D3/RH-004: hold _SEQ_LOCK across scan AND write (see write_manifest).
             with _SEQ_LOCK:
-                seq = self._scan_max_seq(prefix, output_dir) + 1
+                if force_seq is not None:
+                    seq = force_seq
+                else:
+                    seq = self._scan_max_seq(prefix, output_dir) + 1
 
                 manifest = RunManifest(
                     schema_version=1,
@@ -238,6 +246,23 @@ class JsonManifestRunHistoryAdapter:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
             seq = data.get("seq")
             return seq if isinstance(seq, int) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def read_started_at(self, run_id: str, output_dir: Path) -> str | None:
+        """Return the ISO-8601 started_at stored in the run's manifest, or None.
+
+        L-3/F-3: a retry preserves the per-day seq ONLY when the original run
+        started TODAY. The route compares this manifest date (day component)
+        against the current UTC date to decide same-day vs cross-day.
+        """
+        manifest_path = output_dir / run_id / "run_manifest.json"
+        if not manifest_path.exists():
+            return None
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            started = data.get("started_at")
+            return started if isinstance(started, str) else None
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -328,6 +353,29 @@ class JsonManifestRunHistoryAdapter:
         if manifest_path.exists():
             try:
                 data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                # F-1 pending-zombie: a crash/shutdown mid-retry can leave the
+                # on-disk manifest at an in-flight status ('pending'/'processing'
+                # — written as raw JSON by mark_pending/background, bypassing the
+                # RunManifest Literal). A FRESH process cannot own any in-flight
+                # run, so such a status is a zombie: DELETE 409 (in-flight guard),
+                # RETRY 409 (not error), sweep skips (error-only) → unrecoverable.
+                # Coerce to 'error' with an honest reason so the run becomes
+                # retryable + deletable + sweepable, and persist atomically so
+                # GET /runs and the lazy sweep see the corrected disk state too.
+                if data.get("status") in ("pending", "processing"):
+                    data["status"] = "error"
+                    if not data.get("error"):
+                        data["error"] = "interrupted by restart"
+                    if data.get("completed_at") is None:
+                        data["completed_at"] = _utc_now_iso()
+                    try:
+                        _atomic_json_write(manifest_path, data)
+                    except OSError as exc:
+                        logger.warning(
+                            "run_history: pending-zombie rewrite failed for %s "
+                            "(non-fatal, registry still coerced): %s",
+                            run_id, exc,
+                        )
                 return {
                     # F7: key by the UUID-validated dir name, NOT the manifest's
                     # self-reported run_id (the dir name is the trusted identity;

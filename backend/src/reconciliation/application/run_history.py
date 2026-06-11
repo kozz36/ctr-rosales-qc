@@ -96,6 +96,7 @@ class RunHistoryPort(Protocol):
         started_at: str,
         error_str: str,
         output_dir: Path,
+        force_seq: int | None = None,
     ) -> None:
         """Write a failure manifest for an exceptioned pipeline run.
 
@@ -107,6 +108,9 @@ class RunHistoryPort(Protocol):
             started_at: ISO-8601 UTC string when the run started.
             error_str:  str(exc) from the except branch.
             output_dir: Root output directory.
+            force_seq:  F-4: when set (same-day retry that fails again), reuse the
+                        run's ORIGINAL per-day seq so a failed retry keeps its #N
+                        (symmetry with write_manifest). None → allocate fresh.
         """
         ...
 
@@ -161,6 +165,14 @@ class RunHistoryPort(Protocol):
 
         L-3: read before a retry dir reset so the original display seq (#N)
         can be threaded into the completion manifest write (force_seq).
+        """
+        ...
+
+    def read_started_at(self, run_id: str, output_dir: Path) -> str | None:
+        """Return the ISO-8601 started_at stored in the run's manifest, or None.
+
+        F-3: a retry preserves the per-day seq ONLY when the original run
+        started TODAY (same-day). The route uses this to compare day components.
         """
         ...
 

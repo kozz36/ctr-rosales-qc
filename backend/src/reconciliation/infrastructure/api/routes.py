@@ -589,11 +589,16 @@ def _run_pipeline_background(
         # --- Failure manifest (D1: non-fatal; always try after registry update) ---
         # Uses the single app.state.run_history adapter passed in from create_run.
         try:
+            # F-4: a same-day retry that fails AGAIN keeps its #N — thread the
+            # preserved seq through the failure path exactly as the success path
+            # does (symmetry; None on a first run or a cross-day retry).
+            preserved_seq = registry[run_id].get("preserved_seq")
             run_history.write_failure_manifest(
                 run_id=run_id,
                 started_at=started_at,
                 error_str=str(exc),
                 output_dir=config.output_dir,
+                force_seq=preserved_seq,
             )
         except Exception as _mex:  # noqa: BLE001
             logger.warning(
@@ -895,10 +900,20 @@ def retry_run(
 
         run_dir = config.output_dir / run_id
 
-        # L-3: capture the original per-day seq BEFORE the reset so the same-day
-        # retry keeps its #N display identity (the prior manifest survives the
-        # reset; only cache/review/pages are deleted).
-        preserved_seq = run_history.read_seq(run_id, config.output_dir)
+        # L-3/F-3: capture the original per-day seq BEFORE the reset so the
+        # SAME-DAY retry keeps its #N display identity (the prior manifest
+        # survives the reset; only cache/review/pages are deleted). seq is a
+        # PER-DAY identity: a run that failed on day X and is retried on day Y
+        # belongs to day Y's sequence — preserving X's seq would duplicate day
+        # Y's existing #N. So only preserve when the original started_at day ==
+        # today (UTC); otherwise let write_manifest allocate a fresh seq.
+        import datetime  # noqa: PLC0415
+
+        preserved_seq = None
+        _orig_started = run_history.read_started_at(run_id, config.output_dir)
+        _today = datetime.datetime.now(datetime.UTC).date().isoformat()
+        if _orig_started is not None and _orig_started[:10] == _today:
+            preserved_seq = run_history.read_seq(run_id, config.output_dir)
 
         # Reset the run dir: delete cache/review/pages; keep pdf + sunat/.
         for name in ("extraction_cache.json", "review.json"):

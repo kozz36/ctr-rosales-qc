@@ -377,12 +377,29 @@ def _band_px(dpi: int) -> int:
 def _infer_table_region(cells: list[Cell], band: int) -> tuple[float, float] | None:
     """Estimate the y-band of the material table from cell distribution.
 
-    PR#4 / task 4.2.2. The material-table rows are the ONLY place where a
-    decimal-QTY cell and a UNIT cell coexist on the same row band; the
-    reception-stamp / footer zone below the table has stray numbers and stray
-    text but not the regular QTY+UNIT column structure. We therefore localize
-    the table by clustering the y-positions of the "table-signal" cells
-    (decimal-QTY ∪ UNIT) and taking the LARGEST contiguous cluster.
+    PR#4 / task 4.2.2 + JD PR#4 F1 fix. The material-table rows are the ONLY
+    place where a decimal-QTY cell and a UNIT cell coexist on the same row band;
+    the reception-stamp / footer zone below the table has stray numbers and
+    stray text but not the regular DESC-anchored QTY+UNIT column structure. We
+    therefore localize the table by clustering the y-positions of the
+    "table-signal" cells (decimal-QTY ∪ UNIT) and selecting the **TOPMOST**
+    cluster that carries the structural signature of a real material row (a
+    row-band-paired decimal-QTY + UNIT).
+
+    **F1 fix — topmost-structural anchor (replaces the LARGEST popularity
+    contest)**: the prior selector took the LARGEST signal cluster. A 1-row
+    table contributes exactly 2 signal cells (= the minimum cluster size), so a
+    stamp/footer emitting >=3 qty/unit-shaped garble tokens within ~160px
+    OUT-VOTED the real table and SILENTLY DROPPED the real material row (the
+    inconclusive→None→keep-all net does NOT cover a conclusive-but-wrong
+    winner). The fix anchors on the TOPMOST cluster instead: on every real page
+    the material table sits ABOVE the reception-stamp / footer zone, and the GRE
+    column headers (`DETALLE`/`UNIDAD`/`CANTIDAD`) are neither decimal-QTY nor
+    recognized UNIT tokens, so they contribute ZERO signal cells and cannot form
+    a spurious cluster above the table. To stay robust against a pure-noise
+    cluster that happens to sit topmost, the selected cluster MUST contain a
+    row-band-paired QTY+UNIT (a real material row's structural signature) — a
+    geometric/structural test, NEVER a material keyword (M-6 guard).
 
     Real-geometry basis (task 4.0.1 probe, docs/eval/reg227_section.pdf pages
     148/156/160 @200 DPI): in-table signal cells cluster at cy ~595–680; the
@@ -394,17 +411,16 @@ def _infer_table_region(cells: list[Cell], band: int) -> tuple[float, float] | N
     largest plausible inter-row gap and stays well below the table→stamp gap.
 
     Returns ``(y_top, y_bottom)`` (already padded by ``band`` on each side) when
-    a table cluster of >=2 signal cells is found, else ``None`` (inconclusive —
-    callers MUST fall back to the unfiltered behaviour, never silent-drop).
+    a qualifying table cluster is found, else ``None`` (inconclusive — callers
+    MUST fall back to the unfiltered behaviour, never silent-drop).
 
     **POSITION-ONLY** — no material keyword is consulted (M-6 guard). This is a
-    purely geometric estimate; the reconciliation gate remains the validator.
+    purely geometric/structural estimate; the reconciliation gate remains the
+    validator.
     """
-    signal_cy = sorted(
-        c.cy
-        for c in cells
-        if _is_qty_decimal(c.text.strip()) or _is_unit(c.text.strip())
-    )
+    qty_cy = sorted(c.cy for c in cells if _is_qty_decimal(c.text.strip()))
+    unit_cy = sorted(c.cy for c in cells if _is_unit(c.text.strip()))
+    signal_cy = sorted(qty_cy + unit_cy)
     if len(signal_cy) < 2:
         # Not enough structure to localize a table → inconclusive.
         return None
@@ -419,15 +435,32 @@ def _infer_table_region(cells: list[Cell], band: int) -> tuple[float, float] | N
         else:
             clusters.append([y])
 
-    # The material table is the LARGEST cluster (most QTY+UNIT signal cells).
-    # Tie-break: the topmost cluster (smallest min cy) — the table is above the
-    # stamp/footer zone on every real page.
-    largest = max(clusters, key=lambda cl: (len(cl), -cl[0]))
-    if len(largest) < 2:
-        return None
+    def _has_paired_qty_unit(cl: list[float]) -> bool:
+        """True iff the cluster carries a row-band-paired decimal-QTY + UNIT.
 
-    y_top = largest[0] - band
-    y_bottom = largest[-1] + band
+        The structural signature of a real material row: a decimal-QTY cell and
+        a UNIT cell on the SAME row band (|Δcy| <= band) within this cluster.
+        POSITION/STRUCTURE only — no material keyword (M-6 guard). A pure-noise
+        cluster (only stray qty-shaped OR only stray unit-shaped tokens) fails
+        this test and is skipped even when it sits topmost.
+        """
+        lo, hi = cl[0], cl[-1]
+        in_q = [y for y in qty_cy if lo <= y <= hi]
+        in_u = [y for y in unit_cy if lo <= y <= hi]
+        return any(abs(q - u) <= band for q in in_q for u in in_u)
+
+    # The material table is the TOPMOST qualifying cluster (smallest min cy that
+    # carries a real-material-row structural signature). On every real page the
+    # table sits above the stamp/footer zone; a small real table is therefore
+    # NEVER out-voted by a larger noise cluster below it (F1 fix). A topmost
+    # pure-noise cluster lacking a paired QTY+UNIT is skipped.
+    qualifying = [cl for cl in clusters if len(cl) >= 2 and _has_paired_qty_unit(cl)]
+    if not qualifying:
+        return None
+    table = min(qualifying, key=lambda cl: cl[0])
+
+    y_top = table[0] - band
+    y_bottom = table[-1] + band
     return (y_top, y_bottom)
 
 

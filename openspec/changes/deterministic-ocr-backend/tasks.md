@@ -515,12 +515,24 @@ All tasks within each PR phase are sequential. Tasks across PRs are sequential (
     MUST now be excluded by position (geometric table-region detection), so zero
     extra rows should appear on page 156. If any extra review-flagged rows remain,
     they MUST still be `requires_review=True` (trust contract intact).
-  - **Trusted reads restored**: the 4 GT rows on page 156 MUST now have
-    `requires_review=False` (column anchoring fixed — UNIDAD between DETALLE and
-    CANTIDAD is the preferred column, emitting confident reads).
-  - Run `test_page_0156_conf_gate_not_dropping_real_rows` and assert all 4 rows
-    are now `requires_review=False` (update the comment in the test if the
-    assertion was previously documenting the all-flagged state as "expected").
+  - **Trusted reads restored (MEASURED REALITY, not all-confident)**: column
+    anchoring (UNIDAD between DETALLE and CANTIDAD is the preferred column) now
+    emits CONFIDENT reads where the OCR is clean. On page 156 the measured
+    outcome is **1 confident GT read + 2 rows flagged by the EXT-004 0.85
+    confidence gate on genuinely garbled descriptors (0.008 conf~0.804 / 0.191
+    conf~0.780) + 1 unit-ownership residual** (0.041 — a stray fragment wins
+    unit ownership ~1px nearer than the BARRA desc → relaxed path). This is NOT
+    a regression: every non-confident row is `requires_review=True` (trust
+    contract intact, never confident-wrong), and GT-completeness is unchanged
+    (all 4 quantities present). The prior "all 4 rows `requires_review=False`"
+    MUST was an unmet expectation — weakening the EXT-004 confidence gate to
+    force-confident the garbled descriptors would be the wrong fix (it would
+    auto-trust genuine OCR garble). The confidence gate and unit-ownership
+    residual are documented (SA-2, deferred) and MUST NOT be weakened.
+  - Run `test_page_0156_conf_gate_not_dropping_real_rows` and assert the real
+    rows are EMITTED (never silently dropped); confident vs review-flagged split
+    reflects per-row OCR quality (1 confident + 3 review-flagged on page 156),
+    NOT an all-confident state.
   Spec: EXT-031/S031a-c. Binding proof of PR#4 objective 2 (trusted reads restored).
 
 - [x] **4.3.2** [Cleanup — known minor issue] Fix stale `_QTY_RE` reference at

@@ -1212,6 +1212,34 @@ class TestTableRegionExcludesStampRow:
         assert qtys == {Decimal("0.008"), Decimal("0.136")}
         assert Decimal("4.8") not in {r.cantidad for r in rows}
 
+    def test_small_real_table_not_outvoted_by_noisy_stamp(self) -> None:
+        # JD PR#4 F1 (both judges, executed repro): the table band is the
+        # LARGEST qty+unit signal cluster (popularity contest). A 1-row table
+        # contributes exactly 2 signal cells (decimal QTY + UNIT = min cluster
+        # size). A reception-stamp / footer zone emitting >=3 qty/unit-shaped
+        # garble tokens within ~160px OUT-VOTES the real table → the real
+        # material row is SILENTLY DROPPED and stamp garble survives. The
+        # inconclusive->None->keep-all net does NOT cover this conclusive-but-
+        # wrong winner. The real 0.136 row MUST be emitted.
+        cells = [
+            # Real 1-row material table at cy~600 (2 signal cells: 0.136 + TNE).
+            _cell("BARRA A615 G60 1/2\"", cx=605, cy=600, conf=0.97),
+            _cell("TNE", cx=1140, cy=600, conf=0.97),
+            _cell("0.136", cx=1295, cy=600, conf=0.97),
+            # Stamp zone at cy~1000-1040, >=3 qty/unit-shaped garble signal
+            # cells (4.8 + TN + 2.5) — out-votes the 2-cell real table.
+            _cell("4.8", cx=1121, cy=1000, conf=0.55),
+            _cell("TN", cx=1200, cy=1020, conf=0.55),
+            _cell("2.5", cx=1121, cy=1040, conf=0.55),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        qtys = {r.cantidad for r in rows}
+        # The real material row MUST survive — never silently dropped.
+        assert Decimal("0.136") in qtys, (
+            "F1: real 1-row table was out-voted by the noisy stamp cluster "
+            "and silently dropped"
+        )
+
     def test_table_region_does_not_drop_real_low_row(self) -> None:
         # Never-silent-drop guard: a real material row at the BOTTOM of a 4-row
         # table (cy 668, still within the table band) MUST be kept — the

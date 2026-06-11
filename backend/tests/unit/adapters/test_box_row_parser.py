@@ -732,10 +732,12 @@ class TestConfidenceGateToCorpusProfile:
 
     def test_in_profile_decimal_is_confident(self) -> None:
         # `0.136 TN` — canonical in-corpus shape → confident (requires_review=False).
+        # PR#4 real GRE layout: DETALLE(100) | UNIDAD(250) | CANTIDAD(380) — unit
+        # is the MIDDLE column, so the read is column-anchored and confident.
         cells = [
             _cell("BARRA A615 G60 1/2\"", cx=100, cy=150),
-            _cell("0.136", cx=250, cy=152),
-            _cell("TN", cx=320, cy=150),
+            _cell("TN", cx=250, cy=150),
+            _cell("0.136", cx=380, cy=152),
         ]
         rows = parse_box_rows(cells, dpi=200)
         assert len(rows) == 1
@@ -743,10 +745,11 @@ class TestConfidenceGateToCorpusProfile:
 
     def test_in_profile_single_fractional_digit_is_confident(self) -> None:
         # `2.5 TN` — 1 integer digit, 1 fractional digit → in-profile → confident.
+        # PR#4 real GRE layout: DETALLE | UNIDAD (middle) | CANTIDAD.
         cells = [
             _cell("BARRA A615 G60 1/2\"", cx=100, cy=150),
-            _cell("2.5", cx=250, cy=152),
-            _cell("TN", cx=320, cy=150),
+            _cell("TN", cx=250, cy=150),
+            _cell("2.5", cx=380, cy=152),
         ]
         rows = parse_box_rows(cells, dpi=200)
         assert len(rows) == 1
@@ -795,11 +798,14 @@ class TestConfidenceGateToCorpusProfile:
     def test_bare_integer_without_unit_still_dropped_entirely(self) -> None:
         # The incidental-number guard MUST still hold: a bare `408916` with NO
         # adjacent unit is rejected ENTIRELY (not even an extracted-flagged row).
+        # PR#4 real GRE layout: DETALLE(150) | UNIDAD(280) | CANTIDAD(420). The
+        # código `408916` (cx=20) is far left of the desc → no unit adjacency in
+        # the qty column → never promoted; the 0.037 row is column-anchored confident.
         cells = [
             _cell("408916", cx=20, cy=150),
             _cell("BARRA A615 G60 1/2\"", cx=150, cy=150),
-            _cell("0.037", cx=280, cy=150),
-            _cell("KG", cx=350, cy=150),
+            _cell("KG", cx=280, cy=150),
+            _cell("0.037", cx=420, cy=150),
         ]
         rows = parse_box_rows(cells, dpi=200)
         assert len(rows) == 1
@@ -1098,3 +1104,188 @@ class TestDescNoiseWordBoundaryAndAnchorEscape:
         ]
         rows = parse_box_rows(cells, dpi=200)
         assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# PR#4 — Geometric column anchoring + table-region exclusion (4.1.1–4.1.4)
+#
+# Real-geometry basis (task 4.0.1 probe, docs/eval/reg227_section.pdf pages
+# 148/156/160, RapidOCRAdapter -90° @200 DPI):
+#   - Material DESC column cx ~346–782 (leftmost in-table cluster).
+#   - UNIT (TNE) column cx 1137.7–1142.7 (median ~1140) — the MIDDLE column.
+#   - QTY (decimal) column cx 1294.6–1296.8 (median ~1295) — the RIGHTMOST.
+#   - Real GRE layout: DETALLE | UNIDAD | CANTIDAD → desc.cx < unit.cx < qty.cx.
+#   - Material-table y-band cy ~595–680; the page-156 reception-stamp garble
+#     (`4.8` conf 0.584) sits at cy~980 — ~300 px BELOW the table band.
+# ---------------------------------------------------------------------------
+
+
+class TestUnitMiddleColumnConfident:
+    """4.1.1 — UNIT between DESC and QTY (the real GRE column order) is the
+    PREFERRED column ⇒ confident read (requires_review=False).
+
+    FAILS pre-PR#4: the parser's preferred condition was `unit.cx > qty.cx`
+    (unit furthest right), which is the OPPOSITE of the real layout, so every
+    real row fell to the relaxed fallback and was flagged requires_review=True.
+    """
+
+    def test_unit_between_desc_and_qty_is_confident(self) -> None:
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=50, cy=150, conf=0.99),
+            _cell("TNE", cx=200, cy=150, conf=0.99),   # MIDDLE column
+            _cell("0.136", cx=350, cy=150, conf=0.99),  # RIGHTMOST column
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].unidad == "TN"
+        assert rows[0].cantidad == Decimal("0.136")
+        # UNIT is geometrically between DESC and QTY → preferred column →
+        # positional evidence satisfied → CONFIDENT.
+        assert rows[0].requires_review is False
+
+    def test_real_geometry_row_is_confident(self) -> None:
+        # Real probe coordinates (page 148 row 1): DESC≈605, UNIT(TNE)≈1143,
+        # QTY≈1295. The canonical in-table layout MUST emit a confident read.
+        cells = [
+            _cell("BARRA A615 G60 3/8\" DOB", cx=605, cy=598, conf=0.96),
+            _cell("TNE", cx=1143, cy=598, conf=0.96),
+            _cell("0.037", cx=1295, cy=598, conf=0.96),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].cantidad == Decimal("0.037")
+        assert rows[0].requires_review is False
+
+
+class TestUnitRightOfQtyStillRelaxed:
+    """4.1.2 — UNIT to the RIGHT of QTY (the OLD, wrong assumed order) is NOT the
+    real GRE layout ⇒ relaxed path ⇒ requires_review=True.
+
+    Anchors the inverted column-order semantics permanently so a future regressor
+    cannot silently flip the preferred condition back to `unit.cx > qty.cx`.
+    """
+
+    def test_unit_right_of_qty_is_flagged(self) -> None:
+        cells = [
+            _cell("BARRA A615 G60 1/2\"", cx=50, cy=150, conf=0.99),
+            _cell("0.136", cx=200, cy=150, conf=0.99),  # qty middle
+            _cell("TNE", cx=350, cy=150, conf=0.99),    # unit furthest right (wrong)
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert len(rows) == 1
+        assert rows[0].unidad == "TN"
+        assert rows[0].cantidad == Decimal("0.136")
+        # Out-of-expected-column position (unit not between desc and qty) →
+        # relaxed path → NOT confident.
+        assert rows[0].requires_review is True
+
+
+class TestTableRegionExcludesStampRow:
+    """4.1.3 — A material row geometrically BELOW the table band is excluded by
+    POSITION (table-region detection), not by any material keyword (M-6 guard).
+
+    The table-bottom-y boundary is derived from the real measurement: the
+    material rows cluster at cy~595–680; the page-156 reception-stamp garble is
+    at cy~980 (~300 px below). The exclusion is purely positional.
+    """
+
+    def test_stamp_row_below_table_excluded_by_position(self) -> None:
+        cells = [
+            # Two real material rows in the table band (cy 595, 619).
+            _cell("BARRA A615 G60 3/8\"", cx=605, cy=595, conf=0.97),
+            _cell("TNE", cx=1140, cy=596, conf=0.97),
+            _cell("0.008", cx=1295, cy=595, conf=0.97),
+            _cell("BARRA A615 G60 1/2\"", cx=605, cy=619, conf=0.98),
+            _cell("TNE", cx=1140, cy=620, conf=0.98),
+            _cell("0.136", cx=1295, cy=619, conf=0.98),
+            # Reception-stamp garble FAR below the table band (cy 980). It has a
+            # DESC-shaped token and a decimal qty + unit, so without table-region
+            # detection it would emit a (flagged) spurious row. Geometry excludes it.
+            _cell("acacpen enfuin aeococl vignte", cx=700, cy=980, conf=0.57),
+            _cell("4.8", cx=1121, cy=981, conf=0.57),
+            _cell("TN", cx=1200, cy=982, conf=0.57),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        # Only the two in-table rows survive; the stamp row is excluded by cy.
+        assert len(rows) == 2
+        qtys = {r.cantidad for r in rows}
+        assert qtys == {Decimal("0.008"), Decimal("0.136")}
+        assert Decimal("4.8") not in {r.cantidad for r in rows}
+
+    def test_small_real_table_not_outvoted_by_noisy_stamp(self) -> None:
+        # JD PR#4 F1 (both judges, executed repro): the table band is the
+        # LARGEST qty+unit signal cluster (popularity contest). A 1-row table
+        # contributes exactly 2 signal cells (decimal QTY + UNIT = min cluster
+        # size). A reception-stamp / footer zone emitting >=3 qty/unit-shaped
+        # garble tokens within ~160px OUT-VOTES the real table → the real
+        # material row is SILENTLY DROPPED and stamp garble survives. The
+        # inconclusive->None->keep-all net does NOT cover this conclusive-but-
+        # wrong winner. The real 0.136 row MUST be emitted.
+        cells = [
+            # Real 1-row material table at cy~600 (2 signal cells: 0.136 + TNE).
+            _cell("BARRA A615 G60 1/2\"", cx=605, cy=600, conf=0.97),
+            _cell("TNE", cx=1140, cy=600, conf=0.97),
+            _cell("0.136", cx=1295, cy=600, conf=0.97),
+            # Stamp zone at cy~1000-1040, >=3 qty/unit-shaped garble signal
+            # cells (4.8 + TN + 2.5) — out-votes the 2-cell real table.
+            _cell("4.8", cx=1121, cy=1000, conf=0.55),
+            _cell("TN", cx=1200, cy=1020, conf=0.55),
+            _cell("2.5", cx=1121, cy=1040, conf=0.55),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        qtys = {r.cantidad for r in rows}
+        # The real material row MUST survive — never silently dropped.
+        assert Decimal("0.136") in qtys, (
+            "F1: real 1-row table was out-voted by the noisy stamp cluster "
+            "and silently dropped"
+        )
+
+    def test_table_region_does_not_drop_real_low_row(self) -> None:
+        # Never-silent-drop guard: a real material row at the BOTTOM of a 4-row
+        # table (cy 668, still within the table band) MUST be kept — the
+        # exclusion is the stamp zone far below, not the last table row.
+        cells = [
+            _cell("BARRA A615 3/8\"", cx=605, cy=595, conf=0.97),
+            _cell("TNE", cx=1140, cy=595, conf=0.97),
+            _cell("0.008", cx=1295, cy=595, conf=0.97),
+            _cell("BARRA A615 3/4\"", cx=605, cy=668, conf=0.97),
+            _cell("TNE", cx=1140, cy=669, conf=0.97),
+            _cell("0.041", cx=1295, cy=668, conf=0.97),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        assert {r.cantidad for r in rows} == {Decimal("0.008"), Decimal("0.041")}
+
+
+class TestIntegerGuardStampDigitToRight:
+    """4.1.4 — CRITICAL-1: a stamp integer to the RIGHT of an out-of-table footer
+    desc must NEVER be promoted to a quantity.
+
+    Pre-PR#4, the integer-promotion guard only required the integer to be RIGHT
+    of all in-band descs. A footer desc at low cx with a stamp integer to its
+    right (both BELOW the table band) satisfied that guard and could be promoted.
+    Table-region detection excludes both the footer desc and the stamp integer
+    from the eligible set BEFORE promotion.
+    """
+
+    def test_stamp_integer_right_of_footer_desc_not_promoted(self) -> None:
+        cells = [
+            # Valid in-table row so a table region is detectable.
+            _cell("BARRA A615 G60 1/2\"", cx=605, cy=600, conf=0.97),
+            _cell("TNE", cx=1140, cy=600, conf=0.97),
+            _cell("0.136", cx=1295, cy=600, conf=0.97),
+            # Footer desc (low cx) + stamp integer to its right + a unit, ALL far
+            # below the table band (cy 985). The desc text is NOT a denylisted
+            # footer phrase (so the semantic filter does NOT remove it), the
+            # integer (cx=500) is right of the footer desc (cx=20) and has an
+            # adjacent unit → it IS promoted by the old guard (CRITICAL-1 leak).
+            # Only table-region exclusion (cy 985 far below cy~600 table band)
+            # rejects it pre-promotion.
+            _cell("inspector firma sello zona", cx=20, cy=985, conf=0.55),
+            _cell("4800", cx=500, cy=985, conf=0.55),
+            _cell("KG", cx=650, cy=985, conf=0.55),
+        ]
+        rows = parse_box_rows(cells, dpi=200)
+        qtys = {r.cantidad for r in rows}
+        assert Decimal("4800") not in qtys
+        assert qtys == {Decimal("0.136")}
+        assert len(rows) == 1

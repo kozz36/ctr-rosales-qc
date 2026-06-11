@@ -78,130 +78,141 @@ If PR-2 tests push past ~400 lines, split:
 
 ### Phase 1.0 — Pre-work: read current code to confirm seams
 
-- [ ] **1.0.1** READ `backend/src/reconciliation/infrastructure/api/routes.py` lines 242–308
+- [x] **1.0.1** READ `backend/src/reconciliation/infrastructure/api/routes.py` lines 242–308
   (`_run_pipeline_background` function, both success and except branches).
   Confirm: (a) exact line where `started_at` is set in the registry; (b) the except block
   sets `status="error"` and `error=str(exc)`; (c) no existing manifest-write call present.
   Read-only pre-flight.
+  **ANSWER**: (a) `started_at` set at line 279 (`datetime.datetime.now(datetime.UTC).isoformat()`);
+  (b) except branch at line 305–307 sets `status="error"` and `error=str(exc)`;
+  (c) confirmed no manifest-write call present.
 
-- [ ] **1.0.2** READ `backend/src/reconciliation/infrastructure/api/main.py` lines 40–58
+- [x] **1.0.2** READ `backend/src/reconciliation/infrastructure/api/main.py` lines 40–58
   (lifespan function). Confirm: `run_registry` is initialized as empty dict; `config` is stored
   in `app.state`; no existing directory scan. Read-only pre-flight.
+  **ANSWER**: All confirmed. `run_registry = {}` at line 52; `app.state.config = config` at line 54;
+  `app.state.run_registry = run_registry` at line 55; no directory scan.
 
-- [ ] **1.0.3** READ `backend/src/reconciliation/application/pipeline.py` search for
+- [x] **1.0.3** READ `backend/src/reconciliation/application/pipeline.py` search for
   `_atomic_json_write` — confirm the function exists and is importable from the infrastructure
   layer, OR identify which module owns it. Read-only; confirms the reuse seam for D2.
+  **ANSWER**: `_atomic_json_write` is defined in `application/run_context.py` (module-level function,
+  line 234). It is NOT in pipeline.py. The adapter imports it from `run_context` — an
+  infrastructure-to-application import of a pure stdlib utility function (no IO deps), acceptable.
 
-- [ ] **1.0.4** READ `backend/src/reconciliation/infrastructure/container.py` search for
+- [x] **1.0.4** READ `backend/src/reconciliation/infrastructure/container.py` search for
   `_atomic_json_write` definition OR its import. Record the exact module path so the adapter
   can import or replicate the same atomic-write pattern.
+  **ANSWER**: `_atomic_json_write` is NOT in container.py. It lives exclusively in
+  `application/run_context.py`. The adapter proxies it via:
+  `from reconciliation.application.run_context import _atomic_json_write`.
 
 ### Phase 1.1 — RED: Write failing tests for PR-1
 
-- [ ] **1.1.1** Create `backend/tests/unit/application/test_run_history_port.py`.
+- [x] **1.1.1** Create `backend/tests/unit/application/test_run_history_port.py`.
   Write failing test `test_run_manifest_schema_version_is_1`:
   Instantiate `RunManifest(schema_version=1, ...)` with required fields.
   FAILS today: `RunManifest` does not exist. Spec: RH-001, D2.
 
-- [ ] **1.1.2** Add failing test `test_run_manifest_no_pdf_filename_field`:
+- [x] **1.1.2** Add failing test `test_run_manifest_no_pdf_filename_field`:
   Assert `RunManifest` model has NO field named `pdf_filename` or `filename`.
   FAILS today: model does not exist. Spec: RH-001-S04.
 
-- [ ] **1.1.3** Add failing test `test_run_manifest_status_values`:
+- [x] **1.1.3** Add failing test `test_run_manifest_status_values`:
   Assert `RunManifest` accepts `status="review"` and `status="error"` but not arbitrary strings.
   FAILS today: model does not exist. Spec: D2.
 
-- [ ] **1.1.4** Create `backend/tests/unit/infrastructure/test_run_history_adapter.py`.
+- [x] **1.1.4** Create `backend/tests/unit/infrastructure/test_run_history_adapter.py`.
   Write failing test `test_write_manifest_creates_valid_json`:
   Call `adapter.write_manifest(run_manifest)` with a tmp dir.
   Assert `{tmp_dir}/{run_id}/run_manifest.json` exists and is valid JSON.
   Assert JSON contains `schema_version=1`. FAILS today: adapter does not exist. Spec: RH-001-S01.
 
-- [ ] **1.1.5** Add failing test `test_write_manifest_is_atomic_overwrite_not_write_once`:
+- [x] **1.1.5** Add failing test `test_write_manifest_is_atomic_overwrite_not_write_once`:
   Call `adapter.write_manifest(manifest_v1)` then `adapter.write_manifest(manifest_v2)` on the same run_id.
   Assert the file contains `manifest_v2` fields (overwrite succeeded, no error).
   Spec: D2 (atomic overwrite — NOT write-once; retry semantics require this).
 
-- [ ] **1.1.6** Add failing test `test_write_manifest_ioerror_does_not_raise`:
+- [x] **1.1.6** Add failing test `test_write_manifest_ioerror_does_not_raise`:
   Mock `Path.write_bytes` to raise `OSError`. Call `adapter.write_manifest(...)`.
   Assert NO exception propagates (manifest failure is non-fatal). Spec: RH-001-S02.
 
-- [ ] **1.1.7** Add failing test `test_write_failure_manifest_status_is_error`:
+- [x] **1.1.7** Add failing test `test_write_failure_manifest_status_is_error`:
   Build a failure manifest via `adapter.write_failure_manifest(run_id, started_at, error_str)`.
   Assert file exists, `status="error"`, `error=error_str`, registro fields null. Spec: RH-001-S03.
 
-- [ ] **1.1.8** Add failing test `test_seq_allocation_same_day_increments`:
+- [x] **1.1.8** Add failing test `test_seq_allocation_same_day_increments`:
   Write two manifests in the same tmp dir with the same date prefix.
   Assert first manifest has `seq=1`, second has `seq=2`.
   Spec: RH-004-S01, RH-004-S02, D3.
 
-- [ ] **1.1.9** Add failing test `test_seq_allocation_different_days_independent`:
+- [x] **1.1.9** Add failing test `test_seq_allocation_different_days_independent`:
   Write manifest for day D1 (gets seq 1). Write manifest for day D2.
   Assert D2 manifest has `seq=1` (independent). Spec: RH-004-S03.
 
-- [ ] **1.1.10** Add failing test `test_seq_allocation_thread_safe`:
+- [x] **1.1.10** Add failing test `test_seq_allocation_thread_safe`:
   Fire 10 concurrent `threading.Thread` each calling `adapter.write_manifest(...)` with the same date.
   Assert all 10 resulting manifests have unique seq values 1–10 (no duplicates).
   Spec: D3 (mutex-serialized; single-process deployment invariant).
 
-- [ ] **1.1.11** Add failing test `test_scan_completed_run_with_manifest`:
+- [x] **1.1.11** Add failing test `test_scan_completed_run_with_manifest`:
   Write a valid manifest for run_id under tmp dir. Call `adapter.scan(tmp_dir)`.
   Assert result contains an entry with `run_id`, `status="review"`, all manifest fields populated,
   `hydrated=False`. Spec: RH-002-S01, D4.
 
-- [ ] **1.1.12** Add failing test `test_scan_legacy_run_extraction_cache_present`:
+- [x] **1.1.12** Add failing test `test_scan_legacy_run_extraction_cache_present`:
   Create a dir with only `extraction_cache.json` (no manifest). Call `adapter.scan(tmp_dir)`.
   Assert entry has `status="review"`, `degraded=True`, timestamps may be null. Spec: RH-002-S02.
 
-- [ ] **1.1.13** Add failing test `test_scan_legacy_run_pdf_only`:
+- [x] **1.1.13** Add failing test `test_scan_legacy_run_pdf_only`:
   Create a dir with only `{run_id}.pdf` (no cache, no manifest). Call `adapter.scan(tmp_dir)`.
   Assert entry has `status="error"`, `degraded=True`. Spec: RH-002 (derive from disk).
 
-- [ ] **1.1.14** Add failing test `test_scan_corrupted_manifest_skipped`:
+- [x] **1.1.14** Add failing test `test_scan_corrupted_manifest_skipped`:
   Create three dirs: valid manifest, corrupted JSON, legacy (cache only). Call `adapter.scan(tmp_dir)`.
   Assert result has 2 entries (valid + legacy); corrupted is absent; no exception raised.
   Spec: RH-002-S03.
 
-- [ ] **1.1.15** Add failing test `test_scan_empty_output_dir_returns_empty`:
+- [x] **1.1.15** Add failing test `test_scan_empty_output_dir_returns_empty`:
   Call `adapter.scan(empty_tmp_dir)`.
   Assert result is empty list; no exception. Spec: RH-002-S04.
 
-- [ ] **1.1.16** Add failing test `test_scan_non_uuid_dirs_ignored`:
+- [x] **1.1.16** Add failing test `test_scan_non_uuid_dirs_ignored`:
   Create tmp dir with subdirs `"not-a-uuid"` and a valid uuid dir with manifest.
   Assert only the uuid dir appears in scan result. Spec: D4 (UUID-named dirs only).
 
-- [ ] **1.1.17** Create `backend/tests/unit/infrastructure/test_lifespan_scan.py`.
+- [x] **1.1.17** Create `backend/tests/unit/infrastructure/test_lifespan_scan.py`.
   Write failing test `test_lifespan_scan_populates_registry`:
   Build a mock app state with 3 run dirs (1 manifest, 1 legacy cache, 1 pdf-only).
   Simulate the lifespan scan call. Assert registry has 3 entries. Spec: RH-002, RH-006-S01.
 
-- [ ] **1.1.18** Add failing test `test_get_runs_returns_sorted_newest_first`:
+- [x] **1.1.18** Add failing test `test_get_runs_returns_sorted_newest_first`:
   Patch registry with 3 entries, `started_at` desc ordering.
   `GET /runs` response must be sorted newest first. Spec: RH-003-S01.
 
-- [ ] **1.1.19** Add failing test `test_get_runs_failed_run_appears_with_error_flag`:
+- [x] **1.1.19** Add failing test `test_get_runs_failed_run_appears_with_error_flag`:
   Registry has 1 entry `status="error"`. `GET /runs` returns it with error indicator.
   Spec: RH-003-S02.
 
-- [ ] **1.1.20** Add failing test `test_get_runs_legacy_run_appears_last`:
+- [x] **1.1.20** Add failing test `test_get_runs_legacy_run_appears_last`:
   2 manifest runs + 1 legacy (no `started_at`). `GET /runs` puts legacy last. Spec: RH-003-S03.
 
-- [ ] **1.1.21** Create `backend/tests/unit/infrastructure/test_background_wrapper_manifest.py`.
+- [x] **1.1.21** Create `backend/tests/unit/infrastructure/test_background_wrapper_manifest.py`.
   Write failing test `test_manifest_written_on_success`:
   Run `_run_pipeline_background` with a mocked pipeline that returns a result.
   Assert `adapter.write_manifest` called once after success. Spec: RH-001-S01.
 
-- [ ] **1.1.22** Add failing test `test_manifest_written_on_pipeline_exception`:
+- [x] **1.1.22** Add failing test `test_manifest_written_on_pipeline_exception`:
   Run `_run_pipeline_background` with a mocked pipeline that raises.
   Assert `adapter.write_failure_manifest` called once. Spec: RH-001-S03.
 
-- [ ] **1.1.23** Add failing test `test_manifest_ioerror_does_not_fail_run`:
+- [x] **1.1.23** Add failing test `test_manifest_ioerror_does_not_fail_run`:
   `adapter.write_manifest` raises `IOError`. Pipeline still completes (registry `status="review"`).
   Spec: RH-001-S02, D1 invariant.
 
 ### Phase 1.2 — GREEN: Implement PR-1
 
-- [ ] **1.2.1** Create `backend/src/reconciliation/application/run_history.py`.
+- [x] **1.2.1** Create `backend/src/reconciliation/application/run_history.py`.
   Define `RunManifest(BaseModel)` with fields from D2:
   `schema_version: int = 1`, `run_id: str`, `status: Literal["review","error"]`,
   `started_at: str`, `completed_at: str | None`, `seq: int`, `registro_min: str | None`,
@@ -211,7 +222,7 @@ If PR-2 tests push past ~400 lines, split:
   Define `RunHistoryPort` Protocol with methods: `write_manifest`, `write_failure_manifest`,
   `scan`, `sweep_failed`, `delete_run`. Application layer only — zero IO imports.
 
-- [ ] **1.2.2** Create `backend/src/reconciliation/infrastructure/run_history_store.py`.
+- [x] **1.2.2** Create `backend/src/reconciliation/infrastructure/run_history_store.py`.
   Implement `JsonManifestRunHistoryAdapter(RunHistoryPort)`:
   - `write_manifest(manifest: RunManifest, output_dir: Path)`: allocates `seq` under
     `threading.Lock` (scan same-day manifests for max seq); writes via `_atomic_json_write`.
@@ -226,7 +237,7 @@ If PR-2 tests push past ~400 lines, split:
   - `delete_run(run_id: str, output_dir: Path)`: UUID-validates `run_id`; `rmtree` own dir only.
   Design: D3 (seq lock), D4 (scan strategy).
 
-- [ ] **1.2.3** Modify `backend/src/reconciliation/infrastructure/api/routes.py`:
+- [x] **1.2.3** Modify `backend/src/reconciliation/infrastructure/api/routes.py`:
   Add manifest write calls to `_run_pipeline_background` (lazy-import the adapter, mirror
   existing lazy-import pattern at lines 262–267):
   - SUCCESS branch (after `registry[run_id].update(...)` at line 302): call
@@ -239,32 +250,32 @@ If PR-2 tests push past ~400 lines, split:
   `result.declared` numeros (int-sort, lexicographic fallback); `seq` allocated by adapter.
   **`pipeline.py` MUST have zero diff — verify before committing.** Design: D1.
 
-- [ ] **1.2.4** Modify `backend/src/reconciliation/infrastructure/api/main.py`:
+- [x] **1.2.4** Modify `backend/src/reconciliation/infrastructure/api/main.py`:
   In lifespan, after `run_registry = {}`:
   Instantiate `JsonManifestRunHistoryAdapter()` → `app.state.run_history`.
   Call `adapter.scan(config.output_dir)` → merge each entry into `run_registry` (hydrated=False).
   Call `adapter.sweep_failed(config.output_dir, cutoff=now-48h)` on already-failed-old entries.
   Per-dir try/except; log counts; never crash startup. Design: D4.
 
-- [ ] **1.2.5** Modify `backend/src/reconciliation/infrastructure/api/schemas.py`:
+- [x] **1.2.5** Modify `backend/src/reconciliation/infrastructure/api/schemas.py`:
   Add `RunSummaryResponse(BaseModel)`:
   `run_id: str`, `status: str`, `started_at: str | None`, `completed_at: str | None`,
   `seq: int | None`, `registro_min: str | None`, `registro_max: str | None`,
   `row_count: int`, `match_count: int`, `mismatch_count: int`, `warnings_count: int`,
   `vision_calls_made: int`, `degraded: bool`, `error: str | None`. Spec: RH-003.
 
-- [ ] **1.2.6** Add `GET /runs` endpoint to `routes.py`:
+- [x] **1.2.6** Add `GET /runs` endpoint to `routes.py`:
   Call `adapter.sweep_failed(...)` (lazy 48h sweep); then return registry values as
   `RunSummaryResponse[]` sorted by `started_at` desc (legacy runs with null `started_at` last).
   Spec: RH-003, D5.
 
-- [ ] **1.2.7** Change `extraction_cache.json` write from write-once to atomic-overwrite in
+- [x] **1.2.7** Change `extraction_cache.json` write from write-once to atomic-overwrite in
   `backend/src/reconciliation/infrastructure/container.py` (or wherever the cache is written).
   Confirm the current guard exists (raises if file already exists). Remove/relax the guard.
   Retry semantics (PR-2) need this: the retry deletes the cache before re-firing, so the
   write-once guard MUST be gone before retry is implemented. Design: D5 (retry dir reset).
 
-- [ ] **1.2.8** Run PR-1 test suite:
+- [x] **1.2.8** Run PR-1 test suite:
   ```
   cd backend && uv run pytest \
     tests/unit/application/test_run_history_port.py \
@@ -275,14 +286,14 @@ If PR-2 tests push past ~400 lines, split:
   ```
   All 1.1.x tests (23 tests) MUST be GREEN.
 
-- [ ] **1.2.9** Verify architecture invariants:
+- [x] **1.2.9** Verify architecture invariants:
   ```
   git diff HEAD -- backend/src/reconciliation/application/pipeline.py
   git diff HEAD -- backend/src/reconciliation/domain/
   ```
   Assert both diffs are EMPTY. Any diff = rollback task 1.2.3 and re-examine seam. Design: D1.
 
-- [ ] **1.2.10** Run regression sweep:
+- [x] **1.2.10** Run regression sweep:
   ```
   cd backend && uv run pytest \
     tests/unit/application/test_pipeline_discarded_pages.py \
@@ -292,18 +303,18 @@ If PR-2 tests push past ~400 lines, split:
   ```
   All must remain GREEN.
 
-- [ ] **1.2.11** Work-unit commit A: `feat(run-history): RunHistoryPort + JsonManifestRunHistoryAdapter (schema, seq lock, scan, derive-from-disk, sweep)`
+- [x] **1.2.11** Work-unit commit A: `feat(run-history): RunHistoryPort + JsonManifestRunHistoryAdapter (schema, seq lock, scan, derive-from-disk, sweep)`
   Covers: 1.2.1 + 1.2.2.
 
-- [ ] **1.2.12** Work-unit commit B: `feat(run-history): manifest hooks in _run_pipeline_background (success+except, non-fatal); lifespan scan; GET /runs; RunSummaryResponse`
+- [x] **1.2.12** Work-unit commit B: `feat(run-history): manifest hooks in _run_pipeline_background (success+except, non-fatal); lifespan scan; GET /runs; RunSummaryResponse`
   Covers: 1.2.3 + 1.2.4 + 1.2.5 + 1.2.6. No push (SA-3).
 
-- [ ] **1.2.13** Work-unit commit C (if needed): `fix(run-history): extraction_cache atomic-overwrite (remove write-once guard for retry semantics)`
+- [x] **1.2.13** Work-unit commit C (if needed): `fix(run-history): extraction_cache atomic-overwrite (remove write-once guard for retry semantics)`
   Covers: 1.2.7. Separate commit only if this file is in a different logical unit.
 
 ### Phase 1.3 — Real-data gate (PR-1)
 
-- [ ] **1.3.1** Create `backend/tests/integration/test_run_history_legacy_gate.py`.
+- [x] **1.3.1** Create `backend/tests/integration/test_run_history_legacy_gate.py`.
   Write test `test_scan_legacy_dirs_no_crash`:
   Call `adapter.scan(Path("backend/runs/"))` against the real legacy run dirs on disk.
   Assert: no exception raised; result is a list; each entry has `run_id`, `status`, `degraded`.
@@ -313,14 +324,14 @@ If PR-2 tests push past ~400 lines, split:
   Spec: RH-002, RH-006 (legacy dirs degrade, not crash or hide).
   Run: `cd backend && uv run pytest tests/integration/test_run_history_legacy_gate.py -v`.
 
-- [ ] **1.3.2** Simulate restart round-trip (setup for PR-2 gate):
+- [x] **1.3.2** Simulate restart round-trip (setup for PR-2 gate):
   Start the server locally; `GET /runs` returns the legacy dirs as degraded entries.
   Assert: the 6+ legacy run dirs appear; no 500 error; degraded field is true for entries
   without manifests. This is a manual smoke check — document the curl output as evidence.
 
 ### Phase 1.4 — Judgment Day (PR-1)
 
-- [ ] **1.4.1** Run dual-blind judgment day on PR-1 diff before push.
+- [x] **1.4.1** Run dual-blind judgment day on PR-1 diff before push.
   JD must verify:
   - `application/pipeline.py` has zero diff (ZERO — absolute invariant).
   - `domain/` has zero new IO/SDK imports.

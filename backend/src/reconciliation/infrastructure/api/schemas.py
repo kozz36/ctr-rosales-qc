@@ -682,6 +682,34 @@ class DiscardedBatchStatusResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Run history (SDD#3 — PR-1)
+# ---------------------------------------------------------------------------
+
+
+class RunSummaryResponse(BaseModel):
+    """Summary of a completed (or degraded) pipeline run.
+
+    Returned by GET /runs (list endpoint, RH-003).
+    Fields mirror RunManifest; degraded=True for legacy dirs without a manifest.
+    """
+
+    run_id: str
+    status: str  # "review" | "error" (also "processing"/"pending" for in-flight entries)
+    started_at: str | None = None  # ISO-8601 UTC; null for legacy degraded entries
+    completed_at: str | None = None
+    seq: int | None = None  # null for degraded legacy entries
+    registro_min: str | None = None
+    registro_max: str | None = None
+    row_count: int = 0
+    match_count: int = 0
+    mismatch_count: int = 0
+    warnings_count: int = 0  # len(warnings) — avoids sending full list in listing
+    vision_calls_made: int = 0
+    degraded: bool = False  # True when entry was derived from disk (no manifest)
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 

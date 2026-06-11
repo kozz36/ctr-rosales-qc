@@ -285,6 +285,11 @@ Completed runs MUST NEVER be auto-deleted. The sweep MUST touch only failed runs
 A failed run that has been retried and whose retry succeeded MUST be treated as completed for
 sweep purposes — it MUST NOT be auto-deleted.
 
+> Implementation note (PR-1): the 48 h age is computed against the manifest's `completed_at`
+> (run end), not `started_at`, falling back to the manifest file mtime when `completed_at` is
+> absent. Since `completed_at >= started_at`, this is a deliberate conservative deviation — a
+> failed run is swept slightly later than a strict `started_at` basis would, never earlier.
+
 #### Scenario RH-008-S01: failed run older than 48 h is removed by sweep
 
 - GIVEN a failed run with `started_at` more than 48 hours ago

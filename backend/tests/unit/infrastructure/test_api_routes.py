@@ -124,8 +124,15 @@ def client(tmp_path: Path) -> TestClient:
     config = AppConfig(output_dir=tmp_path / "runs")
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
+    from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+        JsonManifestRunHistoryAdapter,
+    )
+
     app.state.config = config
     app.state.run_registry = {}
+    # D1: the single run-history adapter normally seeded by the lifespan; this
+    # fixture bypasses the lifespan, so seed it here for _get_run_history.
+    app.state.run_history = JsonManifestRunHistoryAdapter()
 
     return TestClient(app, raise_server_exceptions=True)
 

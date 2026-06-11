@@ -51,6 +51,47 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # In-memory run registry: {run_id → {status, ctx, review_service, ...}}
     run_registry: dict[str, Any] = {}
 
+    # --- Run history: ONE shared adapter on app.state (D1) ---
+    # Constructed unconditionally so routes._get_run_history always resolves a
+    # single instance (no inline construction in routes.py). The adapter ctor
+    # takes no args and cannot fail; only the scan/sweep IO below is guarded.
+    import datetime  # noqa: PLC0415
+
+    from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+        JsonManifestRunHistoryAdapter,
+    )
+
+    adapter = JsonManifestRunHistoryAdapter()
+    app.state.run_history = adapter
+
+    # --- Scan existing run dirs and merge into registry (RH-002, D4) ---
+    try:
+        entries = adapter.scan(config.output_dir)
+        for entry in entries:
+            # Registry is empty at startup (no active runs), so this assignment
+            # is unconditional — every scanned entry seeds the registry.
+            rid = entry["run_id"]
+            run_registry[rid] = entry
+
+        logger.info(
+            "run_history: startup scan merged %d run entries (output_dir=%s)",
+            len(entries), config.output_dir,
+        )
+
+        # Lazy 48 h sweep of old error-status runs at startup
+        try:
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=48)
+            deleted_ids = adapter.sweep_failed(config.output_dir, cutoff)
+            for rid in deleted_ids:
+                run_registry.pop(rid, None)
+            if deleted_ids:
+                logger.info("run_history: startup sweep removed %d old failed runs", len(deleted_ids))
+        except Exception as _sweep_exc:  # noqa: BLE001
+            logger.warning("run_history: startup sweep failed (non-fatal): %s", _sweep_exc)
+
+    except Exception as _scan_exc:  # noqa: BLE001
+        logger.warning("run_history: startup scan failed (non-fatal): %s", _scan_exc)
+
     app.state.config = config
     app.state.run_registry = run_registry
 

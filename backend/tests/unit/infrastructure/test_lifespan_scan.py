@@ -269,7 +269,7 @@ class TestLifespanRealE2E:
         )
 
         output_dir = tmp_path / "runs"
-        output_dir.mkdir()
+        output_dir.mkdir(exist_ok=True)
 
         # (a) valid manifest run
         r_manifest = _fresh_run_id()

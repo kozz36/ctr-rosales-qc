@@ -139,3 +139,54 @@ def test_restart_round_trip_recovered_discarded_page(tmp_path: Path):
     assert "recovered_152" in restored_guia_ids, (
         f"Recovered guía must be present after restart; got: {restored_guia_ids}"
     )
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL (JD ×2) — replay is idempotent against duplicate events on disk
+# ---------------------------------------------------------------------------
+
+
+def test_replay_idempotent_duplicate_recovered_events(tmp_path: Path):
+    """CRITICAL — two duplicate recovered_discarded_page events → ONE guía.
+
+    Defensive line: even if a corrupt sidecar (written before the commit-lock
+    guard existed) carries TWO identical recovered_discarded_page events, replay
+    must restore exactly ONE guía — not re-create the double-count on every
+    restart. Matches the no-op contract of recover_discarded_page's guard.
+
+    RED today: replay blindly re-adds each event → two recovered_152 guías.
+    """
+    from reconciliation.application.review_service import ReviewService
+
+    dp = DiscardedPage(page=152, registro="232", lines=[])
+    svc, ctx = _build_svc(tmp_path, discarded_pages=[dp])
+
+    # First recovery writes ONE event.
+    guia = _make_recovered_guia(page=152)
+    svc.recover_discarded_page(page=152, guia=guia)
+
+    # Inject a DUPLICATE event into the sidecar on disk (simulating a corrupt
+    # sidecar from before the guard existed).
+    sidecar_path = ctx.review_sidecar
+    data = json.loads(sidecar_path.read_text())
+    dup_events = [
+        e for e in data["edits"] if e.get("kind") == "recovered_discarded_page"
+    ]
+    assert len(dup_events) == 1
+    data["edits"].append(json.loads(json.dumps(dup_events[0])))  # exact duplicate
+    sidecar_path.write_text(json.dumps(data))
+
+    # Replay from fresh service against the original discarded entry.
+    fresh_svc = ReviewService.restore_from_sidecar(
+        declared=[],
+        guias=[],
+        rows=[],
+        ctx=ctx,
+        errored_guias=[],
+        discarded_pages=[dp],
+    )
+
+    restored = [g for g in fresh_svc.guias if g.guia_id == "recovered_152"]
+    assert len(restored) == 1, (
+        f"Replay double-count: expected 1 recovered_152 guía, got {len(restored)}"
+    )

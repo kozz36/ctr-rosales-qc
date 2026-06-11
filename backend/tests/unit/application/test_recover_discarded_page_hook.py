@@ -129,3 +129,65 @@ def test_recover_discarded_page_fail_closed_guard(tmp_path: Path):
 
     with pytest.raises(ValueError, match="requires_review"):
         svc.recover_discarded_page(page=152, guia=bad_guia)
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL (JD ×2) — idempotency/existence guard (lock-local no-op contract)
+# ---------------------------------------------------------------------------
+
+
+def test_recover_discarded_page_idempotent_no_double_append(tmp_path: Path):
+    """CRITICAL — a second recover_discarded_page for the SAME page is a no-op.
+
+    Mirrors add_recovered_guia's no-op contract (:514-522). The TOCTOU sibling
+    bug double-appended the recovered guía. After the first recovery the entry is
+    gone AND the guía exists → the second call must NOT append a duplicate guía
+    nor write a duplicate sidecar event. It returns structured rows (no exception).
+
+    RED today: recover_discarded_page blindly appends → two recovered_152 guías.
+    """
+    dp152 = DiscardedPage(page=152, registro="232", lines=[])
+    svc = _build_review_service(tmp_path, discarded_pages=[dp152])
+
+    guia = _make_guia(page=152)
+    svc.recover_discarded_page(page=152, guia=guia)
+    # Second call with the same page/guia_id — entry already removed.
+    rows = svc.recover_discarded_page(page=152, guia=_make_guia(page=152))
+
+    recovered = [g for g in svc.guias if g.guia_id == "recovered_152"]
+    assert len(recovered) == 1, (
+        f"Double-append: expected 1 recovered_152 guía, got {len(recovered)}"
+    )
+    # No exception — structured rows returned.
+    assert isinstance(rows, list)
+
+    # Exactly ONE recovered_discarded_page audit event.
+    events = [
+        e for e in svc.get_audit_trail()
+        if e.get("kind") == "recovered_discarded_page"
+    ]
+    assert len(events) == 1, (
+        f"Duplicate audit event: expected 1, got {len(events)}"
+    )
+
+
+def test_recover_discarded_page_idempotent_same_guia_id_present(tmp_path: Path):
+    """CRITICAL — guard also keys on guia_id (parity with add_recovered_guia).
+
+    Even if the discarded entry were still present (e.g. divergent caller), a
+    with-lines guía already carrying that guia_id must short-circuit the append.
+
+    RED today: append happens regardless of existing guia_id.
+    """
+    existing = _make_guia(page=152)
+    dp152 = DiscardedPage(page=152, registro="232", lines=[])
+    svc = _build_review_service(
+        tmp_path, discarded_pages=[dp152], guias=[existing]
+    )
+
+    svc.recover_discarded_page(page=152, guia=_make_guia(page=152))
+
+    recovered = [g for g in svc.guias if g.guia_id == "recovered_152"]
+    assert len(recovered) == 1, (
+        f"guia_id guard failed: expected 1 recovered_152, got {len(recovered)}"
+    )

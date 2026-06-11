@@ -311,3 +311,175 @@ def test_identity_source_operator_roundtrips_dto():
         )
 
     assert obj.identity_source == "operator"
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL (JD ×2) — batch handler de-duplicates pages before scheduling
+# ---------------------------------------------------------------------------
+
+
+def test_batch_dedups_repeated_pages():
+    """CRITICAL — POST recover-batch {"pages":[88,88]} schedules page 88 ONCE.
+
+    Deterministic double-count with zero concurrency: a duplicated page in the
+    batch body invokes apply_page_recovery(88) twice → two recovered_88 guías.
+    The route must de-duplicate (order-preserving) before scheduling.
+
+    RED today: routes.py:1447 does NOT dedupe → apply_page_recovery called twice.
+    """
+    dp88 = _make_discarded(page=88)
+
+    from unittest.mock import MagicMock
+
+    rps = MagicMock()
+    calls: list[int] = []
+
+    async def _record_apply(page: int):
+        from reconciliation.application.reprocess_service import PageRecoveryResult
+
+        calls.append(page)
+        return PageRecoveryResult(
+            recovered=True, page=page, guia_id=f"recovered_{page}", rows=[]
+        )
+
+    rps.apply_page_recovery = _record_apply
+
+    app, _ = _build_test_app(
+        run_id="run-dedup", discarded_pages=[dp88], reprocess_service=rps
+    )
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/runs/run-dedup/discarded-pages/recover-batch",
+            json={"pages": [88, 88]},
+        )
+        assert resp.status_code == 202
+        # count reflects the de-duplicated page list.
+        assert resp.json()["count"] == 1
+
+        for _ in range(30):
+            status = client.get(
+                "/runs/run-dedup/discarded-pages/recover-status"
+            ).json()
+            if status.get("done"):
+                break
+        else:
+            pytest.fail("Batch never settled")
+
+    assert calls == [88], (
+        f"Page 88 must be scheduled exactly once; apply_page_recovery calls: {calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM (REV-R30 item 3 / S08) — batch bounds concurrency to max 3 in-flight
+# ---------------------------------------------------------------------------
+
+
+def test_batch_bounds_concurrency_to_three():
+    """MEDIUM — a batch of 6 pages never runs more than 3 recoveries in-flight.
+
+    Spec REV-R30 item 3 + S08: max 3 simultaneous recovery calls. Without a
+    Semaphore around _one, asyncio.gather spawns ALL pages concurrently → A4
+    no-cap selections (343 pages) would launch ~32 parallel 300-DPI renders.
+
+    RED today: gather is unbounded → max in-flight == 6.
+    """
+    from unittest.mock import MagicMock
+
+    pages = [10, 11, 12, 13, 14, 15]
+    discarded = [_make_discarded(page=p) for p in pages]
+
+    rps = MagicMock()
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _instrumented_apply(page: int):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        try:
+            await asyncio.sleep(0.02)  # hold the slot so overlap is observable
+        finally:
+            in_flight -= 1
+        from reconciliation.application.reprocess_service import PageRecoveryResult
+
+        return PageRecoveryResult(
+            recovered=True, page=page, guia_id=f"recovered_{page}", rows=[]
+        )
+
+    rps.apply_page_recovery = _instrumented_apply
+
+    app, _ = _build_test_app(
+        run_id="run-bound", discarded_pages=discarded, reprocess_service=rps
+    )
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/runs/run-bound/discarded-pages/recover-batch",
+            json={"pages": pages},
+        )
+        assert resp.status_code == 202
+
+        for _ in range(60):
+            status = client.get(
+                "/runs/run-bound/discarded-pages/recover-status"
+            ).json()
+            if status.get("done"):
+                break
+        else:
+            pytest.fail("Batch never settled")
+
+    assert max_in_flight <= 3, (
+        f"Concurrency unbounded: max in-flight {max_in_flight} exceeds limit 3"
+    )
+
+
+# ---------------------------------------------------------------------------
+# LOW (test gap) — single-page 200 success path drives the route end-to-end
+# ---------------------------------------------------------------------------
+
+
+def test_single_recover_endpoint_200_success_assembles_response():
+    """LOW — happy-path 200: rows + remaining discarded_pages assembled (routes.py:1395-1412).
+
+    Locks the success-path response assembly: recovered=True, the recovered
+    page is dropped from the returned discarded_pages list, rows surfaced.
+    """
+    from unittest.mock import MagicMock
+
+    dp152 = _make_discarded(page=152)
+    dp175 = _make_discarded(page=175)
+
+    rps = MagicMock()
+
+    app, entry = _build_test_app(
+        run_id="run-200", discarded_pages=[dp152, dp175], reprocess_service=rps
+    )
+
+    review_svc = entry["review_service"]
+
+    async def _apply(page: int):
+        from reconciliation.application.reprocess_service import PageRecoveryResult
+
+        # Mirror production: recovery drops the page from the discarded list.
+        review_svc.discarded_pages = [
+            d for d in review_svc.discarded_pages if d.page != page
+        ]
+        return PageRecoveryResult(
+            recovered=True, page=page, guia_id=f"recovered_{page}", rows=[]
+        )
+
+    rps.apply_page_recovery = _apply
+
+    with TestClient(app) as client:
+        resp = client.post("/runs/run-200/discarded-pages/152/recover")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["recovered"] is True
+    assert data["page"] == 152
+    assert data["guia_id"] == "recovered_152"
+    # The recovered page is dropped; page 175 remains.
+    remaining = {d["page"] for d in data["discarded_pages"]}
+    assert remaining == {175}

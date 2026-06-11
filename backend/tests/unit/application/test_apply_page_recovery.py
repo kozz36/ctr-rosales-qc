@@ -19,6 +19,7 @@ recovered guía invariants:
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -360,7 +361,10 @@ async def test_recovered_guia_inherits_section_registro():
 async def test_double_recover_idempotent():
     """Design §2 — second recover attempt returns not_found (entry already removed).
 
-    FAILS today: apply_page_recovery does not exist.
+    Sequential happy path: first recover removes the entry, second sees it gone.
+    NOTE: this is the SEQUENTIAL invariant only. The double-count CRITICAL is
+    proven by ``test_concurrent_recover_no_double_count`` below, which drives the
+    REAL ReviewService under asyncio.gather (no manual list manipulation).
     """
     cached_line = _make_line()
     page = _make_discarded_page(page=152, lines=[cached_line])
@@ -383,6 +387,155 @@ async def test_double_recover_idempotent():
     assert result2.reason == "not_found"
     # Only ONE commit (from the first recovery)
     assert review_service.recover_discarded_page.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL (JD dual-blind, REPRODUCED) — concurrent double-count guard
+# ---------------------------------------------------------------------------
+
+
+def _build_real_reprocess_service_tier2(
+    tmp_path,
+    page: int = 88,
+    registro: str | None = "232",
+    cantidad: str = "2.500",
+):
+    """Wire a ReprocessService onto a REAL ReviewService driving the Tier-2 OCR path.
+
+    Tier-2 is required to reproduce the TOCTOU: the executor await (render + OCR)
+    runs AFTER the discarded-list lookup but BEFORE the commit lock — so two
+    concurrent calls both pass the lookup, both suspend in run_in_executor, then
+    both commit sequentially → double-append. (Tier-1 has no suspension between
+    lookup and lock and would NOT reproduce the race.)
+    """
+    from reconciliation.application.reprocess_service import ReprocessService
+    from reconciliation.application.review_service import ReviewService
+    from reconciliation.application.run_context import RunContext
+
+    pdf_path = tmp_path / "fake.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_base = tmp_path / "output"
+    output_base.mkdir(parents=True, exist_ok=True)
+    ctx = RunContext(pdf_path=pdf_path, output_base=output_base, run_id="run_concurrent")
+
+    # No cached lines → Tier-2 OCR path (the suspension window).
+    dp = DiscardedPage(page=page, registro=registro, lines=[])
+
+    review_service = ReviewService(
+        declared=[],
+        guias=[],
+        rows=[],
+        ctx=ctx,
+        errored_guias=[],
+        discarded_pages=[dp],
+    )
+
+    doc_source = MagicMock()
+    doc_source.render_page.return_value = b"fake_image_bytes"
+    identity = MagicMock()
+    key_resolver = _make_key_resolver_mock()
+
+    ocr_line = _make_line(cantidad=cantidad, source_page=page)
+    extractor = MagicMock()
+    extractor.extract_printed_table.return_value = [ocr_line]
+
+    svc = ReprocessService(
+        doc_source=doc_source,
+        identity=identity,
+        sunat=None,
+        key_resolver=key_resolver,
+        review_service=review_service,
+        vision=None,
+        extractor=extractor,
+    )
+    return svc, review_service, ctx
+
+
+@pytest.mark.asyncio
+async def test_concurrent_recover_no_double_count(tmp_path):
+    """CRITICAL (JD ×2, Judge B reproduced) — two concurrent apply_page_recovery(88).
+
+    The TOCTOU window: both callers' discarded-list lookup passes (entry still
+    present), both build a guía, both suspend awaiting the commit lock, then both
+    commit sequentially → ['recovered_88', 'recovered_88'], qty 2× (5.000 not
+    2.500) AND TWO sidecar events → replay re-creates the corruption on EVERY
+    restart.
+
+    The fix is a lock-local idempotency/existence guard inside
+    recover_discarded_page (page already gone → structured no-op).
+
+    RED today: asserts will fail with TWO guías / doubled qty / two events.
+    """
+    svc, review_service, ctx = _build_real_reprocess_service_tier2(
+        tmp_path, page=88, cantidad="2.500"
+    )
+
+    # Drive the REAL service concurrently — no manual list manipulation.
+    results = await asyncio.gather(
+        svc.apply_page_recovery(88),
+        svc.apply_page_recovery(88),
+    )
+
+    # Exactly ONE recovered_88 guía in the ReviewService.
+    recovered_guias = [g for g in review_service.guias if g.guia_id == "recovered_88"]
+    assert len(recovered_guias) == 1, (
+        f"Double-count: expected exactly 1 recovered_88 guía, got {len(recovered_guias)} "
+        f"(guia_ids={[g.guia_id for g in review_service.guias]})"
+    )
+
+    # Quantity must be 1× (2.500) — NOT doubled to 5.000.
+    total_qty = sum(
+        (ln.cantidad for g in recovered_guias for ln in g.lines),
+        Decimal("0"),
+    )
+    assert total_qty == Decimal("2.500"), (
+        f"Quantity double-counted: expected 2.500, got {total_qty}"
+    )
+
+    # Exactly ONE recovered_discarded_page event written to the sidecar.
+    sidecar = ctx.read_review_sidecar()
+    events = [
+        e for e in sidecar.get("edits", [])
+        if e.get("kind") == "recovered_discarded_page"
+    ]
+    assert len(events) == 1, (
+        f"Duplicate sidecar event: expected 1 recovered_discarded_page, got {len(events)}"
+    )
+
+    # Both calls return; exactly one should report recovered=True (the other a no-op).
+    recovered_flags = [bool(r.recovered) for r in results]
+    assert recovered_flags.count(True) == 1, (
+        f"Exactly one call should recover; got recovered flags {recovered_flags}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# LOW (test gap) — requires_review coercion: cached line False/0.99 → True
+# ---------------------------------------------------------------------------
+
+
+def test_build_lines_coerces_requires_review_true_even_high_confidence():
+    """LOW — _build_recovered_guia_lines_from_vision forces requires_review=True.
+
+    A high-confidence cached line (requires_review=False, confidence=0.99) MUST
+    be coerced to requires_review=True — recovered material is NEVER auto-accepted
+    (reconciliation validation gate). Locks reprocess_service.py:247.
+    """
+    from reconciliation.application.reprocess_service import (
+        _build_recovered_guia_lines_from_vision,
+    )
+
+    cached = _make_line(requires_review=False, confidence=0.99)
+    kr = _make_key_resolver_mock()
+
+    out = _build_recovered_guia_lines_from_vision(
+        vision_lines=[cached], source_page=88, key_resolver=kr
+    )
+
+    assert len(out) == 1
+    assert out[0].requires_review is True, (
+        "Recovered line must be coerced requires_review=True regardless of confidence"
+    )
 
 
 # ---------------------------------------------------------------------------

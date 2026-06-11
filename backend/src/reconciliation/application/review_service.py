@@ -562,6 +562,74 @@ class ReviewService:
 
         return list(self._rows)
 
+    def recover_discarded_page(
+        self,
+        page: int,
+        guia: GuiaDeRemision,
+    ) -> list[ReconciliationRow]:
+        """Append a recovered guía and remove its DiscardedPage entry; re-reconcile.
+
+        PR-2 / REV-R31: this is the SOLE ReviewService mutation hook for discarded-page
+        recovery.  Only accepts guías whose lines all have ``requires_review=True``
+        (invariant — reconciliation validation gate; recovered guías are never
+        auto-accepted).  Mirrors ``add_recovered_guia`` (T-3 convention) with a
+        dedicated entry point (Open/Closed: second entry point, not modifying
+        ``add_recovered_guia``).
+
+        Sequence (design §4):
+          1. Fail-closed guard: raise ValueError if any line has requires_review != True.
+          2. Append guía to self._guias (no placeholder — discarded pages never open a
+             block, so there is no 0-line placeholder to replace; append path only).
+          3. Drop the DiscardedPage entry with matching page from self._discarded_pages.
+          4. Re-reconcile via _reconciler.reconcile with _delivery_dates().
+          5. Emit ONE audit event kind="recovered_discarded_page",
+             target={"guia_id": guia.guia_id, "page": page},
+             new_value=guia.model_dump(mode="json").
+          6. _persist().
+
+        Args:
+            page: 0-based PDF page index (the natural key of the DiscardedPage entry).
+            guia: A GuiaDeRemision built by ReprocessService (all lines requires_review=True).
+
+        Returns:
+            Updated list of reconciliation rows after re-reconcile.
+        """
+        # Fail-closed guard (parity with add_recovered_guia FIX #5): recovered lines
+        # ALWAYS requires_review=True (reconciliation validation gate).
+        bad = [ln for ln in guia.lines if ln.requires_review is not True]
+        if bad:
+            raise ValueError(
+                f"recover_discarded_page: guía {guia.guia_id!r} has "
+                f"{len(bad)} line(s) with requires_review!=True — recovered guías "
+                "must always be flagged for review (reconciliation validation gate)."
+            )
+
+        # Append guía (no placeholder to replace — discarded pages never had a guía slot).
+        new_guias = list(self._guias)
+        new_guias.append(guia)
+        self._guias = new_guias
+
+        # Drop the DiscardedPage entry.
+        self._discarded_pages = [dp for dp in self._discarded_pages if dp.page != page]
+
+        # Re-reconcile.
+        self._rows = self._reconciler.reconcile(
+            self._declared, self._guias, delivery_dates=self._delivery_dates()
+        )
+
+        # Audit event (new kind: "recovered_discarded_page").
+        event = EditEvent(
+            kind="recovered_discarded_page",
+            target={"guia_id": guia.guia_id, "page": page},
+            field=None,
+            old_value=None,
+            new_value=guia.model_dump(mode="json"),
+        )
+        self._audit_trail.append(event)
+        self._persist()
+
+        return list(self._rows)
+
     def mark_retry_attempted(self, guia_id: str) -> None:
         """Durably flag a FAILED REINTENTAR on the matching errored guía (FIX 1).
 
@@ -735,6 +803,47 @@ class ReviewService:
                         "restore_from_sidecar: failed to replay recovered_guia "
                         "event for guia_id=%r; the recovered guía was not re-added.",
                         guia_id,
+                    )
+
+            elif kind == "recovered_discarded_page":
+                # PR-2 / Design §5 (§11.1 risk): replay a recovered_discarded_page event.
+                # Mirrors the recovered_guia branch EXACTLY, substituting
+                # recover_discarded_page(page, guia) in place of add_recovered_guia(guia).
+                # new_value is the model_dump(mode="json") dict written at persist time.
+                raw_guia = edit.get("new_value")
+                if not isinstance(raw_guia, dict):
+                    continue
+                raw_target = edit.get("target", {})
+                replay_page = raw_target.get("page") if isinstance(raw_target, dict) else None
+                if replay_page is None:
+                    logger.warning(
+                        "restore_from_sidecar: recovered_discarded_page event missing "
+                        "'page' in target for guia_id=%r; skipping.",
+                        guia_id,
+                    )
+                    continue
+                try:
+                    guia = GuiaDeRemision.model_validate(raw_guia)
+                    # R2-W2 (silent-data-loss guard): coerce lines to requires_review=True
+                    # BEFORE re-adding — mirrors the recovered_guia branch above.
+                    if any(ln.requires_review is not True for ln in guia.lines):
+                        guia = guia.model_copy(
+                            update={
+                                "lines": [
+                                    ln.model_copy(update={"requires_review": True})
+                                    for ln in guia.lines
+                                ]
+                            }
+                        )
+                    service.recover_discarded_page(page=replay_page, guia=guia)
+                except (ValueError, ReconciliationError):
+                    # Tolerate replay errors but DO NOT swallow silently — a
+                    # dropped recovered page is a silent-data-loss path (R2-W2).
+                    logger.warning(
+                        "restore_from_sidecar: failed to replay recovered_discarded_page "
+                        "event for guia_id=%r page=%r; the recovered guía was not re-added.",
+                        guia_id,
+                        replay_page,
                     )
 
             elif kind == "retry_attempted":

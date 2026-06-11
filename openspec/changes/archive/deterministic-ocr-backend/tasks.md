@@ -224,55 +224,55 @@ Chain strategy: pending
 
 ### Phase 3.1 — RED: Write failing real-data integration gate
 
-- [ ] **3.1.1** Create `backend/tests/integration/test_rapidocr_gate.py` with `@pytest.mark.slow`.
+- [x] **3.1.1** Create `backend/tests/integration/test_rapidocr_gate.py` with `@pytest.mark.slow`.
   Write failing test `test_page_0156_4_rows_exact` — reads page 0156 from `CTR_PDF_PATH` (skipped if unset), runs REAL `RapidOCRAdapter`, asserts 4 rows with exact multiset `{(0.008,TN),(0.136,TN),(0.191,TN),(0.041,TN)}`.
   Spec: EXT-031 / S031a. Design: §9.
 
-- [ ] **3.1.2** Add failing test `test_page_0148_3_rows_exact` — page 0148, 3 rows: `{(0.037,TN),(0.014,TN),(0.102,TN)}`.
+- [x] **3.1.2** Add failing test `test_page_0148_3_rows_exact` — page 0148, 3 rows: `{(0.037,TN),(0.014,TN),(0.102,TN)}`.
   Spec: EXT-031 / S031b.
 
-- [ ] **3.1.3** Add failing test `test_page_0160_4_rows_acero_dimensionado_exact` — page 0160, 4 rows: `{(1.616,TN),(0.238,TN),(1.643,TN),(0.121,TN)}`.
+- [x] **3.1.3** Add failing test `test_page_0160_4_rows_acero_dimensionado_exact` — page 0160, 4 rows: `{(1.616,TN),(0.238,TN),(1.643,TN),(0.121,TN)}`.
   Spec: EXT-031 / S031c.
 
-- [ ] **3.1.4** Add failing test `test_domain_invariants_e2e_no_unit_conversion` — run a 2-row table with KG and TN rows through real adapter + mock reconciler; assert KG and TN sums are independent (no conversion).
+- [x] **3.1.4** Add failing test `test_domain_invariants_e2e_no_unit_conversion` — run a 2-row table with KG and TN rows through real adapter + mock reconciler; assert KG and TN sums are independent (no conversion).
   Spec: EXT-032 / S032b. Domain invariant end-to-end.
 
 ### Phase 3.2 — GREEN: Deps + Docker + uv.lock + deploy flip
 
-- [ ] **3.2.1** Add `[project.optional-dependencies]` group `ocr` to `backend/pyproject.toml`:
+- [x] **3.2.1** Add `[project.optional-dependencies]` group `ocr` to `backend/pyproject.toml`:
   `rapidocr>=3.8.1,<3.9`, `onnxruntime`, `Pillow>=10.0`, `numpy>=1.26`.
   Run `cd backend && uv lock --extra ocr` to update `uv.lock`. Commit lockfile.
   Spec: EXT-033. Design: §7.
 
-- [ ] **3.2.2** Update `Dockerfile` builder stage: change `uv sync` line to `uv sync --frozen --no-dev --extra identity --extra llm --extra ocr`.
+- [x] **3.2.2** Update `Dockerfile` builder stage: change `uv sync` line to `uv sync --frozen --no-dev --extra identity --extra llm --extra ocr`.
   Add PP-OCRv5-server build-time warm-up `RUN` step immediately after the sync (per design §7 Dockerfile sketch). Network available at build time — this bakes the 165MB weights into `.venv/site-packages/rapidocr/models/`.
   Spec: EXT-033. Design: §7.
 
-- [ ] **3.2.3** Add runtime CONT assertion to Dockerfile runtime stage (alongside existing paddle-absence assertion at L52):
+- [x] **3.2.3** Add runtime CONT assertion to Dockerfile runtime stage (alongside existing paddle-absence assertion at L52):
   Construct `RapidOCR(params=...)` offline — must succeed (weights baked).
   Retain existing paddle-absence assertion (Dockerfile:55-58) unchanged.
   Spec: EXT-033 / S033a-c. Design: §7.
 
-- [ ] **3.2.4** Add the same `--extra ocr` + warm-up + offline assert to the Dockerfile **test stage** (L84-102) so in-container pytest can run the real-data gate offline.
+- [x] **3.2.4** Add the same `--extra ocr` + warm-up + offline assert to the Dockerfile **test stage** (L84-102) so in-container pytest can run the real-data gate offline.
   Design: §7.
 
-- [ ] **3.2.5** Update `docker-compose.yml`: add `RECONCILIATION__OCR__ENABLED=true` and `RECONCILIATION__OCR__ENGINE=rapidocr` to the backend service env.
+- [x] **3.2.5** Update `docker-compose.yml`: add `RECONCILIATION__OCR__ENABLED=true` and `RECONCILIATION__OCR__ENGINE=rapidocr` to the backend service env.
   Spec: EXT-027 (deploy defaults). Design: §8. **This is the deploy-flip — engine activates in production.**
 
-- [ ] **3.2.6** Run real-data gate with `CTR_PDF_PATH` set:
+- [x] **3.2.6** Run real-data gate with `CTR_PDF_PATH` set:
   `cd backend && uv run pytest tests/integration/test_rapidocr_gate.py -v -m slow`
   All 4 tests must be GREEN against the real PDF. This is the proof-of-correctness (CLAUDE.md Fix Discipline #2 — real data over mock theatre).
 
-- [ ] **3.2.7** [Design risk #1 — full-PDF orientation validation] Before merging PR#3, run a wider orientation check: render a broader sample of guía pages (not just 3 GT pages) through `RapidOCRAdapter` with the real PDF, inspect row-count distribution. If any pages return 0 rows from all orientations, log and investigate before the deploy flip. This is a SA-5-style runtime check.
+- [x] **3.2.7** [Design risk #1 — full-PDF orientation validation] Before merging PR#3, run a wider orientation check: render a broader sample of guía pages (not just 3 GT pages) through `RapidOCRAdapter` with the real PDF, inspect row-count distribution. If any pages return 0 rows from all orientations, log and investigate before the deploy flip. This is a SA-5-style runtime check.
 
-- [ ] **3.2.8** Run containerized verify gate (`make verify` or Compose-based): build Docker image, run CONT assertions inline. Both CONT-S0x (rapidocr import + offline weights) and CONT-S02 (paddle absence) must pass.
+- [x] **3.2.8** Run containerized verify gate (`make verify` or Compose-based): build Docker image, run CONT assertions inline. Both CONT-S0x (rapidocr import + offline weights) and CONT-S02 (paddle absence) must pass.
   Spec: EXT-033 / S033a-c.
 
-- [ ] **3.2.9** Run full test regression (non-slow, paddle-free):
+- [x] **3.2.9** Run full test regression (non-slow, paddle-free):
   `cd backend && uv run pytest tests/unit/ -v --ignore=tests/integration`
   All existing tests must remain GREEN. No regression from container wiring changes.
 
-- [ ] **3.2.10** Commit work-unit: `feat(ocr): add rapidocr deps, Docker air-gap bundling, CONT assertions, real-data gate, deploy flip (PR#3)`.
+- [x] **3.2.10** Commit work-unit: `feat(ocr): add rapidocr deps, Docker air-gap bundling, CONT assertions, real-data gate, deploy flip (PR#3)`.
   No push. (SA-3)
 
 ---
@@ -498,10 +498,10 @@ All tasks within each PR phase are sequential. Tasks across PRs are sequential (
   `cd backend && uv run pytest tests/integration/test_rapidocr_gate.py::test_no_confident_spurious_gt_budget_order_independent -v`
   Must be GREEN.
 
-- [ ] **4.2.7** Commit work-unit A: `fix(ocr): anchor unit column to DESC|UNIDAD|CANTIDAD layout; add table-region geometry guard (PR#4)`.
+- [x] **4.2.7** Commit work-unit A: `fix(ocr): anchor unit column to DESC|UNIDAD|CANTIDAD layout; add table-region geometry guard (PR#4)`.
   Covers 4.2.1 + 4.2.2 + 4.2.3. No push (SA-3).
 
-- [ ] **4.2.8** Commit work-unit B: `fix(test): order-independent GT budget in no-confident-spurious gate (PR#4)`.
+- [x] **4.2.8** Commit work-unit B: `fix(test): order-independent GT budget in no-confident-spurious gate (PR#4)`.
   Covers 4.2.4. No push (SA-3).
 
 ### Phase 4.3 — Real-data gate re-run + validation
@@ -555,9 +555,21 @@ All tasks within each PR phase are sequential. Tasks across PRs are sequential (
   (or with `CTR_PDF_PATH` set for the slow tests). All tests must be GREEN.
   This is the binding proof that PR#4 is complete and has not regressed PR#1/2/3.
 
+- [x] **4.3.5** F1 regression-lock: add pages 0141 + 0164 to the gate + path robustness fix.
+  Extends `test_rapidocr_gate.py` with `TestRapidOCRGatePage0141` and
+  `TestRapidOCRGatePage0164` — each asserts exactly one confident material row
+  (GT quantities 2.489 TN and 0.213 TN respectively) and no confident spurious rows.
+  Characterization test: passes on HEAD (F1 fix 1df09a3 present), FAILS on pre-F1
+  code (9b83149 popularity-contest bug silently drops the single row).
+  Also resolves a relative `CTR_PDF_PATH` against repo root (path robustness — both
+  JD judges tripped on cwd-relative path when running from `backend/`).
+  Commit: aeae3ed. GT source: docs/eval/ground_truth.md.
+  Binding proof: 13/13 gate tests GREEN (including new 0141/0164 assertions) +
+  prior 148/156/160 + page-156 exactly-4-rows assertions all GREEN. No regression.
+
 ### Phase 4.4 — Judgment Day (mandatory before merge)
 
-- [ ] **4.4.1** Run dual-blind judgment day on PR#4 diff before push.
+- [x] **4.4.1** Run dual-blind judgment day on PR#4 diff before push.
   PR#4 touches `box_row_parser.py` (the parser core) and modifies the integration
   gate semantics. This is a parser-core change — full JD (two independent reviewers,
   blind) is REQUIRED per CLAUDE.md (§Fix / Feature Discipline #4). A single-pass
@@ -569,7 +581,7 @@ All tasks within each PR phase are sequential. Tasks across PRs are sequential (
   - CRITICAL-1 fix is complete (stamp integer never promoted as a quantity).
   No push / PR until JD passes. (SA-3)
 
-- [ ] **4.4.2** Commit work-unit C (post-JD if remediation needed):
+- [x] **4.4.2** Commit work-unit C (post-JD if remediation needed):
   `fix(ocr): <JD-identified correction> (PR#4)`.
   Only if JD raises a CRITICAL or WARNING that requires a code change.
   No push (SA-3). Orchestrator pushes + opens PR after JD approval.

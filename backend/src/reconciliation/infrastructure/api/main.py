@@ -51,20 +51,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # In-memory run registry: {run_id → {status, ctx, review_service, ...}}
     run_registry: dict[str, Any] = {}
 
-    # --- Run history: scan existing run dirs and merge into registry (RH-002, D4) ---
+    # --- Run history: ONE shared adapter on app.state (D1) ---
+    # Constructed unconditionally so routes._get_run_history always resolves a
+    # single instance (no inline construction in routes.py). The adapter ctor
+    # takes no args and cannot fail; only the scan/sweep IO below is guarded.
+    import datetime  # noqa: PLC0415
+
+    from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+        JsonManifestRunHistoryAdapter,
+    )
+
+    adapter = JsonManifestRunHistoryAdapter()
+    app.state.run_history = adapter
+
+    # --- Scan existing run dirs and merge into registry (RH-002, D4) ---
     try:
-        import datetime  # noqa: PLC0415
-
-        from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
-            JsonManifestRunHistoryAdapter,
-        )
-
-        adapter = JsonManifestRunHistoryAdapter()
-        app.state.run_history = adapter
-
         entries = adapter.scan(config.output_dir)
         for entry in entries:
-            # Merge only if not already in registry (safety: no active runs at startup)
+            # Registry is empty at startup (no active runs), so this assignment
+            # is unconditional — every scanned entry seeds the registry.
             rid = entry["run_id"]
             run_registry[rid] = entry
 
@@ -86,12 +91,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     except Exception as _scan_exc:  # noqa: BLE001
         logger.warning("run_history: startup scan failed (non-fatal): %s", _scan_exc)
-        # Ensure run_history is set even on failure (sweep/write calls in routes.py are guarded)
-        if not hasattr(app.state, "run_history"):
-            from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
-                JsonManifestRunHistoryAdapter,
-            )
-            app.state.run_history = JsonManifestRunHistoryAdapter()
 
     app.state.config = config
     app.state.run_registry = run_registry

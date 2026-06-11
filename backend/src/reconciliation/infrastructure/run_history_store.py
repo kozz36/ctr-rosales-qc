@@ -75,39 +75,37 @@ class JsonManifestRunHistoryAdapter:
     # Seq allocation (D3)
     # ------------------------------------------------------------------
 
-    def _allocate_seq(self, date_prefix: str, output_dir: Path) -> int:
-        """Allocate the next per-day sequence number under the process lock (D3).
+    def _scan_max_seq(self, date_prefix: str, output_dir: Path) -> int:
+        """Return the current max seq for date_prefix (lock-free scan helper).
 
-        Scans existing manifests in output_dir to find the current max seq
-        for the given date_prefix, then returns max + 1.
-
-        Thread-safe: guarded by _SEQ_LOCK (process-wide).
+        Callers MUST hold _SEQ_LOCK across this scan AND the subsequent
+        manifest write — otherwise two concurrent same-day completions can
+        read the same max and duplicate the seq (TOCTOU; violates RH-004/D3).
 
         Args:
             date_prefix: "YYYY-MM-DD" string.
             output_dir:  Root output directory.
 
         Returns:
-            Next available 1-based sequence number for the given date.
+            Highest seq found for the given date, or 0 if none.
         """
-        with _SEQ_LOCK:
-            max_seq = 0
-            if output_dir.is_dir():
-                for entry in output_dir.iterdir():
-                    if not entry.is_dir() or not _is_valid_uuid(entry.name):
-                        continue
-                    manifest_path = entry / "run_manifest.json"
-                    if not manifest_path.exists():
-                        continue
-                    try:
-                        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                        if data.get("started_at", "")[:10] == date_prefix:
-                            seq = data.get("seq", 0)
-                            if isinstance(seq, int) and seq > max_seq:
-                                max_seq = seq
-                    except Exception:  # noqa: BLE001
-                        continue
-            return max_seq + 1
+        max_seq = 0
+        if output_dir.is_dir():
+            for entry in output_dir.iterdir():
+                if not entry.is_dir() or not _is_valid_uuid(entry.name):
+                    continue
+                manifest_path = entry / "run_manifest.json"
+                if not manifest_path.exists():
+                    continue
+                try:
+                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if data.get("started_at", "")[:10] == date_prefix:
+                        seq = data.get("seq", 0)
+                        if isinstance(seq, int) and seq > max_seq:
+                            max_seq = seq
+                except Exception:  # noqa: BLE001
+                    continue
+        return max_seq
 
     # ------------------------------------------------------------------
     # write_manifest (D2, RH-001-S01)
@@ -130,16 +128,19 @@ class JsonManifestRunHistoryAdapter:
         from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
 
         try:
-            # Allocate seq under the process lock
+            # D3/RH-004: hold _SEQ_LOCK across scan AND write so the allocated
+            # seq is published to disk before the next allocator scans (closes
+            # the TOCTOU window; writes are ~ms, contention trivial single-process).
             prefix = _date_prefix(manifest.started_at)
-            seq = self._allocate_seq(prefix, output_dir)
+            with _SEQ_LOCK:
+                seq = self._scan_max_seq(prefix, output_dir) + 1
 
-            # Build updated manifest data (overwrite seq with allocated value)
-            data = manifest.model_dump()
-            data["seq"] = seq
+                # Build updated manifest data (overwrite seq with allocated value)
+                data = manifest.model_dump()
+                data["seq"] = seq
 
-            manifest_path = output_dir / manifest.run_id / "run_manifest.json"
-            _atomic_json_write(manifest_path, data)
+                manifest_path = output_dir / manifest.run_id / "run_manifest.json"
+                _atomic_json_write(manifest_path, data)
 
             logger.debug(
                 "run_history: manifest written run_id=%s seq=%d status=%s",
@@ -176,27 +177,29 @@ class JsonManifestRunHistoryAdapter:
 
         try:
             prefix = _date_prefix(started_at)
-            seq = self._allocate_seq(prefix, output_dir)
+            # D3/RH-004: hold _SEQ_LOCK across scan AND write (see write_manifest).
+            with _SEQ_LOCK:
+                seq = self._scan_max_seq(prefix, output_dir) + 1
 
-            manifest = RunManifest(
-                schema_version=1,
-                run_id=run_id,
-                status="error",
-                started_at=started_at,
-                completed_at=_utc_now_iso(),
-                seq=seq,
-                registro_min=None,
-                registro_max=None,
-                row_count=0,
-                match_count=0,
-                mismatch_count=0,
-                warnings=[],
-                vision_calls_made=0,
-                error=error_str,
-            )
-            data = manifest.model_dump()
-            manifest_path = output_dir / run_id / "run_manifest.json"
-            _atomic_json_write(manifest_path, data)
+                manifest = RunManifest(
+                    schema_version=1,
+                    run_id=run_id,
+                    status="error",
+                    started_at=started_at,
+                    completed_at=_utc_now_iso(),
+                    seq=seq,
+                    registro_min=None,
+                    registro_max=None,
+                    row_count=0,
+                    match_count=0,
+                    mismatch_count=0,
+                    warnings=[],
+                    vision_calls_made=0,
+                    error=error_str,
+                )
+                data = manifest.model_dump()
+                manifest_path = output_dir / run_id / "run_manifest.json"
+                _atomic_json_write(manifest_path, data)
 
             logger.debug(
                 "run_history: failure manifest written run_id=%s seq=%d",
@@ -265,7 +268,10 @@ class JsonManifestRunHistoryAdapter:
             try:
                 data = json.loads(manifest_path.read_text(encoding="utf-8"))
                 return {
-                    "run_id": data["run_id"],
+                    # F7: key by the UUID-validated dir name, NOT the manifest's
+                    # self-reported run_id (the dir name is the trusted identity;
+                    # a corrupted/mismatched run_id field cannot collide the registry).
+                    "run_id": run_id,
                     "status": data.get("status", "review"),
                     "started_at": data.get("started_at"),
                     "completed_at": data.get("completed_at"),
@@ -361,7 +367,11 @@ class JsonManifestRunHistoryAdapter:
         if data.get("status") != "error":
             return None
 
-        # Determine the age timestamp: prefer completed_at, fallback mtime
+        # Determine the age timestamp: prefer completed_at, fallback mtime.
+        # F11/deliberate deviation: spec RH-008 phrases the 48h window against
+        # started_at; we use completed_at (run end) which is strictly >= started_at,
+        # so a failed run is swept slightly LATER, never earlier — conservative,
+        # never deletes a run sooner than the spec's floor.
         ts_str: str | None = data.get("completed_at")
         if ts_str:
             try:

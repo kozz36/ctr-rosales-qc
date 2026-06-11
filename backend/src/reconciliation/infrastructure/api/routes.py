@@ -84,8 +84,20 @@ def _get_config(request: Request) -> Any:
     return request.app.state.config  # noqa: ANN401
 
 
+def _get_run_history(request: Request) -> Any:
+    """Extract the RunHistoryPort adapter from FastAPI app state (D1).
+
+    The single adapter instance is constructed once in the lifespan startup
+    (main.py) and stored on app.state.run_history. Resolving it here keeps ONE
+    instance shared across the lifespan scan/sweep and the request handlers,
+    rather than constructing a fresh JsonManifestRunHistoryAdapter inline.
+    """
+    return request.app.state.run_history  # noqa: ANN401
+
+
 RunRegistry = Annotated[dict[str, Any], Depends(_get_registry)]
 AppConfigDep = Annotated[Any, Depends(_get_config)]
+RunHistoryDep = Annotated[Any, Depends(_get_run_history)]
 
 
 # ---------------------------------------------------------------------------
@@ -157,9 +169,23 @@ def _require_review_service(entry: Any, run_id: str) -> Any:
     if review_service is None:
         status = entry.get("status", "unknown")
         if status == "error":
+            # entry["error"] may exist as None — coerce to a readable string.
+            err = entry.get("error") or "unknown"
             raise HTTPException(
                 status_code=422,
-                detail=f"Run '{run_id}' ended in error: {entry.get('error', 'unknown')}",
+                detail=f"Run '{run_id}' ended in error: {err}",
+            )
+        # An entry hydrated from a prior session's manifest scan has status
+        # "review" but no live review_service yet (lazy hydration is PR-2).
+        # Distinguish it from a run that is genuinely mid-pipeline so the
+        # operator/UI knows a reload is pending rather than a transient state.
+        if entry.get("hydrated") is False and status == "review":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Run '{run_id}' is from a previous session; "
+                    "reload is pending (PR-2)."
+                ),
             )
         raise HTTPException(
             status_code=409,
@@ -317,6 +343,7 @@ def _run_pipeline_background(
     pdf_path: Path,
     config: Any,
     registry: dict[str, Any],
+    run_history: Any,
 ) -> None:
     """Execute the pipeline synchronously inside a background task.
 
@@ -377,12 +404,8 @@ def _run_pipeline_background(
         logger.info("pipeline run %s completed; %d rows", run_id, len(result.rows))
 
         # --- Run history manifest (D1: non-fatal side-channel in routes.py) ---
+        # Uses the single app.state.run_history adapter passed in from create_run.
         try:
-            from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
-                JsonManifestRunHistoryAdapter,
-            )
-
-            run_history = JsonManifestRunHistoryAdapter()
             manifest = _build_run_manifest(result, registry[run_id], started_at, run_id)
             run_history.write_manifest(manifest, config.output_dir)
         except Exception as _mex:  # noqa: BLE001
@@ -393,12 +416,8 @@ def _run_pipeline_background(
         registry[run_id].update({"status": "error", "error": str(exc)})
 
         # --- Failure manifest (D1: non-fatal; always try after registry update) ---
+        # Uses the single app.state.run_history adapter passed in from create_run.
         try:
-            from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
-                JsonManifestRunHistoryAdapter,
-            )
-
-            run_history = JsonManifestRunHistoryAdapter()
             run_history.write_failure_manifest(
                 run_id=run_id,
                 started_at=started_at,
@@ -427,6 +446,7 @@ async def create_run(
     background_tasks: BackgroundTasks,
     registry: RunRegistry,
     config: AppConfigDep,
+    run_history: RunHistoryDep,
 ) -> RunCreateResponse:
     """Accept a PDF upload and start the reconciliation pipeline asynchronously.
 
@@ -494,7 +514,7 @@ async def create_run(
     }
 
     background_tasks.add_task(
-        _run_pipeline_background, run_id, pdf_path, config, registry
+        _run_pipeline_background, run_id, pdf_path, config, registry, run_history
     )
 
     logger.info("accepted run %s (%d bytes)", run_id, total_bytes)
@@ -506,7 +526,11 @@ async def create_run(
     response_model=list[RunSummaryResponse],
     summary="List all known runs, sorted newest-first (RH-003).",
 )
-def list_runs(registry: RunRegistry, config: AppConfigDep) -> list[RunSummaryResponse]:
+def list_runs(
+    registry: RunRegistry,
+    config: AppConfigDep,
+    run_history: RunHistoryDep,
+) -> list[RunSummaryResponse]:
     """Return summary of all known runs, sorted by started_at descending.
 
     Runs without a started_at (legacy degraded entries) appear last.
@@ -516,31 +540,20 @@ def list_runs(registry: RunRegistry, config: AppConfigDep) -> list[RunSummaryRes
     import datetime  # noqa: PLC0415
 
     # Lazy 48 h sweep: delete old error-status runs from disk + remove from registry.
+    # D1: reuse the single app.state.run_history adapter, not a fresh inline one.
     try:
-        from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
-            JsonManifestRunHistoryAdapter,
-        )
-
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=48)
-        adapter = JsonManifestRunHistoryAdapter()
-        deleted_ids = adapter.sweep_failed(config.output_dir, cutoff)
+        deleted_ids = run_history.sweep_failed(config.output_dir, cutoff)
         for rid in deleted_ids:
             registry.pop(rid, None)
             logger.info("run_history: swept run %s from registry", rid)
     except Exception as _sweep_exc:  # noqa: BLE001
         logger.warning("run_history: sweep error (non-fatal): %s", _sweep_exc)
 
-    def _sort_key(entry: dict[str, Any]) -> tuple[int, str]:
-        # Entries with started_at sort first (0), then by ts desc; null → last (1).
-        ts = entry.get("started_at") or ""
-        if ts:
-            return (0, ts)
-        return (1, "")
-
-    sorted_entries = sorted(registry.values(), key=_sort_key, reverse=False)
-    # We want desc by started_at: partition into has_ts (sort desc) + no_ts (at end)
-    has_ts = [e for e in sorted_entries if e.get("started_at")]
-    no_ts = [e for e in sorted_entries if not e.get("started_at")]
+    # Desc by started_at, legacy entries (no started_at) last (RH-003-S03).
+    entries = list(registry.values())
+    has_ts = [e for e in entries if e.get("started_at")]
+    no_ts = [e for e in entries if not e.get("started_at")]
     has_ts_desc = sorted(has_ts, key=lambda e: e.get("started_at", ""), reverse=True)
     ordered = has_ts_desc + no_ts
 

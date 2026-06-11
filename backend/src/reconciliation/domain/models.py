@@ -411,3 +411,22 @@ class ErroredGuia(BaseModel):
     # R9b / PR#3: SUNAT delivery date persisted for vision recovery R9b floor.
     # None when SUNAT disabled or date not supplied.
     fecha_entrega: date | None = None
+
+
+class DiscardedPage(BaseModel):
+    """A GUIA-classified page dropped by the rev-6 QR-evidence gate (issue #50).
+
+    Additive side-channel — NEVER opens a block, never alters grouping
+    key/status/delta/qty. Surfaced for operator review and recovery.
+
+    The rev-6 invariant: a page with NO QR evidence (neither a decoded compact
+    identity QR nor a URL-variant hashqr QR) NEVER becomes a guía block.
+    Instead of silently dropping these pages, the pipeline emits a DiscardedPage
+    entry so the operator can identify and recover them.
+
+    No IO/SDK imports. No image bytes persisted (thumbnail renders on demand).
+    """
+
+    page: int  # 0-based PDF page index (natural key)
+    registro: str | None  # section registro from page_to_registro; None when unresolved
+    lines: list[MaterialLine] = []  # cached OCR lines at drop time (may be empty)

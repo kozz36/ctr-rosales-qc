@@ -175,7 +175,7 @@ class TestEXTS19aConditionBNoQrBlockNotAbsorbed:
             1: _decode_no_qr(),
         }
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0_qr, p1_heur], classifications, decode_map=decode_map
         )
 
@@ -206,7 +206,7 @@ class TestEXTS19aConditionBNoQrBlockNotAbsorbed:
             1: _decode_no_qr(),
         }
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0, p1], classifications, decode_map=decode_map
         )
 
@@ -264,7 +264,7 @@ class TestConditionCContinuationAbsorbed:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0, p1], classifications, decode_map=decode_map
         )
 
@@ -303,7 +303,7 @@ class TestEXTS19eRegistroMismatchNotAbsorbed:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0, p1], classifications, decode_map=decode_map
         )
 
@@ -332,7 +332,7 @@ class TestEXTS19eRegistroMismatchNotAbsorbed:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0, p1], classifications, decode_map=decode_map
         )
 
@@ -384,7 +384,7 @@ class TestEXTS19cGenuineContinuationRegression:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p151, p152], classifications, decode_map=decode_map
         )
 
@@ -409,7 +409,7 @@ class TestEXTS19cGenuineContinuationRegression:
         decode_map = {0: _decode_qr(qr), 1: _decode_no_qr()}
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p0, p1], classifications, decode_map=decode_map
         )
 
@@ -502,7 +502,7 @@ class TestEXTS19bRealDataReg228PhotosNotAbsorbed:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p98, *photos], classifications, decode_map=decode_map
         )
 
@@ -555,7 +555,7 @@ class TestEXTS19fTrueMultiQRPageGuiaAbsorbed:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p10, p11], classifications, decode_map=decode_map
         )
 
@@ -624,7 +624,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b, p_c], classifications, decode_map=decode_map
         )
 
@@ -667,7 +667,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         decode_map = {0: _decode_qr(qr_a)}
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks([p_a], classifications, decode_map=decode_map)
+        blocks, _discarded = pipeline._stage_assemble_blocks([p_a], classifications, decode_map=decode_map)
 
         assert len(blocks) == 1
         assert blocks[0].identity_source == "qr"
@@ -691,7 +691,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         decode_map = {98: _decode_qr(qr), 99: _decode_no_qr()}
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p98, photo], classifications, decode_map=decode_map
         )
 
@@ -739,7 +739,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b], classifications, decode_map=decode_map
         )
 
@@ -789,7 +789,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b], classifications, decode_map=decode_map
         )
 
@@ -829,7 +829,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b], classifications, decode_map=decode_map
         )
 
@@ -857,7 +857,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a], classifications, decode_map=decode_map
         )
 
@@ -895,7 +895,7 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         }
 
         pipeline = _make_pipeline()
-        blocks = pipeline._stage_assemble_blocks(
+        blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b], classifications, decode_map=decode_map
         )
 

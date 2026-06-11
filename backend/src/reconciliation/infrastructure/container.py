@@ -755,6 +755,7 @@ def build_review_service(
         A ReviewService with edits replayed from sidecar (or empty).
     """
     from reconciliation.domain.models import (  # noqa: PLC0415
+        DiscardedPage,
         ErroredGuia,
         GuiaDeRemision,
         ReconciliationRow,
@@ -768,6 +769,11 @@ def build_review_service(
     errored_guias = [
         ErroredGuia.model_validate(e) for e in cache.get("errored_guias", [])
     ]
+    # EXT-035: tolerant hydration — old caches without this key default to [].
+    # Mirrors the errored_guias pattern at :768.
+    discarded_pages = [
+        DiscardedPage.model_validate(d) for d in cache.get("discarded_pages", [])
+    ]
 
     return ReviewService.restore_from_sidecar(
         declared=declared,
@@ -775,4 +781,5 @@ def build_review_service(
         rows=rows,
         ctx=ctx,
         errored_guias=errored_guias,
+        discarded_pages=discarded_pages,
     )

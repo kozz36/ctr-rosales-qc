@@ -29,6 +29,7 @@ from reconciliation.domain.models import ReconciliationRow
 from reconciliation.infrastructure.api.schemas import (
     AuditEventResponse,
     AuditTrailResponse,
+    DiscardedPageResponse,
     ErroredGuiaResponse,
     ErrorResponse,  # noqa: F401 — imported for openapi docs
     ExportRequest,
@@ -482,11 +483,23 @@ def get_table(run_id: str, registry: RunRegistry) -> ReconciliationTableResponse
         for eg in review_service.errored_guias
     ]
 
+    # Populate discarded_pages: GUIA pages dropped by the rev-6 QR-evidence gate (EXT-034).
+    # Additive side-channel — never appears in rows, never affects MATCH/MISMATCH logic.
+    discarded_pages_response = [
+        DiscardedPageResponse(
+            page=d.page,
+            registro=d.registro,
+            has_cached_lines=bool(d.lines),
+        )
+        for d in review_service.discarded_pages
+    ]
+
     return ReconciliationTableResponse(
         run_id=run_id,
         rows=rows,
         unresolved_guias=unresolved_guias,
         errored_guias=errored_guias,
+        discarded_pages=discarded_pages_response,
     )
 
 

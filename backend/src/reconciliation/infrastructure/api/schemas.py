@@ -301,6 +301,29 @@ class ReconciliationRowResponse(BaseModel):
     )
 
 
+class DiscardedPageResponse(BaseModel):
+    """A GUIA-classified page dropped by the rev-6 QR-evidence gate (EXT-034).
+
+    Additive side-channel — surfaced for operator review and recovery (PR-2).
+    Raw MaterialLine list is NOT exposed; ``has_cached_lines`` signals whether
+    cached OCR lines are available (Tier 1 recovery path) without leaking raw data.
+
+    page-keyed (not guia_id-keyed): identity is absent by definition.
+    """
+
+    page: int = Field(description="0-based PDF page index.")
+    registro: str | None = Field(
+        default=None,
+        description="Section registro numero, or null when unresolved.",
+    )
+    has_cached_lines: bool = Field(
+        description=(
+            "True when cached OCR lines are available (Tier 1 recovery path — near-instant). "
+            "False when the page was dropped before OCR produced lines (Tier 2/3 needed)."
+        ),
+    )
+
+
 class ReconciliationTableResponse(BaseModel):
     """Response for GET /runs/{run_id}/table.
 
@@ -310,6 +333,9 @@ class ReconciliationTableResponse(BaseModel):
     Rev-3 (REV-E04): ``errored_guias`` surfaces guías that resolved to 0
     material lines during extraction (additive side-channel — NEVER appears
     in ``rows``, NEVER affects reconciliation logic).
+
+    SDD#2 (EXT-034/035): ``discarded_pages`` surfaces GUIA pages dropped by
+    the rev-6 QR-evidence gate (additive side-channel — never in rows).
     """
 
     run_id: str
@@ -323,6 +349,14 @@ class ReconciliationTableResponse(BaseModel):
         description=(
             "Guías that resolved to 0 material lines during extraction (REV-E04). "
             "Additive read-only side-channel — never in rows, never affects MATCH/MISMATCH."
+        ),
+    )
+    discarded_pages: list[DiscardedPageResponse] = Field(
+        default_factory=list,
+        description=(
+            "GUIA-classified pages dropped by the rev-6 QR-evidence gate (EXT-034). "
+            "Additive read-only side-channel — never in rows, never affects MATCH/MISMATCH. "
+            "Defaults to [] on old API consumers (backward-compatible)."
         ),
     )
 

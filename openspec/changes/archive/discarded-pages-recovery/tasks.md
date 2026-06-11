@@ -170,7 +170,7 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### Phase 1.4 — Judgment Day (PR-1)
 
-- [ ] **1.4.1** Run dual-blind judgment day on PR-1 diff before push.
+- [x] **1.4.1** Run dual-blind judgment day on PR-1 diff before push.
   PR-1 touches `pipeline.py` (the drop site) and `review_service.py` (state shape). Both are parser/pipeline-core touches. Full dual-blind JD required per CLAUDE.md §Fix/Feature Discipline #4.
   JD must verify:
   - `_stage_assemble_blocks` return-shape change does not alter block assembly behavior.
@@ -178,6 +178,7 @@ If PR-2 tests push the total past 400 lines, split as:
   - Old cache backward-compat (no `KeyError`/`ValidationError` on missing key).
   - `errored_guias` and `discarded_pages` are semantically separate; the bulk-batch enrollment leak (Option A design §1 justification) is provably absent.
   No push / PR until JD passes. (SA-3)
+  **EVIDENCE**: JD PASS×2 (judge-a + judge-b), engram #3165. PR #61 merged.
 
 ---
 
@@ -449,7 +450,7 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### Phase 2.4 — Judgment Day (PR-2)
 
-- [ ] **2.4.1** Run dual-blind judgment day on PR-2 diff before push.
+- [x] **2.4.1** Run dual-blind judgment day on PR-2 diff before push.
   PR-2 touches `reprocess_service.py`, `review_service.py`, `routes.py`, `schemas.py`, `container.py` — multi-file pipeline-touching change. Full dual-blind JD required.
   JD must verify:
   - 4-site Literal lockstep is complete (no 5th site missed).
@@ -458,6 +459,7 @@ If PR-2 tests push the total past 400 lines, split as:
   - Batch endpoint never settles `done=True` prematurely (PR-49 SA-5 lesson).
   - `fecha=None` on recovered guía is intentional and does not crash the reconciliation (R9b/R9c graceful off).
   No push / PR until JD passes. (SA-3)
+  **EVIDENCE**: JD FAIL×2 (round 1 — recover hook lacked idempotency guard, CRITICAL caught by both judges); fix commits b4c1263 / 3282a90; JD PASS×2 (round 2), engram #3167. PR #63 merged.
 
 ---
 
@@ -592,13 +594,14 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### Phase 3a.3 — SA-5 runtime validation (PR-3a)
 
-- [ ] **3a.3.1** Validate against the RUNNING app via Playwright MCP (SA-5 — mandatory before marking PR-3a done):
+- [x] **3a.3.1** Validate against the RUNNING app via Playwright MCP (SA-5 — mandatory before marking PR-3a done):
   Upload the full PDF → wait for pipeline to complete → navigate to ReviewPage → click "Descartadas para revisión" tab → assert tab is visible and active → assert count badge shows the expected discarded count → assert groups are collapsed by default → expand one group → assert thumbnails render (img elements visible) → click a single entry's "Recuperar" button → assert the entry disappears from the tab OR shows a result → assert the Reconciliación tab reflects the recovered line flagged for review.
   Green unit tests alone do NOT prove runtime behavior (SA-5 principle + PR#49 lesson).
+  **EVIDENCE**: SA-5 PASS 8/8 ×2 runs, engram #3169. Screenshots at `docs/playwright/sa5-pr3a-*.png`.
 
 ### Phase 3a.4 — Judgment Day (PR-3a)
 
-- [ ] **3a.4.1** Run single-pass `ctr-reviewer` review on PR-3a diff (frontend PRs: ctr-reviewer is sufficient per CLAUDE.md §Fix/Feature Discipline #4; dual-blind JD is for parser/pipeline-touching PRs).
+- [x] **3a.4.1** Run single-pass `ctr-reviewer` review on PR-3a diff (frontend PRs: ctr-reviewer is sufficient per CLAUDE.md §Fix/Feature Discipline #4; dual-blind JD is for parser/pipeline-touching PRs).
   Reviewer must verify:
   - `TAB_ORDER` extension preserves existing indices (Reconciliación=0, Pendientes=1).
   - A1 grouping breaks on registro change (A5 structural guarantee).
@@ -606,6 +609,7 @@ If PR-2 tests push the total past 400 lines, split as:
   - REINTENTAR button is structurally absent from `DescartadasTab`.
   - `selected` state is ephemeral (no backend call to maintain selection).
   No push / PR until review passes. (SA-3)
+  **EVIDENCE**: ctr-review PASS (0 CRITICAL, 1 carry-over nit → mandated test 3b.1.11), engram #3168. PR #64 merged.
 
 ---
 
@@ -718,13 +722,14 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### Phase 3b.3 — SA-5 runtime validation (PR-3b — MANDATORY)
 
-- [ ] **3b.3.1** Validate against the RUNNING app via Playwright MCP (SA-5 — mandatory gate before marking PR-3b done):
+- [x] **3b.3.1** Validate against the RUNNING app via Playwright MCP (SA-5 — mandatory gate before marking PR-3b done):
   Full flow: upload PDF → wait for pipeline → navigate to ReviewPage → click "Descartadas para revisión" tab → verify count badge matches expected discarded count → expand a group → thumbnails render lazy → select a subset via per-page checkboxes → click "Recuperar seleccionadas" → confirm dialog appears (assert ETA line present) → confirm → progress updates incrementally (assert intermediate state before `done`) → batch completes → completion summary shown → verified recovered row appears in Reconciliación tab flagged `requires_review`.
   STOP if any step fails — do not mark PR-3b done until this gate passes. (SA-5 principle, CLAUDE.md §Fix/Feature Discipline #2 — real data over mock theatre).
+  **EVIDENCE**: SA-5 PASS 8/8, engram #3171. Screenshots at `docs/playwright/sa5-pr3b-*.png`.
 
 ### Phase 3b.4 — Judgment Day (PR-3b)
 
-- [ ] **3b.4.1** Run single-pass `ctr-reviewer` review on PR-3b diff.
+- [x] **3b.4.1** Run single-pass `ctr-reviewer` review on PR-3b diff.
   Reviewer must verify:
   - Bulk settle strictly on `done=true` (PR#49 SA-5 lesson — line-by-line check in the poll loop).
   - Mount re-attach uses the locked terminal shape (safe to call on every mount).
@@ -732,6 +737,7 @@ If PR-2 tests push the total past 400 lines, split as:
   - `emit('refetch')` fires after batch completion so Reconciliación grid updates.
   - Failed pages remain in the list (never silently removed).
   No push / PR until review passes. (SA-3)
+  **EVIDENCE**: ctr-review APPROVE (0 CRITICAL, 0 WARNING), engram #3170. PR #65 merged.
 
 ---
 
@@ -739,14 +745,16 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### SDD Verification + Archive
 
-- [ ] **F.1** Run `sdd-verify discarded-pages-recovery`:
-  Verify all 14 delta requirements (EXT-034..EXT-037, REV-R27..REV-R33) are satisfied.
+- [x] **F.1** Run `sdd-verify discarded-pages-recovery`:
+  Verify all 11 delta requirements (EXT-034..EXT-037, REV-R27..REV-R33) are satisfied.
   Expected: all tests GREEN, real-data gate passed (343 discarded entries surfaced), SA-5 Playwright evidence collected, no CRITICAL or WARNING from verify.
+  **EVIDENCE**: sdd-verify READY TO ARCHIVE. 0 CRITICAL, 1 WARNING (doc-state — tasks.md gate checkboxes unticked), 4 SUGGESTIONS (non-blocking). Engram #3187.
 
-- [ ] **F.2** Run `sdd-archive discarded-pages-recovery`:
+- [x] **F.2** Run `sdd-archive discarded-pages-recovery`:
   Persist archive report to `openspec/changes/archive/discarded-pages-recovery/`.
   Update `docs/HANDOFF.md` status section (branch `main`, all PRs merged, SDD#2 closed).
-  Conventional commit: `docs(handoff): SDD#2 discarded-pages-recovery closed`.
+  Conventional commit: `docs(sdd): archive discarded-pages-recovery (SDD#2 complete); merge extraction+review specs; reconcile gate evidence`.
+  **EVIDENCE**: this commit. Change folder moved to archive. EXT-034..037 merged into extraction spec. REV-R27..R33 merged into review spec.
 
 ---
 

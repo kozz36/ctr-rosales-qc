@@ -4,8 +4,8 @@
 > original machine** and does NOT travel with the repo. This document (plus the other
 > files in `docs/`) is the versioned source of truth for continuing the work anywhere.
 
-Last session: **2026-06-10**. Current branch: `main`. All PRs merged.
-**SDD#1 (deterministic OCR backend) — COMPLETE. PR#1–4 all merged (#51/#52/#53/#54). Next action: SDD#2.**
+Last session: **2026-06-11**. Current branch: `main`. All PRs merged.
+**SDD#2 (discarded-pages-recovery) — COMPLETE & MERGED (PR #61/#63/#64/#65). Issue #50 closed. Next: SDD#3 candidates.**
 
 > **SDD#1 outcome**: deterministic OCR (RapidOCR PP-OCRv5-server, paddle-free) re-enabled as the
 > primary quantity extractor. Dual-blind judgment-day PASS×2 (Opus 4.8 + Fable 5) on all 4 PRs.
@@ -16,6 +16,15 @@ Last session: **2026-06-10**. Current branch: `main`. All PRs merged.
 > emit `requires_review=False` (trusted reads restored). Residual: 3 rows on p156 still
 > `requires_review=True` from the EXT-004 0.85 conf gate on genuinely garbled descriptors + 1
 > unit-ownership edge (0.041 stray fragment) — accepted, documented, deferred. SDD#1 archived.
+
+> **SDD#2 outcome**: zero-silent-drop proven on the real 493-page PDF: 469 = 126 (assembled guías)
+> + 343 (discarded). Option B DiscardedPage side-channel (routes.py bulk-sweep + registro-inheritance)
+> beat Option A enrollment path. JD×2 rounds on PR-2 (double-count CRITICAL: recover hook lacked
+> the D2 idempotency guard; 6th consecutive PR where dual-blind JD caught silent data corruption
+> behind a green TDD suite). Fable-as-judge-B highest ROI: reproduced the CRITICAL with worktree
+> RED-proofs; Fable apply on frontend slices produced chain's only zero-defect reviews.
+> Vision demoted to date-reads only (126 calls, 0 quantity reads). Full-PDF e2e: 343 discarded /
+> 11 contiguous runs. SDD#2 archived to `openspec/changes/archive/discarded-pages-recovery/`.
 
 ---
 
@@ -31,7 +40,7 @@ exports the reconciled table to xlsx/csv.
 Full domain context: `docs/DECISIONS.md`. Architecture: `docs/ARCHITECTURE.md`.
 Eval results: `docs/EVAL-RESULTS.md`.
 
-## 2. Current state (all merged to main as of 2026-06-10)
+## 2. Current state (all merged to main as of 2026-06-11)
 
 ```
 PR #46  feat/guia-reprocess-reprocesar-ia         MERGED  Reprocesar con IA + canonical-matching fix
@@ -42,9 +51,13 @@ PR #51  feat/deterministic-ocr-parser             MERGED  SDD#1 PR#1 — pure bo
 PR #52  feat/deterministic-ocr-adapter            MERGED  SDD#1 PR#2 — RapidOCRAdapter + factory + wiring
 PR #53  feat/deterministic-ocr-deps-gate          MERGED  SDD#1 PR#3 — deps, Docker air-gap, real-data gate
 PR #54  feat/deterministic-ocr-column-anchoring   MERGED  SDD#1 PR#4 — geometric column anchoring + trusted reads
+PR #61  feat/discarded-pages-surface (PR-1)       MERGED  SDD#2 PR#1 — DiscardedPage model, drop-site emit, cache, API
+PR #63  feat/discarded-pages-recovery (PR-2)      MERGED  SDD#2 PR#2 — OCR-first recovery + endpoints (JD×2)
+PR #64  feat/discarded-pages-tab (PR-3a)          MERGED  SDD#2 PR#3a — Descartadas tab, groups, selection, single recover
+PR #65  feat/discarded-pages-bulk (PR-3b)         MERGED  SDD#2 PR#3b — bulk recovery, ETA dialog, poll, re-attach
 ```
 
-- **Test counts**: ~1300+ backend targeted (13/13 real-data gate on CTR_PDF_PATH) + 322 frontend
+- **Test counts**: ~1448+ backend targeted (real-data gate: 343-discarded + 11 contiguous runs on CTR_PDF_PATH) + 351 frontend
   vitest passing. Monolithic `pytest -q` still hangs on paddle import — use targeted paths only.
 - **Backend**: `uvicorn reconciliation.infrastructure.api.main:app --reload` from `backend/`.
 - **Frontend**: `npm install && npm run dev` from `frontend/`.
@@ -76,38 +89,55 @@ real-data gate 13/13 GREEN. Deploy defaults: `RECONCILIATION__OCR__ENABLED=true`
 - **Gate is quantity-only**: material identity is validated downstream by canonical matching, not
   inside the OCR gate. Accepted scope boundary.
 
-### SDD#2 — [Descartadas para revisión] tab + recover-specific-page + history UI
+### SDD#2 — discarded-pages-recovery — COMPLETE & MERGED (PR #61/#63/#64/#65)
 
-**Goal**: surface GUIA-classified pages dropped due to no identity (issue #50), and give the
-operator a way to recover them. Also: later add a processing-history hamburger menu.
+**Delivered**: zero-silent-drop at the QR-evidence gate (issue #50 closed); `DiscardedPage`
+domain model (pure, no IO/SDK); `PipelineResult.discarded_pages` + backward-compat cache hydration;
+`GET /table` surfaces `discarded_pages: DiscardedPageResponse[]`; OCR-first 3-tier recovery
+(`apply_page_recovery`): cached-lines → OCR re-run → vision fallback; `recover_discarded_page`
+hook + sidecar replay (mirrors `add_recovered_guia`); batch endpoints
+(`POST /recover-batch`, `GET /recover-status`); [Descartadas para revisión] tab (A1 grouped
+contiguous runs, A2 collapsed + lazy thumbnails, A3 tri-state selection, A4 mount re-attach);
+ETA confirm dialog; bulk fire + poll-until-done; completion summary.
 
-**Key decisions**:
-1. **Backend root fix** (may land in SDD#1 or SDD#2): `assemble_blocks` must NOT silently
-   drop a GUIA-classified page with no resolvable identity. Emit an errored/unidentified
-   entry (page number + thumbnail) instead. The root cause: `pipeline.py:964-982`
-   `assemble_blocks` rev-6 QR-evidence gate silently drops pages with no QR and no OCR
-   identity.
-2. **[Descartadas para revisión] tab**: new tab on ReviewPage surfacing unidentified GUIA
-   pages with page number + thumbnail. Operator can trigger deterministic OCR (SDD#1 path)
-   or IA fallback if OCR fails — mirrors [Pendientes por procesar] tab flow.
-3. **Recover specific page/sheet** function: operator points at page N → process as guía
-   (OCR then IA). Handles classification/QR misses generally.
-4. **History/persistence** (later, SDD#2 or SDD#3): hamburger menu showing sections
-   ([Nuevo] / [batch actual] / [historial]). Persist what each batch/run processed for an
-   auditable UI history.
+**Full-PDF evidence**: 469 = 126 (assembled) + 343 (discarded); 11 contiguous page-runs.
+**Archived**: `openspec/changes/archive/discarded-pages-recovery/`.
+**Deferred from SDD#2**: history/persistence hamburger menu (now SDD#3 candidate).
 
-**Frontend-visual apply → opus** (per session execution preference).
+### SDD#3 — Next candidates (not started)
+
+Ranked by severity/user impact:
+
+| Candidate | Notes |
+|-----------|-------|
+| History/persistence hamburger menu | Deferred from SDD#2; `run_registry` is in-memory → no cross-restart UI history |
+| **#56** Air-gap: RapidOCR runtime model download regression | Deploy concern — bake PP-OCRv5-server weights at build time (currently may re-download on cold start) |
+| **#57** Deadline-guard `DEADLINE_S` env var | Expose as runtime env var (not baked-in constant) |
+| **#58** Magnitude guard | Guard against implausible quantity magnitudes (OCR digit noise producing 1000× errors) |
+| **#59** Canonicalization Tier-1 hardening | Dual-spec normalization edge cases |
+| **#60** `make verify` / containerized-verify gate | Automate Makefile gate in CI |
+| **#62** Recovery hardening | Edge cases: page rendering errors, corrupt cached lines |
+| **#44** Cross-model consensus | kimi+qwen: agree→accept, disagree→`requires_review`. Lower priority now OCR is primary |
+| **#45** Stale status endpoint | `/table` is the fresh source; status endpoint is cosmetic |
+| **#41** Deadline-guard cancel | Cancel in-flight httpx on server context vs abandon |
+| **#43** Unit-map consolidation | Single domain source for `UNIT_LABEL_MAP` / `_SUNAT_UNIT_MAP` |
 
 ## 4. Open issues
 
 | Issue | Severity | Description |
 |-------|----------|-------------|
-| **#50** | High | GUIA-classified page with no identity silently dropped. Root cause: `assemble_blocks` QR-evidence gate at `pipeline.py:964-982`. Fix in SDD#2. |
-| **#44** | Medium | Cross-model consensus reprocess (qwen+kimi): agree→accept, disagree→`requires_review`. Upgrade path for vision accuracy. Lower priority now OCR is re-enabled. |
-| **#45** | Low | Run status endpoint stale after reprocess (errored count + `vision_calls_made` lag). Use `/table` as the fresh source; endpoint is cosmetic. |
-| **#41** | Low | Deadline-guard abandons in-flight httpx request (still billed). Cancel instead of abandon in the server context. |
-| **#43** | Low | 3-map unit normalizer — consolidate `UNIT_LABEL_MAP` / `_SUNAT_UNIT_MAP` / `pipeline._normalize_sunat_unit` into single domain source. |
-| **OCR-F-1** | Low | Above-table spurious-anchor residual (PR#4 deferred follow-up): a paired qty+unit line above the table could hijack `_infer_table_region`'s topmost-structural cluster anchor. Zero corpus evidence. Fix-later: DESC-anchored pair detection or keep-all logging. See `docs/DECISIONS.md` §2026-06-10. |
+| ~~**#50**~~ | ~~High~~ | **CLOSED** (SDD#2). Zero-silent-drop: 469 = 126 + 343 proven on real PDF. |
+| **#56** | Medium | Air-gap: RapidOCR model re-download on cold start in deployed image. |
+| **#57** | Low | `DEADLINE_S` baked-in constant; expose as runtime env var. |
+| **#58** | Low | Magnitude guard against implausible OCR qty values (digit noise). |
+| **#59** | Low | Canonicalization Tier-1 edge cases (dual-spec normalization). |
+| **#60** | Low | `make verify` / containerized-verify gate automation. |
+| **#62** | Low | Recovery hardening: page rendering errors, corrupt cached lines. |
+| **#44** | Medium | Cross-model consensus reprocess (qwen+kimi). Lower priority now OCR is primary. |
+| **#45** | Low | Run status endpoint stale after reprocess. Use `/table` as fresh source. |
+| **#41** | Low | Deadline-guard abandons in-flight httpx request (still billed). Cancel instead. |
+| **#43** | Low | 3-map unit normalizer consolidation into single domain source. |
+| **OCR-F-1** | Low | Above-table spurious-anchor residual (PR#4 deferred follow-up). Zero corpus evidence. See `docs/DECISIONS.md` §2026-06-10. |
 
 ## 5. Hard-won lessons (do not relearn these)
 

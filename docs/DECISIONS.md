@@ -532,3 +532,77 @@ This is NOT a regression: every non-confident row is `requires_review=True` (tru
 intact, never confident-wrong). GT completeness is unchanged (all 4 quantities present).
 Weakening the EXT-004 confidence gate to force-confident the garbled descriptors would be
 wrong — it would auto-trust genuine OCR garble. Accepted and documented.
+
+---
+
+## §2026-06-11 — SDD#2 discarded-pages-recovery COMPLETE (PR#1–4 merged: #61/#63/#64/#65)
+
+### SDD#2 archived — zero-silent-drop + [Descartadas para revisión] tab
+
+All four PRs merged to `main`. Issue #50 closed. Full-PDF evidence: **469 = 126 (assembled
+guías) + 343 (discarded pages)** — zero silent drops proven on the real 493-page PDF.
+11 contiguous page-runs confirmed. A5 mapping (1-run-1-registro) verified for representative
+registro. SDD#2 archived to `openspec/changes/archive/discarded-pages-recovery/`.
+
+### Option B DiscardedPage side-channel — rationale
+
+Design choice: **Option B** (dedicated `DiscardedPage` domain model as a side-channel,
+separate from `errored_guias`) over Option A (extending `ErroredGuia` with a `reason`
+discriminator). Decisive factors:
+
+1. **Routes.py bulk-sweep evidence**: the bulk reprocess endpoint iterates `errored_guias`
+   by registry index. Mixing `discarded_pages` entries into the same list would have
+   required a discriminator check at every bulk-sweep callsite — a structural coupling risk.
+2. **Registro-inheritance path**: `DiscardedPage.registro` is the section registro from the
+   pipeline's page-to-registro map, not a guía-level attribute. This is semantically distinct
+   from `ErroredGuia.registro` (which comes from a parsed guía). Keeping them separate makes
+   the inheritance path for `recover_discarded_page` unambiguous.
+3. **Backward-compat**: a new additive `discarded_pages: list[DiscardedPage] = field(default_factory=list)`
+   on `PipelineResult` is zero-impact on existing callers; mixing into `errored_guias` would
+   have changed the list's element type.
+
+### JD pattern continues — PR-2 double-count CRITICAL
+
+PR-2 underwent two JD rounds:
+- **Round 1 FAIL×2**: both judges (judge-a Opus + judge-b Fable) independently flagged a
+  CRITICAL: the `recover_discarded_page` hook called `review_service.recover_discarded_page`
+  inside a loop without holding the commit lock, then called it again when the batch-status
+  loop polled — the double-count CRITICAL. The design's D2 idempotency guard (deterministic
+  `guia_id = f"recovered_{page}"` → `add_recovered_guia` rejects duplicates) was relied on
+  but the `recover_discarded_page` hook itself lacked an equivalent guard, and the batch-fire
+  path could call the hook a second time for pages where the first call had already removed
+  the entry from `discarded_pages`. The second call returned `not_found` but still attempted
+  re-reconciliation — a silent double-trigger on the reconciliation path.
+- **Fixes**: commits b4c1263 + 3282a90 added the local lock guard and an explicit `not_found`
+  early-return before any reconciliation path.
+- **Round 2 PASS×2**. PR #63 merged.
+
+This is the **6th consecutive PR** (counting from PR#46) where dual-blind JD caught silent
+data corruption behind a green TDD suite.
+
+### Model-tier finding (JD effectiveness by model)
+
+- **Fable-as-judge-B**: highest ROI in this chain. Reproduced the PR-2 double-count CRITICAL
+  independently, provided worktree RED-proof that the fix eliminated it. Adversarial review
+  cadence: found CRITICALs before they reached production on every backend-core PR.
+- **Fable apply for frontend slices**: PR-3a and PR-3b had zero CRITICAL findings in JD/ctr-review
+  when Fable was the apply agent — the chain's only two zero-defect reviews.
+- **Opus for architecture/design**: remains the right tier for design.md and proposal phases where
+  architectural tradeoff depth matters most.
+
+### Full-PDF e2e evidence (SDD#2 real-data gate)
+
+- **343 discarded pages** across the 493-page PDF: 11 contiguous runs confirmed.
+- **126 assembled guías** (QR-decoded or OCR-fallback evidence): reconciliation paths unaffected.
+- **Vision calls**: 126 (date reads only, 0 quantity reads) — vision successfully demoted to
+  date-read-only after OCR re-enabled via SDD#1. The #40 quantity-accuracy problem is resolved.
+- **A5 mapping**: 1-run-1-registro verified for registro 227 (page 152 recovery, Tier-1 cached
+  lines, 3 material rows, `requires_review=True` on all). Sidecar restart round-trip PASS.
+- **Zero overlap**: assembled ∪ discarded = 469 = total pages passing `assemble_blocks`; sets
+  are disjoint.
+
+### Deferred from SDD#2
+
+- **History/persistence hamburger menu**: `run_registry` is in-memory; cross-restart UI history
+  requires a persistence layer. Deferred to SDD#3.
+- **Issues #56/#57/#58/#59/#60/#62**: backlog items not in SDD#2 scope; queued for SDD#3.

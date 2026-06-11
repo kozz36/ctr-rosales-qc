@@ -814,6 +814,361 @@ to the SUNAT REINTENTAR path.
 
 ---
 
+## SDD#2 Delta — discarded-pages-recovery (merged 2026-06-11)
+
+> Additive delta from `openspec/changes/archive/discarded-pages-recovery/specs/review/spec.md`.
+> All existing review requirements (REV-001 through REV-R26 and all deltas) remain in force.
+> **Product decisions fixed (2026-06-11) — not re-openable at spec level:**
+> 1. UI only for the discarded ("possible guías") bucket — no arbitrary-page processing UI.
+> 2. Registro inherited from section — no mandatory assignment dialog on recovery.
+> 3. Bulk recovery WITH thumbnail preview + checkbox selection (mirrors PR#49 bulk flow).
+> 4. OCR-first recovery reusing cached lines; vision is last resort.
+> 5. History/persistence out of scope (SDD#3).
+
+### What MUST be true after this change is applied
+
+1. `ReviewPage` exposes three tabs: Reconciliación | Pendientes por procesar |
+   **Descartadas para revisión**.
+2. The Descartadas tab lists every discarded entry from `PipelineResult` (EXT-034/EXT-035),
+   each with its page number and thumbnail. Zero entries = empty-state message; no entries
+   are hidden.
+3. The operator can select individual discarded entries via checkboxes and trigger a bulk
+   recovery that OCR-first re-processes selected pages.
+4. Recovered guías land in the reconciliation result under the section registro, with ALL
+   recovered lines flagged `requires_review=True`.
+5. Non-guía sheets deselected by the operator in the bulk-selection UI are NOT processed.
+6. The Pendientes tab count badge, Reconciliación grid, and all prior review behavior are
+   unchanged by this delta.
+
+---
+
+### REV-R27 — [ADDED] ReviewPage: three-tab layout including [Descartadas para revisión]
+
+**[MODIFIED: REV-R23 specifies a two-tab layout (Reconciliación | Pendientes). This
+requirement extends it to three tabs. REV-R23's behavior for the first two tabs is
+unchanged.]**
+
+`ReviewPage` MUST expose three tabs:
+
+| Tab | Content |
+|---|---|
+| Reconciliación | Existing reconciliation grid (unchanged — REV-C01 through REV-R26) |
+| Pendientes por procesar | Existing errored guías + bulk AI reprocess (unchanged — REV-R20 through REV-R26) |
+| Descartadas para revisión | New — discarded pages list (this delta) |
+
+The tab order MUST be: Reconciliación (index 0, default) → Pendientes (index 1) → Descartadas
+(index 2).
+
+The "Descartadas" tab MUST display a count badge. The `TAB_ORDER` array MUST be extended to
+`['reconciliacion', 'pendientes', 'descartadas']`. No existing tab index or routing behavior
+is changed. The default active tab MUST remain "Reconciliación" on page load.
+
+#### Scenario REV-R27-S01: three tabs visible; default is Reconciliación
+
+Given a run with 2 discarded pages and 1 errored guía
+When the engineer navigates to ReviewPage
+Then three tabs are visible: "Reconciliación", "Pendientes", "Descartadas para revisión"
+And the "Reconciliación" tab is active (default)
+And the "Pendientes" tab shows badge "1"
+And the "Descartadas" tab shows badge "2"
+
+#### Scenario REV-R27-S02: zero discarded entries — badge is 0 or hidden; tab still present
+
+Given a run with 0 discarded pages
+When the engineer views ReviewPage
+Then the "Descartadas" tab is present in the tab bar
+And the badge shows "0" or is hidden (implementation choice)
+And clicking the tab shows an empty-state message (no entries)
+
+#### Scenario REV-R27-S03: Reconciliación and Pendientes tabs unaffected
+
+Given the SDD#2 change applied
+When the engineer uses the Reconciliación and Pendientes tabs
+Then all behavior from REV-R20 through REV-R26 is unchanged
+And no existing test scenario from the prior review deltas is invalidated
+
+---
+
+### REV-R28 — [ADDED] Descartadas tab: discarded entries list with thumbnail and page number
+
+The "Descartadas para revisión" tab MUST render a list of discarded entries sourced from the
+run's discarded collection (EXT-035). Each entry MUST display: page number, thumbnail (via
+`GET /runs/{run_id}/pages/{page}/thumbnail` with REV-C07 fitz fallback), registro (or "sin
+registro" label when `None`), and a checkbox for operator selection. The tab MUST also provide
+a per-page sheet viewer link that opens `PageSheetViewer` (PR#48). Empty state = empty-state
+message; no entries hidden.
+
+Entries are grouped into **contiguous page runs** per registro (A1 grouping). Groups are
+**collapsed by default** (zero `<img>` rendered on mount — avoids 343 thumbnail requests).
+Expanding a group renders `<img loading="lazy">` thumbnails per page (A2 lazy load).
+
+#### Scenario REV-R28-S01: entry shows page number, thumbnail, registro
+
+Given a run with a discarded entry at page 152, registro "232"
+When the engineer opens the "Descartadas" tab
+Then the entry is listed with page number 152
+And a thumbnail image is rendered for page 152
+And the registro "232" is displayed alongside the thumbnail
+And a checkbox is visible for selection
+
+#### Scenario REV-R28-S02: thumbnail available via fitz fallback (no deskewed PNG)
+
+Given a run where the deskewed PNG for page 152 was NOT produced
+When the "Descartadas" tab renders the entry for page 152
+Then the thumbnail is still displayed (fitz fallback path — REV-C07)
+
+#### Scenario REV-R28-S03: registro=None entry displayed with label
+
+Given a discarded entry with `registro=None` and `source_page=88`
+When the "Descartadas" tab renders this entry
+Then a "sin registro" label is shown in place of the registro value
+And the entry is still selectable via checkbox
+
+#### Scenario REV-R28-S04: sheet viewer opens for selected page
+
+Given the engineer clicks the sheet-viewer action for page 152
+When `PageSheetViewer` opens
+Then the viewer shows page 152 and the discarded tab remains visible
+
+#### Scenario REV-R28-S05: empty discarded collection shows empty state
+
+Given a run with 0 discarded entries
+When the engineer opens the "Descartadas" tab
+Then an empty-state message is displayed
+And no checkboxes or thumbnails are rendered
+
+---
+
+### REV-R29 — [ADDED] Descartadas tab: checkbox selection
+
+The "Descartadas" tab MUST provide per-page checkbox selection, per-group tri-state header
+checkbox (all/some/none), and a global "Seleccionar todas (N)" control. Selection state is
+ephemeral — no backend call to maintain it.
+
+The "Recuperar seleccionadas" button MUST be disabled when `selected.size === 0`.
+
+#### Scenario REV-R29-S01: select all enables bulk button with full count
+
+Given 3 discarded entries listed
+When the engineer clicks "select all"
+Then all 3 checkboxes are checked and the bulk recover button shows "Recuperar 3 seleccionadas"
+
+#### Scenario REV-R29-S02: deselect all disables bulk button
+
+Given all 3 entries are selected
+When the engineer clicks "deselect all"
+Then all 3 checkboxes are unchecked and the bulk recover button is disabled
+
+#### Scenario REV-R29-S03: partial selection — non-guía sheet excluded by operator
+
+Given 3 discarded entries; engineer checks only pages 152 and 175
+Then bulk recover button shows "Recuperar 2 seleccionadas"
+And when bulk recovery runs, only pages 152 and 175 are processed
+
+---
+
+### REV-R30 — [ADDED] Bulk recovery: OCR-first with progress, bounded concurrency, and requires_review
+
+The bulk recovery action MUST:
+
+1. **Confirm before firing**: display count + ETA + vision-cost warning when OCR-empty pages
+   are selected. Confirmation MUST be required before the request is sent (mirrors REV-R21).
+2. **Submit to `POST /runs/{run_id}/discarded-pages/recover-batch`**: body `{pages: [...]}`
+   returns 202. Batch status polled via `GET /runs/{run_id}/discarded-pages/recover-status`.
+3. **Bounded concurrency**: recovery service semaphore bounds parallel calls.
+4. **Incremental progress**: recovered pages leave the discarded list incrementally via
+   parent prop refresh on each poll tick. Settlement EXCLUSIVELY on `status.done === true`
+   (PR#49 SA-5 lesson — no timing heuristic).
+5. **Completion summary**: "N recuperadas / M falló" after `done=true`.
+6. **Failed pages remain**: a recovery failure MUST leave the entry in the discarded list.
+7. **Button gating**: "Recuperar seleccionadas" disabled while batch in-flight; per-page
+   buttons also disabled (A4 mount re-attach).
+8. **All recovered lines MUST carry `requires_review=True`** — absolute, no exception.
+9. **Payload is `selectedLive`**: `selected` ∩ current `discardedPages` — a singly-recovered
+   page that disappears from the prop before batch fire NEVER reaches the payload.
+
+#### Scenario REV-R30-S01: confirm dialog before firing
+
+Given 2 pages selected
+When the engineer clicks "Recuperar seleccionadas"
+Then a confirm dialog appears and the recovery request is NOT sent until confirmed
+
+#### Scenario REV-R30-S02: recovered page leaves discarded list incrementally
+
+Given 3 pages selected; page 152 is recovered first
+When recovery for page 152 completes
+Then page 152 disappears from the discarded list before 175 and 200 complete
+
+#### Scenario REV-R30-S03: all recovered lines have requires_review=True
+
+Given a discarded entry with cached OCR confidence >= 0.95
+When recovery completes
+Then every `MaterialLine` in the recovered `GuiaDeRemision` has `requires_review=True`
+
+#### Scenario REV-R30-S04: failed page stays in discarded list
+
+Given OCR returns `[]` and vision returns `[]` for page 88
+When the recovery attempt completes
+Then the entry REMAINS in the discarded list and the completion summary shows "1 fallaron"
+
+#### Scenario REV-R30-S05: bulk button disabled while in-flight
+
+Given a bulk recovery is currently running
+Then the "Recuperar seleccionadas" button is disabled
+
+#### Scenario REV-R30-S06: partial failure — completed pages recovered; failed pages remain
+
+Given pages 152 and 200 recover; page 175 fails
+When the batch completes
+Then pages 152 and 200 are removed; page 175 remains; summary "2 recuperadas / 1 falló"
+
+---
+
+### REV-R31 — [ADDED] Recovery endpoint: per-page, accessible from discarded context
+
+Endpoints:
+- `POST /runs/{run_id}/discarded-pages/{page}/recover` — single-page, 404 if not in
+  discarded list, 409 if run not READY.
+- `POST /runs/{run_id}/discarded-pages/recover-batch` — body `{pages: list[int]}`, 202,
+  409 if batch already in-flight.
+- `GET /runs/{run_id}/discarded-pages/recover-status` — `{total, recovered, failed, done}`.
+  Terminal shape when no batch submitted: `{total: 0, recovered: 0, failed: 0, done: true}`.
+
+The endpoint MUST NOT require the caller to supply a registro — inherited from the discarded
+entry. When `vision.enabled=False`, OCR is still attempted; if OCR also fails, the entry
+stays discarded with a structured failure reason, NOT a 503.
+
+#### Scenario REV-R31-S01: recovery with cached lines succeeds without OCR/vision calls
+
+Given page 152 with `cached_lines=[MaterialLine(...)]`
+When `POST /runs/{run_id}/discarded-pages/152/recover` is called
+Then `ExtractionPort` NOT called; `VisionLLMPort` NOT called; response indicates success
+
+#### Scenario REV-R31-S02: recovery with empty cached lines triggers OCR, succeeds
+
+Given page 88 with `cached_lines=[]`
+When the recovery endpoint processes page 88
+Then `ExtractionPort.extract_printed_table` is called; OCR result used
+
+#### Scenario REV-R31-S03: recovery failure returns structured error; entry stays discarded
+
+Given page 88 where OCR returns [] and vision returns []
+When the recovery endpoint processes page 88
+Then response includes a structured failure reason (not 500); entry REMAINS in review state
+
+#### Scenario REV-R31-S04: vision-off mode: OCR still attempted; failure is not a 503
+
+Given `vision.enabled=False` and page 88 with `cached_lines=[]`
+When the recovery endpoint processes page 88
+Then OCR IS called; if OCR returns empty, response is a structured failure (NOT 503)
+
+#### Scenario REV-R31-S05: registro inherited; no caller-supplied registro required
+
+Given page 152 with `registro="232"` in the discarded entry
+When recovery completes
+Then `guia.registro = "232"` and no assignment dialog is triggered
+
+---
+
+### REV-R32 — [ADDED] Recovered guía flows through canonical matching; re-reconciliation triggered
+
+After recovery, the `GuiaDeRemision` created from the recovered lines MUST flow through the
+existing reconciliation pipeline (canonical matching, grouping by
+`(registro, material_canonical, unidad)`, MATCH/MISMATCH detection). Units MUST NOT be
+converted. Re-reconciliation MUST NOT re-run OCR, vision, or classification stages.
+
+#### Scenario REV-R32-S01: recovered guía appears in reconciliation drill-down
+
+Given page 152, registro "232", recovered with lines matching declared material
+When recovery completes
+Then a `ReconciliationRow` for the group is updated and the drill-down includes the recovered
+guía with its synthetic `guia_id` and `source_pages = [152]`
+
+#### Scenario REV-R32-S02: recovered quantity mismatch produces MISMATCH; not auto-corrected
+
+Given declared qty = 0.191 TN and recovered OCR qty = 0.190 TN
+When reconciliation runs
+Then status = MISMATCH; `requires_review=True`; declared value unchanged
+
+#### Scenario REV-R32-S03: recovery does not re-trigger OCR/vision/classification
+
+Given a successful recovery triggering re-reconciliation for registro 232
+When the re-reconciliation step runs
+Then no `PageClassifier`, `ExtractionPort`, or `VisionLLMPort` call is made beyond the
+recovery step itself
+
+---
+
+### REV-R33 — [ADDED] API: discarded entries surfaced in run response
+
+The `GET /table` (review-table endpoint) MUST include `discarded_pages: DiscardedPageResponse[]`
+alongside the existing `errored_guias` list. Each `DiscardedPageResponse` MUST carry at
+minimum: `source_page` (int), `registro` (str | None), `has_cached_lines` (bool — indicates
+whether `cached_lines` is non-empty; raw `MaterialLine` objects MUST NOT be exposed to the
+frontend). The field MUST default to `[]` for runs with no discarded entries.
+
+**[SUPERSEDED by design D1 — structural discrimination]**: the original constraint proposed
+a per-entry `reason`/`type` discriminator field on a shared DTO. Design D1 superseded this
+with **structural discrimination**: `discarded_pages` and `errored_guias` are separate
+top-level lists, each with its own DTO. The list a DTO lives in IS the discriminator —
+the frontend routes `discarded_pages` → Descartadas and `errored_guias` → Pendientes by
+structure. No `reason`/`type` field is needed for tab routing.
+
+The `identity_source` field on any DTO associated with a recovered page MUST use the new
+`"operator"` Literal value (EXT-037). The schema MUST be updated in lockstep at all four
+sites.
+
+#### Scenario REV-R33-S01: discarded entries in API response; empty by default
+
+Given a run with 0 discarded entries
+When `GET /table` is called
+Then `discarded_pages: []` in the response and no existing consumer is broken
+
+#### Scenario REV-R33-S02: discarded entries include source_page, registro, cached_lines indicator
+
+Given a run with 1 discarded entry at page 152, registro "232", 2 OCR lines
+When the review API response is retrieved
+Then the entry includes `source_page=152`, `registro="232"`, `has_cached_lines=true`
+
+#### Scenario REV-R33-S03: discarded entries are structurally distinguished from errored guías
+
+**[SUPERSEDED by design D1 — structural discrimination]** Under D1:
+
+Given a run with 1 discarded entry AND 1 errored guía
+When the API response is inspected
+Then the discarded entry appears ONLY in `discarded_pages` (as `DiscardedPageResponse`)
+And the errored guía appears ONLY in `errored_guias` (as `ErroredGuiaResponse`)
+And neither entry appears in the wrong list (structural discrimination, no `reason`/`type` field)
+
+---
+
+## MUST-NOT Invariants (auto-reject) — Extended for discarded-pages-recovery
+
+- All prior MUST-NOT invariants from REV-001 through REV-R26 remain in effect.
+- `fecha` MUST NOT be introduced as a grouping axis. Grouping key remains
+  `(registro, material_canonical, unidad)`.
+- Units MUST NOT be converted. Recovered lines carry units from OCR; NEVER normalized.
+- Recovered lines MUST carry `requires_review=True`. No auto-accept under any circumstance.
+- The existing "Reconciliación" and "Pendientes" tabs MUST NOT be broken by the third tab.
+- The REV-C07 thumbnail fallback chain MUST NOT be removed or weakened.
+- The input PDF MUST NOT be modified. Recovery renders pages from the read-only source PDF.
+- Domain layer MUST remain pure. No SDK/IO import in `domain/`.
+- `application/pipeline.py` MUST NOT import concrete adapters.
+- The `TAB_ORDER` extension MUST NOT change existing tab indices (Reconciliación=0,
+  Pendientes=1 are preserved; Descartadas is appended at index 2).
+- Bulk recovery MUST NOT settle progress before all selected pages are truly done —
+  the PR#49 SA-5 lesson applies. Settlement ONLY on `status.done === true`.
+- The REINTENTAR (SUNAT) button MUST NOT appear for discarded/no-identity entries. The
+  `retry_attempted` flag is exclusive to the SUNAT retry path (REV-R26).
+
+---
+
+## Acceptance Scenarios — Delta discarded-pages-recovery
+
+*(Inline above per requirement — REV-R27-S01 through REV-R33-S03.)*
+
+---
+
 ## Out of scope for this domain
 
 - Pipeline execution (ingestion, extraction, normalization, reconciliation).
@@ -824,3 +1179,6 @@ to the SUNAT REINTENTAR path.
 - Streaming/SSE batch progress (polling is MVP).
 - URL-deep-linked tab routing.
 - Rollback/undo for manual corrections or bulk reprocess.
+- History/persistence of discarded entries across application restarts (SDD#3 — requires
+  cross-restart persistence; today's `run_registry` is in-memory).
+- UI for arbitrary-page recovery (no UI for pages not in the discarded collection).

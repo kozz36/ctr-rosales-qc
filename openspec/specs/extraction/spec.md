@@ -1435,13 +1435,227 @@ Then neither `paddlepaddle`, `paddlepaddle-gpu`, nor `paddleocr` appear
 
 ### EXT-NG-001 — #50 dropped-page sentinel is NOT part of SDD#1
 
-Issue #50 (silent drop of identity-less GUIA pages at `pipeline.py:976-982`) MUST NOT be
-addressed in SDD#1 beyond the implicit improvement that enabling OCR reduces the number of
-pages with `len(lines)==0`.
+Issue #50 (silent drop of identity-less GUIA pages at `pipeline.py:976-982`) is addressed in
+SDD#2 (discarded-pages-recovery). SDD#1 addressed it only implicitly by re-enabling OCR so
+fewer pages produce `len(lines)==0`.
 
-SDD#1 MUST NOT add any new API field, new domain model, new HTTP endpoint, or new UI element
-to surface dropped pages. The explicit surfacing of dropped/identity-less guía pages is
-deferred to **SDD#2**.
+SDD#1 did NOT add any new API field, new domain model, new HTTP endpoint, or new UI element
+to surface dropped pages. The explicit surfacing of dropped/identity-less guía pages was
+completed in **SDD#2** — see EXT-034 through EXT-037 below.
+
+---
+
+## SDD#2 Delta — discarded-pages-recovery (merged 2026-06-11)
+
+> Additive delta from `openspec/changes/archive/discarded-pages-recovery/specs/extraction/spec.md`.
+> All existing extraction requirements (EXT-001 through EXT-033) remain in force.
+> **Non-goal boundary inherited from the proposal**: this delta does NOT change classification
+> (EXT-001/EXT-019), the QR-evidence gate's blocking semantics, or any block-grouping logic.
+> The gate's blocking semantics are UNCHANGED — a no-evidence page never opens or extends a
+> block. What changes is that the drop is no longer invisible.
+
+### EXT-034 — [ADDED] ZERO silent drops: discarded entry at the QR-evidence gate
+
+**[ADDED: previously, a `guia`-classified page at `_stage_assemble_blocks` that fails
+`has_guia_evidence` (identity is None AND the OCR-fallback material condition is False) was
+silently discarded with `continue`. This caused issue #50: the operator had zero signal that
+a guía was lost. This requirement closes that hole.]**
+
+The `_stage_assemble_blocks` stage (or its equivalent in `application/pipeline.py`) MUST NOT
+silently discard any page classified `guia`. Every page that fails the `has_guia_evidence`
+gate MUST instead produce a **discarded entry** and append it to the `PipelineResult`
+discarded collection (see EXT-035).
+
+The discarded entry MUST carry:
+- `source_page: int` — zero-based page index of the dropped page.
+- `registro: str | None` — the section registro resolved from `page_to_registro` (or
+  `raw.registro`) at the time of the drop. MAY be `None` when the section map yields no
+  registro for this page.
+- `cached_lines: list[MaterialLine]` — the `raw.lines` populated by the OCR stage before the
+  QR-evidence check. MAY be empty (`[]`) if OCR produced no rows for this page.
+
+The model shape is `DiscardedPage(BaseModel)` in `domain/models.py` — domain-pure, zero IO/SDK.
+
+#### Scenario EXT-S034a — page with no QR evidence produces a discarded entry
+
+Given a `guia`-classified page whose `identity` is `None`
+And `page_hashqr_url` is `None` (no URL-variant QR found)
+And `raw.lines` contains 2 `MaterialLine` objects from the OCR stage
+And `raw.registro` is `"232"`
+When `_stage_assemble_blocks` processes this page
+Then the page does NOT open or extend any guía block
+And a discarded entry is appended to `PipelineResult` with:
+  - `source_page` = the correct page index
+  - `registro = "232"`
+  - `cached_lines` = the 2 `MaterialLine` objects
+And no `GuiaDeRemision` is created for this page
+
+#### Scenario EXT-S034b — page with no QR evidence and empty OCR lines still produces discarded entry
+
+Given a `guia`-classified page whose `identity` is `None` and `page_hashqr_url` is `None`
+And `raw.lines` is `[]` (OCR found nothing on this page)
+And `raw.registro` is `"229"`
+When `_stage_assemble_blocks` processes this page
+Then the page does NOT open or extend any guía block
+And a discarded entry is appended with `source_page`, `registro="229"`, `cached_lines=[]`
+And no `GuiaDeRemision` is created for this page
+
+#### Scenario EXT-S034c — page with valid QR evidence is NOT discarded
+
+Given a `guia`-classified page whose `identity` is a valid `GuiaIdentity` (QR decoded)
+When `_stage_assemble_blocks` processes this page
+Then the page opens or extends a guía block normally
+And NO discarded entry is produced for this page
+
+#### Scenario EXT-S034d — page with OCR-fallback evidence (hashqr_url + lines) is NOT discarded
+
+Given a `guia`-classified page where `identity` is `None`
+And `page_hashqr_url` is a non-None URL QR value
+And `raw.lines` contains at least 1 `MaterialLine`
+When `_stage_assemble_blocks` processes this page
+Then the page opens or extends an `ocr_fallback` guía block normally (EXT-019 rev-6 rule)
+And NO discarded entry is produced for this page
+
+#### Scenario EXT-S034e — registro=None discarded entry is valid and surfaced
+
+Given a `guia`-classified page with no QR evidence
+And `page_to_registro` returns `None` for this page (section map yields no registro)
+When the discarded entry is produced
+Then `discarded_entry.registro` is `None`
+And the entry is still appended to the `PipelineResult` discarded collection
+And the entry is still surfaced in the review API response
+
+---
+
+### EXT-035 — [ADDED] PipelineResult carries a discarded collection
+
+`PipelineResult` MUST expose a `discarded_pages: list[DiscardedPage]` field defaulting to
+`[]` so that:
+
+1. Existing callers that do not read the discarded collection are unaffected.
+2. Old serialized `PipelineResult` objects that lack the field hydrate without error
+   (tolerant `cache.get("discarded_pages", [])` deserialization).
+
+The discarded collection MUST be populated ONLY from the `_stage_assemble_blocks` EXT-034
+drop path. It MUST NOT receive entries from the existing errored-guía path (zero-OCR-lines
+guías with a valid identity).
+
+The existing `PipelineResult.errored_guias` collection MUST retain its current semantics:
+guías with a valid identity (QR or OCR fallback) whose OCR yielded zero material lines.
+The two collections MUST be semantically distinct and MUST NOT be mixed.
+
+#### Scenario EXT-S035a — PipelineResult has separate discarded and errored collections
+
+Given a run that produces:
+  - 1 guía with valid QR identity but 0 OCR lines (existing errored case)
+  - 1 guía-classified page with no QR evidence (new discarded case)
+When the pipeline completes
+Then `PipelineResult.errored_guias` contains the identity-valid zero-lines guía
+And `PipelineResult.discarded_pages` contains the no-evidence page entry
+And neither collection contains the other's entries
+
+#### Scenario EXT-S035b — old PipelineResult cache without discarded field hydrates cleanly
+
+Given an existing serialized `PipelineResult` (from a run before SDD#2) that has no
+  discarded collection field
+When the deserialization/hydration step processes the cached result
+Then no `ValidationError` or `KeyError` is raised
+And the discarded collection defaults to `[]` (empty)
+
+---
+
+### EXT-036 — [ADDED] Cached OCR lines preserved in discarded entry; reused on recovery
+
+When the discarded entry is produced at the drop site, the `cached_lines` field MUST be
+populated from `raw.lines` at that exact moment — the OCR stage has already run and the
+lines are available. Persisting them avoids a redundant re-OCR call on recovery.
+
+On recovery, the recovery service MUST:
+1. Read `cached_lines` from the discarded entry.
+2. If `cached_lines` is **non-empty**: use those lines directly as the recovered material
+   lines WITHOUT invoking `ExtractionPort.extract_printed_table`. The deterministic OCR
+   engine (SDD#1 `RapidOCRAdapter`) is idempotent — same image → same output; re-running
+   adds no value.
+3. If `cached_lines` is **empty**: invoke `ExtractionPort.extract_printed_table` on the
+   page image (rendered at recovery DPI) and use the resulting lines.
+4. If OCR also returns empty lines in step 3: fall back to `VisionLLMPort` for material
+   line extraction. Vision is the LAST resort, after both cached-lines and OCR paths are
+   exhausted.
+
+The recovery service MUST NOT invoke OCR when step 2 applies. The recovery service MUST
+NOT invoke vision when step 3 succeeds (non-empty OCR result).
+
+#### Scenario EXT-S036a — recovery with cached lines: OCR not re-run
+
+Given a discarded entry with `cached_lines = [MaterialLine(cantidad=0.191, unidad="TN", ...)]`
+When the recovery service processes this entry
+Then the `cached_lines` are used directly as the recovered material lines
+And `ExtractionPort.extract_printed_table` is NOT called for this page
+And `VisionLLMPort` is NOT called for this page
+
+#### Scenario EXT-S036b — recovery with empty cached lines: OCR is re-run
+
+Given a discarded entry with `cached_lines = []`
+And `ExtractionPort.extract_printed_table` is available (OCR enabled)
+When the recovery service processes this entry
+Then `ExtractionPort.extract_printed_table` is called with the rendered page image
+And the returned lines are used as the recovered material lines (if non-empty)
+
+#### Scenario EXT-S036c — recovery with empty cached lines and empty OCR result: vision fallback
+
+Given a discarded entry with `cached_lines = []`
+And `ExtractionPort.extract_printed_table` returns `[]` for this page
+When the recovery service processes this entry
+Then `VisionLLMPort` is called for material extraction as the last fallback
+And if vision also returns nothing, the recovery fails with a structured error
+  (the entry stays in the discarded collection; it is NOT silently removed)
+
+---
+
+### EXT-037 — [ADDED] Synthetic identity for recovered pages (design-level contract)
+
+A recovered guía page MUST receive a **synthetic identity** because no QR `serie-numero`
+exists. The spec constrains the semantics:
+
+1. The synthetic identity MUST NEVER collide with a real QR-derived `guia_id`
+   (format `{serie}-{numero}`). Implementation: `guia_id=f"recovered_{page}"`.
+2. The synthetic identity MUST NOT be confused with the three domain identifiers:
+   Contents-ID (e.g. `#4252`) ≠ Registro N° (e.g. `232`) ≠ QR `serie-numero`.
+3. `identity_source` on the recovered `GuiaDeRemision` MUST use `"operator"` — an additive
+   Literal value distinct from `"qr"` and `"ocr_fallback"`.
+4. The API DTO `identity_source` field MUST be updated in lockstep with the new Literal
+   value at all four sites (the `match_method` 500-lesson). Sites: `domain/models.py` (×2),
+   `infrastructure/api/schemas.py`, `frontend/src/api/types.ts`.
+5. The recovered guía MUST carry `requires_review=True` on ALL recovered material lines,
+   regardless of OCR confidence. Recovery is never a confirmed-accurate read.
+6. The recovered guía MUST land under the `registro` inherited from the discarded entry's
+   `registro` field (the section registro). No mandatory assignment dialog on recovery.
+   Registro reassignment is the exceptional [Acciones] flow.
+
+#### Scenario EXT-S037a — synthetic identity does not collide with QR format
+
+Given a recovered page at page index 152 (decimal)
+When the synthetic identity is assigned
+Then the `guia_id` does NOT match the pattern `[A-Z]\d+-\d+` (the QR `serie-numero` format)
+And the `guia_id` does NOT equal `"152"` (a bare page index could be confused with
+  a section/registro N°)
+And `identity_source` is NOT `"qr"` and NOT `"ocr_fallback"`
+
+#### Scenario EXT-S037b — all recovered lines carry requires_review=True
+
+Given a recovered page where OCR returns 3 `MaterialLine` objects
+And the OCR confidence for all 3 rows is >= 0.95 (high confidence)
+When the recovered `GuiaDeRemision` is assembled
+Then all 3 `MaterialLine` objects have `requires_review=True`
+And the reconciliation gate will flag the recovered group for human review
+
+#### Scenario EXT-S037c — recovered guía lands under section registro
+
+Given a discarded entry with `registro="232"` and `source_page=152`
+When recovery is completed and the `GuiaDeRemision` is assembled
+Then `guia_de_remision.registro = "232"`
+And no assignment dialog is triggered
+And the guía appears in the reconciliation result under registro 232
 
 ---
 
@@ -1456,6 +1670,15 @@ deferred to **SDD#2**.
 | EXT-031 (GT real-data gate) | S031a–S031d | @pytest.mark.slow, CTR_PDF_PATH |
 | EXT-032 (domain invariants) | S032a–S032c | unit tests + git diff assertion |
 | EXT-033 (deps/Docker/air-gap) | S033a–S033c | containerized-verify (Makefile/Compose) |
+
+## Acceptance Scenarios Summary — SDD#2 additions (discarded-pages-recovery)
+
+| Requirement | Scenario IDs | TDD tier |
+|---|---|---|
+| EXT-034 (zero silent drops) | S034a–S034e | unit tests (`test_pipeline_discarded_pages.py`) |
+| EXT-035 (PipelineResult discarded collection) | S035a–S035b | unit tests (`test_pipeline_discarded_pages.py`, `test_container_discarded.py`) |
+| EXT-036 (cached lines + 3-tier recovery) | S036a–S036c | unit tests (`test_apply_page_recovery.py`) + real-data gate (`test_discarded_recovery_gate.py`) |
+| EXT-037 (synthetic identity + 4-site lockstep) | S037a–S037c | unit tests (`test_schemas_discarded.py`, `test_apply_page_recovery.py`) |
 
 ---
 

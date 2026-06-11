@@ -190,7 +190,7 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### Phase 2.0 — Pre-work: verify sidecar replay mirror contract
 
-- [ ] **2.0.1** READ `backend/src/reconciliation/application/review_service.py` `:684–719` (the full `recovered_guia` replay branch) to extract the exact mirror pattern for `recovered_discarded_page`:
+- [x] **2.0.1** READ `backend/src/reconciliation/application/review_service.py` `:684–719` (the full `recovered_guia` replay branch) to extract the exact mirror pattern for `recovered_discarded_page`:
   - The `raw_guia = edit.get("new_value")` extraction.
   - `GuiaDeRemision.model_validate(raw_guia)` validation.
   - The R2-W2 `requires_review` coercion before re-add.
@@ -200,13 +200,13 @@ If PR-2 tests push the total past 400 lines, split as:
   Record the exact `target` dict shape written at audit-emit time (:539-546) — `recovered_discarded_page` needs the same shape (with `page` added).
   Read-only pre-flight.
 
-- [ ] **2.0.2** READ `backend/src/reconciliation/infrastructure/container.py` `:378-407` (the `build_pipeline` OCR-selection logic: `ocr.enabled=False` → `NullOcrExtractor`, engine factory → `build_ocr_extractor`) to identify the exact branch to extract as a shared helper for `build_reprocess_service`.
+- [x] **2.0.2** READ `backend/src/reconciliation/infrastructure/container.py` `:378-407` (the `build_pipeline` OCR-selection logic: `ocr.enabled=False` → `NullOcrExtractor`, engine factory → `build_ocr_extractor`) to identify the exact branch to extract as a shared helper for `build_reprocess_service`.
   Assert: the branch IS there and IS self-contained enough to extract without changing `build_pipeline` behavior.
   Read-only pre-flight.
 
 ### Phase 2.1 — RED: Write failing tests for PR-2
 
-- [ ] **2.1.1** Create `backend/tests/unit/application/test_apply_page_recovery.py`.
+- [x] **2.1.1** Create `backend/tests/unit/application/test_apply_page_recovery.py`.
   Write failing test `test_tier1_cached_lines_no_ocr_no_vision_called`:
   Discarded entry with `lines=[MaterialLine(...)]`. Spy `ExtractionPort` and `VisionLLMPort`.
   Assert `ExtractionPort.extract_printed_table` NOT called.
@@ -215,100 +215,100 @@ If PR-2 tests push the total past 400 lines, split as:
   FAILS today: `apply_page_recovery` does not exist.
   Spec: EXT-036 / EXT-S036a. Design: §4 (Tier 1).
 
-- [ ] **2.1.2** Add failing test `test_tier2_empty_cached_lines_ocr_called`:
+- [x] **2.1.2** Add failing test `test_tier2_empty_cached_lines_ocr_called`:
   Entry with `lines=[]`. Mock `ExtractionPort.extract_printed_table` returning 2 `MaterialLine` objects.
   Assert `ExtractionPort.extract_printed_table` IS called once.
   Assert `VisionLLMPort` NOT called.
   Assert result `recovered=True`; lines from OCR.
   Spec: EXT-036 / EXT-S036b. Design: §4 (Tier 2).
 
-- [ ] **2.1.3** Add failing test `test_tier3_empty_ocr_vision_fallback`:
+- [x] **2.1.3** Add failing test `test_tier3_empty_ocr_vision_fallback`:
   Entry with `lines=[]`. OCR returns `[]`. Mock `VisionLLMPort.read_material_table` returning lines.
   Assert vision IS called.
   Assert result `recovered=True`.
   Spec: EXT-036 / EXT-S036c. Design: §4 (Tier 3).
 
-- [ ] **2.1.4** Add failing test `test_all_tiers_empty_recovery_fails_entry_retained`:
+- [x] **2.1.4** Add failing test `test_all_tiers_empty_recovery_fails_entry_retained`:
   Entry with `lines=[]`. OCR returns `[]`. Vision returns `[]`.
   Assert `PageRecoveryResult.recovered=False`, `reason="empty"`.
   Assert the entry is NOT removed from `ReviewService.discarded_pages`.
   Spec: EXT-036 / EXT-S036c. REV-R30-S04.
 
-- [ ] **2.1.5** Add failing test `test_all_recovered_lines_require_review_unconditionally`:
+- [x] **2.1.5** Add failing test `test_all_recovered_lines_require_review_unconditionally`:
   Entry with cached lines where all OCR conf >= 0.95.
   Assert every `MaterialLine` in the recovered `GuiaDeRemision` has `requires_review=True`.
   Spec: EXT-037 / EXT-S037b. REV-R30-S03. Absolute invariant.
 
-- [ ] **2.1.6** Add failing test `test_recovered_guia_id_format_no_collision_with_qr`:
+- [x] **2.1.6** Add failing test `test_recovered_guia_id_format_no_collision_with_qr`:
   Recovery of page 152.
   Assert `guia_id="recovered_152"` (matches design §2).
   Assert `guia_id` does NOT match `[A-Z]\d+-\d+` (QR format).
   Assert `identity_source="operator"`.
   Spec: EXT-037 / EXT-S037a.
 
-- [ ] **2.1.7** Add failing test `test_recovered_guia_inherits_section_registro`:
+- [x] **2.1.7** Add failing test `test_recovered_guia_inherits_section_registro`:
   Entry with `registro="232"`. Recovery completes.
   Assert `guia.registro="232"`.
   Assert no assignment dialog triggered (no raise, no side-effect).
   Spec: EXT-037 / EXT-S037c. REV-R31-S05.
 
-- [ ] **2.1.8** Add failing test `test_double_recover_idempotent`:
+- [x] **2.1.8** Add failing test `test_double_recover_idempotent`:
   Recover page 152 twice (second call sees no entry in discarded list).
   Assert second call returns `recovered=False, reason="not_found"` (no duplicate GuiaDeRemision created).
   Design: §2 (deterministic guia_id → `add_recovered_guia` idempotency contract).
 
-- [ ] **2.1.9** Create `backend/tests/unit/application/test_recover_discarded_page_hook.py`.
+- [x] **2.1.9** Create `backend/tests/unit/application/test_recover_discarded_page_hook.py`.
   Write failing test `test_recover_discarded_page_removes_entry_from_list`:
   ReviewService with 2 discarded entries. Call `recover_discarded_page(page=152, guia=...)`.
   Assert `discarded_pages` now has 1 entry (the other, not page 152).
   Spec: REV-R31. Design: §4.
 
-- [ ] **2.1.10** Add failing test `test_recover_discarded_page_fail_closed_guard`:
+- [x] **2.1.10** Add failing test `test_recover_discarded_page_fail_closed_guard`:
   Attempt to call `recover_discarded_page` with a `GuiaDeRemision` that has a line with `requires_review=False`.
   Assert `ValueError` is raised.
   Design: §4 (fail-closed `requires_review` guard, mirroring `add_recovered_guia` :493-499).
 
-- [ ] **2.1.11** Create `backend/tests/unit/infrastructure/test_recovery_endpoints.py`.
+- [x] **2.1.11** Create `backend/tests/unit/infrastructure/test_recovery_endpoints.py`.
   Write failing test `test_single_recover_endpoint_404_unknown_page`:
   `POST /runs/{run_id}/discarded-pages/9999/recover` where page 9999 not in discarded list.
   Assert 404 response.
   Spec: REV-R31. Design: §3.
 
-- [ ] **2.1.12** Add failing test `test_single_recover_endpoint_409_run_not_ready`:
+- [x] **2.1.12** Add failing test `test_single_recover_endpoint_409_run_not_ready`:
   `POST /runs/{run_id}/discarded-pages/152/recover` where run is not in READY state.
   Assert 409 response.
   Design: §3 (mirrors existing 409 pattern in routes.py).
 
-- [ ] **2.1.13** Add failing test `test_batch_recover_endpoint_202_lifecycle`:
+- [x] **2.1.13** Add failing test `test_batch_recover_endpoint_202_lifecycle`:
   `POST /runs/{run_id}/discarded-pages/recover-batch` with `{"pages": [152, 175]}`.
   Assert 202 response with `{"run_id": ..., "count": 2}`.
   Poll `GET /runs/{run_id}/discarded-pages/recover-status` until `done=True`.
   Assert final status has `total=2`, `recovered+failed=2`, `done=True`.
   Spec: REV-R30 (progress lifecycle). Design: §3 (SA-5 settle-only-when-done contract).
 
-- [ ] **2.1.14** Add failing test `test_batch_409_when_batch_in_flight`:
+- [x] **2.1.14** Add failing test `test_batch_409_when_batch_in_flight`:
   Start a batch. While in-flight (mock), send second `POST recover-batch`.
   Assert 409 response (one active batch per run).
   Design: §3.
 
-- [ ] **2.1.15** Add failing test `test_recover_status_terminal_shape_when_no_batch_fired`:
+- [x] **2.1.15** Add failing test `test_recover_status_terminal_shape_when_no_batch_fired`:
   `GET /runs/{run_id}/discarded-pages/recover-status` when no batch has been submitted.
   Assert `{"total": 0, "recovered": 0, "failed": 0, "done": true}`.
   Design: §3 (terminal-shape — PR-3b re-attach on mount depends on this; LOCKED by test).
 
-- [ ] **2.1.16** Add failing test `test_identity_source_operator_roundtrips_dto`:
+- [x] **2.1.16** Add failing test `test_identity_source_operator_roundtrips_dto`:
   Build a `GuiaContributionResponse` with `identity_source="operator"`.
   Assert `model_validate` succeeds (no `ValidationError`).
   This is the 4-site lockstep gate — FAILS today because `"operator"` is not in the Literal.
   Design: §2 (the `match_method` 500-lesson applied here).
 
-- [ ] **2.1.17** Create `backend/tests/unit/application/test_sidecar_restart_roundtrip.py`.
+- [x] **2.1.17** Create `backend/tests/unit/application/test_sidecar_restart_roundtrip.py`.
   Write failing test `test_restart_round_trip_recovered_discarded_page`:
   (1) Create `ReviewService` with 1 discarded entry. (2) Call `recover_discarded_page(page=152, guia=...)`. (3) Assert `discarded_pages == []` and `guias` contains `recovered_152`. (4) Call `restore_from_sidecar` on a fresh `ReviewService` using the persisted sidecar JSON. (5) Assert the fresh service has `discarded_pages == []` and the recovered guía is present.
   FAILS today: `recovered_discarded_page` audit kind not in sidecar replay.
   Design: §5 (§11.1 risk — sidecar replay mandatory; restart round-trip test). MUST.
 
-- [ ] **2.1.18** Add failing test `test_vision_off_ocr_still_attempted_failure_not_503`:
+- [x] **2.1.18** Add failing test `test_vision_off_ocr_still_attempted_failure_not_503`:
   `NullVisionAdapter` active. Discarded entry with `lines=[]`. OCR returns `[]`.
   Assert response is a structured failure (not 503, not 500).
   Assert entry remains in `discarded_pages`.
@@ -316,7 +316,7 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### Phase 2.2 — GREEN: Implement PR-2
 
-- [ ] **2.2.1** Update Literal at all FOUR sites in ONE commit (lockstep — never partial):
+- [x] **2.2.1** Update Literal at all FOUR sites in ONE commit (lockstep — never partial):
   - `domain/models.py:72`: `GuiaContribution.identity_source: Literal["qr","ocr_fallback","vision","operator"]`
   - `domain/models.py:131`: `GuiaDeRemision.identity_source: Literal["qr","ocr_fallback","vision","operator"] = "ocr_fallback"`
   - `infrastructure/api/schemas.py:35`: `GuiaContributionResponse.identity_source: Literal["qr","ocr_fallback","vision","operator"]`
@@ -324,16 +324,16 @@ If PR-2 tests push the total past 400 lines, split as:
   All four sites in a single work-unit commit. Test 2.1.16 (DTO validation) must pass before proceeding.
   Design: §2 (4-site lockstep, `match_method` 500-lesson).
 
-- [ ] **2.2.2** Extract OCR-selection helper from `container.py:build_pipeline` into a shared function (e.g. `_build_ocr_extractor_for_config(config, ocr_config) -> ExtractionPort`).
+- [x] **2.2.2** Extract OCR-selection helper from `container.py:build_pipeline` into a shared function (e.g. `_build_ocr_extractor_for_config(config, ocr_config) -> ExtractionPort`).
   `build_pipeline` calls it; `build_reprocess_service` will also call it.
   INVARIANT: `build_pipeline` behavior MUST NOT change. Verify with existing container tests after this step.
   Design: §4 (shared helper to prevent drift; §11.4 risk).
 
-- [ ] **2.2.3** Add `extractor: ExtractionPort | None = None` parameter to `ReprocessService.__init__` in `backend/src/reconciliation/application/reprocess_service.py`.
+- [x] **2.2.3** Add `extractor: ExtractionPort | None = None` parameter to `ReprocessService.__init__` in `backend/src/reconciliation/application/reprocess_service.py`.
   Store as `self._extractor`. No concrete adapter import — ports-only constructor (Dependency Inversion).
   Design: §4 (additive port).
 
-- [ ] **2.2.4** Add `PageRecoveryResult` dataclass to `reprocess_service.py` (mirrors `ReprocessResult`):
+- [x] **2.2.4** Add `PageRecoveryResult` dataclass to `reprocess_service.py` (mirrors `ReprocessResult`):
   ```python
   @dataclass
   class PageRecoveryResult:
@@ -345,7 +345,7 @@ If PR-2 tests push the total past 400 lines, split as:
   ```
   Domain-pure result type (no SDK/IO).
 
-- [ ] **2.2.5** Implement `async apply_page_recovery(self, page: int) -> PageRecoveryResult` on `ReprocessService`:
+- [x] **2.2.5** Implement `async apply_page_recovery(self, page: int) -> PageRecoveryResult` on `ReprocessService`:
   Follow the 8-step algorithm from design §4 exactly:
   1. Lookup entry in `review_service.discarded_pages` by page → not found: return `PageRecoveryResult(recovered=False, reason="not_found")`.
   2. Tier 1 — `entry.lines` non-empty → use directly (no render, no OCR, no vision).
@@ -357,7 +357,7 @@ If PR-2 tests push the total past 400 lines, split as:
   8. Under commit Lock: `review_service.recover_discarded_page(page, guia)`.
   Design: §4 (exact algorithm; `fecha=None` intentional — no vision date read, no R9b/R9c floor/ceiling applies — graceful per `reception-date-authority` skill).
 
-- [ ] **2.2.6** Add `recover_discarded_page(self, page: int, guia: GuiaDeRemision) -> list[ReconciliationRow]` to `ReviewService` in `review_service.py`:
+- [x] **2.2.6** Add `recover_discarded_page(self, page: int, guia: GuiaDeRemision) -> list[ReconciliationRow]` to `ReviewService` in `review_service.py`:
   Mirror `add_recovered_guia` contract (:458-543):
   1. Fail-closed `requires_review` guard (raise `ValueError` if any line has `requires_review != True`).
   2. Append `guia` to `self._guias` (no placeholder to replace — append path only).
@@ -368,7 +368,7 @@ If PR-2 tests push the total past 400 lines, split as:
   Return updated rows.
   Design: §4 (Open/Closed over existing hook — dedicated entry point, not modifying `add_recovered_guia`).
 
-- [ ] **2.2.7** Update `restore_from_sidecar` in `review_service.py` to handle `recovered_discarded_page` sidecar events:
+- [x] **2.2.7** Update `restore_from_sidecar` in `review_service.py` to handle `recovered_discarded_page` sidecar events:
   Mirror the `recovered_guia` branch (:684-719) EXACTLY:
   - Extract `raw_guia = edit.get("new_value")`.
   - `GuiaDeRemision.model_validate(raw_guia)`.
@@ -378,18 +378,18 @@ If PR-2 tests push the total past 400 lines, split as:
   Note: `target` must carry `"page"` — this is set by the audit emit in 2.2.6.
   Design: §5 (§11.1 risk now resolved — sidecar replay mirrors the existing `recovered_guia` pattern).
 
-- [ ] **2.2.8** Update `build_reprocess_service` in `container.py`:
+- [x] **2.2.8** Update `build_reprocess_service` in `container.py`:
   Use the shared OCR-selection helper from 2.2.2 to build the `ExtractionPort` and pass it as `extractor=...`.
   Design: §4 (shared helper — `build_reprocess_service` and `build_pipeline` use the same OCR-selection logic).
 
-- [ ] **2.2.9** Add 3 recovery endpoints to `routes.py` (mirroring the `_run_reprocess_batch` / `ReprocessBatchStatusResponse` pattern from :1110-1268):
+- [x] **2.2.9** Add 3 recovery endpoints to `routes.py` (mirroring the `_run_reprocess_batch` / `ReprocessBatchStatusResponse` pattern from :1110-1268):
   - `POST /runs/{run_id}/discarded-pages/{page}/recover` → single-page, calls `apply_page_recovery(page)`, returns `RecoverPageResponse`.
   - `POST /runs/{run_id}/discarded-pages/recover-batch` → body `{pages: list[int]}`, returns 202 `{run_id, count}`; status record in registry under `"discarded"` key in `discarded_batches`. 409 if batch in-flight.
   - `GET /runs/{run_id}/discarded-pages/recover-status` → `{total, recovered, failed, done}`. Terminal shape when no batch: `{total: 0, recovered: 0, failed: 0, done: true}`.
   Add corresponding `RecoverPageResponse`, `DiscardedBatchStatusResponse` (alias `ReprocessBatchStatusResponse` shape) DTOs to `schemas.py`.
   Design: §3 (endpoint contracts + SA-5 settle-only-on-done pattern).
 
-- [ ] **2.2.10** Run PR-2 test suite:
+- [x] **2.2.10** Run PR-2 test suite:
   ```
   cd backend && uv run pytest \
     tests/unit/application/test_apply_page_recovery.py \
@@ -401,7 +401,7 @@ If PR-2 tests push the total past 400 lines, split as:
   ```
   All tests (2.1.1–2.1.18) MUST be GREEN.
 
-- [ ] **2.2.11** Verify architecture invariants:
+- [x] **2.2.11** Verify architecture invariants:
   ```
   git diff HEAD -- backend/src/reconciliation/domain/ | grep "^+.*import"
   git diff HEAD -- backend/src/reconciliation/application/pipeline.py | grep "^+.*import"
@@ -409,7 +409,7 @@ If PR-2 tests push the total past 400 lines, split as:
   ```
   Assert: `reprocess_service.py` imports only `ExtractionPort` (port), never a concrete adapter. `pipeline.py` unchanged. `domain/` stays pure.
 
-- [ ] **2.2.12** Run regression sweep:
+- [x] **2.2.12** Run regression sweep:
   ```
   cd backend && uv run pytest \
     tests/unit/application/test_reprocess_service.py \
@@ -420,10 +420,10 @@ If PR-2 tests push the total past 400 lines, split as:
   ```
   All must remain GREEN.
 
-- [ ] **2.2.13** Commit work-unit A: `feat(recovery): add identity_source="operator" Literal lockstep (4 sites); recover_discarded_page hook + sidecar replay (PR-2)`
+- [x] **2.2.13** Commit work-unit A: `feat(recovery): add identity_source="operator" Literal lockstep (4 sites); recover_discarded_page hook + sidecar replay (PR-2)`
   Covers: 2.2.1 + 2.2.6 + 2.2.7.
 
-- [ ] **2.2.14** Commit work-unit B: `feat(recovery): apply_page_recovery (3-tier OCR-first), OCR-selection helper, batch endpoints + status poll (PR-2)`
+- [x] **2.2.14** Commit work-unit B: `feat(recovery): apply_page_recovery (3-tier OCR-first), OCR-selection helper, batch endpoints + status poll (PR-2)`
   Covers: 2.2.2 + 2.2.3 + 2.2.4 + 2.2.5 + 2.2.8 + 2.2.9.
   No push (SA-3).
 

@@ -69,7 +69,7 @@ class GuiaContribution(BaseModel):
     cantidad: Decimal
     unidad: str
     confidence: float
-    identity_source: Literal["qr", "ocr_fallback", "vision"]
+    identity_source: Literal["qr", "ocr_fallback", "vision", "operator"]
     # Rev-3 D5: provenance flag — True when the year component of fecha was
     # reconstructed via bounded inference (EXT-021), not read directly from vision.
     year_inferred: bool = False
@@ -128,7 +128,7 @@ class GuiaDeRemision(BaseModel):
     tipo: str | None = None
     gre_hashqr_url: str | None = None
     identity_confidence: float = 0.0
-    identity_source: Literal["qr", "ocr_fallback", "vision"] = "ocr_fallback"
+    identity_source: Literal["qr", "ocr_fallback", "vision", "operator"] = "ocr_fallback"
     first_page: int | None = None
     # Rev-3 D5: True when the year was inferred via bounded inference (EXT-021).
     year_inferred: bool = False

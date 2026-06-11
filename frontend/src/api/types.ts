@@ -81,7 +81,7 @@ export interface GuiaContributionResponse {
   cantidad: string // Decimal serialised as string
   unidad: string
   confidence: number
-  identity_source: 'qr' | 'ocr_fallback' | 'vision'
+  identity_source: 'qr' | 'ocr_fallback' | 'vision' | 'operator'
   /**
    * Rev-3 D5 (REC-C07): true when the year component of this guía's reception
    * date was reconstructed via bounded inference (EXT-021), not read directly
@@ -162,7 +162,7 @@ export interface ReconciliationRowResponse {
  */
 export interface UnresolvedGuiaResponse {
   guia_id: string // serie-numero, e.g. "T009-0741770"
-  identity_source: 'qr' | 'ocr_fallback' | 'vision'
+  identity_source: 'qr' | 'ocr_fallback' | 'vision' | 'operator'
   source_pages: number[]
   first_page: number | null
 }
@@ -262,6 +262,54 @@ export interface ReprocessGuiaResponse {
 }
 
 /** GET /runs/{run_id}/table */
+/**
+ * A GUIA-classified page dropped by the rev-6 QR-evidence gate (EXT-034 / SDD#2).
+ *
+ * Additive read-only side-channel.  `has_cached_lines` indicates whether Tier-1
+ * (near-instant) recovery is available.  Raw MaterialLine data is NOT exposed.
+ */
+export interface DiscardedPageResponse {
+  page: number
+  registro: string | null
+  has_cached_lines: boolean
+}
+
+/**
+ * Response for POST /runs/{run_id}/discarded-pages/{page}/recover.
+ *
+ * `recovered=true` → page recovered, entry removed from discarded list.
+ * `recovered=false` → see `reason` ("empty" | "not_found").
+ * `rows` → updated reconciliation rows (empty on failure).
+ * `discarded_pages` → remaining discarded entries after recovery.
+ */
+export interface RecoverPageResponse {
+  recovered: boolean
+  page: number
+  guia_id: string | null
+  reason: string | null
+  rows: ReconciliationRowResponse[]
+  discarded_pages: DiscardedPageResponse[]
+}
+
+/** Response for POST /runs/{run_id}/discarded-pages/recover-batch → 202. */
+export interface DiscardedBatchResponse {
+  run_id: string
+  count: number
+}
+
+/**
+ * Response for GET /runs/{run_id}/discarded-pages/recover-status.
+ *
+ * SA-5 shape — mirrors ReprocessBatchStatusResponse.
+ * Terminal shape: `{ total: 0, recovered: 0, failed: 0, done: true }` when no batch fired.
+ */
+export interface DiscardedRecoverStatusResponse {
+  total: number
+  recovered: number
+  failed: number
+  done: boolean
+}
+
 export interface ReconciliationTableResponse {
   run_id: string
   rows: ReconciliationRowResponse[]
@@ -269,6 +317,8 @@ export interface ReconciliationTableResponse {
   unresolved_guias: UnresolvedGuiaResponse[]
   /** Rev-3 (REV-E04): guías that resolved to 0 material lines — read-only surface. */
   errored_guias: ErroredGuiaResponse[]
+  /** SDD#2 (EXT-034): GUIA pages dropped by rev-6 QR-evidence gate — read-only surface. */
+  discarded_pages?: DiscardedPageResponse[]
 }
 
 // ---------------------------------------------------------------------------

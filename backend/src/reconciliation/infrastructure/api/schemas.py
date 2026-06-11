@@ -32,7 +32,7 @@ class GuiaContributionResponse(BaseModel):
     cantidad: Decimal = Field(description="Total quantity contributed by this guía to the group.")
     unidad: str = Field(description="Unit of measure (must match the parent group's unidad).")
     confidence: float = Field(description="Identity confidence from QR decode or fallback.")
-    identity_source: Literal["qr", "ocr_fallback", "vision"] = Field(
+    identity_source: Literal["qr", "ocr_fallback", "vision", "operator"] = Field(
         description="How the guía identity was determined."
     )
     # Rev-3 D5 (REC-C07): year_inferred provenance flag.
@@ -617,6 +617,68 @@ class ReprocessGuiaResponse(BaseModel):
         default_factory=list,
         description="Remaining errored guías after the reprocess attempt.",
     )
+
+
+# ---------------------------------------------------------------------------
+# PR-2 — Discarded-page recovery (EXT-036/037, REV-R31)
+# ---------------------------------------------------------------------------
+
+
+class RecoverPageResponse(BaseModel):
+    """Response for POST /runs/{run_id}/discarded-pages/{page}/recover.
+
+    recovered=True when the discarded page was successfully recovered.
+    recovered=False with reason when recovery failed.
+    rows: updated reconciliation rows after re-reconcile (empty on failure).
+    discarded_pages: remaining discarded entries after the recovery.
+    """
+
+    recovered: bool
+    page: int
+    guia_id: str | None = Field(
+        default=None,
+        description="Synthetic guía id (f'recovered_{page}') on success; null on failure.",
+    )
+    reason: str | None = Field(
+        default=None,
+        description=(
+            "Failure reason when recovered=False: "
+            "'empty' (all tiers returned 0 lines) | 'not_found' (page not in discarded list). "
+            "Null on success."
+        ),
+    )
+    rows: list[ReconciliationRowResponse] = Field(
+        default_factory=list,
+        description="Updated reconciliation rows after recovery (empty on failure).",
+    )
+    discarded_pages: list[DiscardedPageResponse] = Field(
+        default_factory=list,
+        description="Remaining discarded entries after the recovery attempt.",
+    )
+
+
+class DiscardedBatchResponse(BaseModel):
+    """Response for POST /runs/{run_id}/discarded-pages/recover-batch → 202 Accepted.
+
+    Background task started; client polls recover-status until done=True.
+    """
+
+    run_id: str
+    count: int = Field(description="Number of pages queued for recovery.")
+
+
+class DiscardedBatchStatusResponse(BaseModel):
+    """Response for GET /runs/{run_id}/discarded-pages/recover-status.
+
+    SA-5 shape — mirrors ReprocessBatchStatusResponse.
+    When no batch has been fired, returns terminal shape (total=0, done=True)
+    so the client never hangs.
+    """
+
+    total: int = Field(description="Number of pages queued for the batch.")
+    recovered: int = Field(default=0, description="Pages recovered so far.")
+    failed: int = Field(default=0, description="Pages that failed so far.")
+    done: bool = Field(description="True once the batch coroutine has finished.")
 
 
 # ---------------------------------------------------------------------------

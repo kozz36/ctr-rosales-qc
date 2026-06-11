@@ -619,93 +619,102 @@ If PR-2 tests push the total past 400 lines, split as:
 
 ### Phase 3b.1 — RED: Write failing vitest tests
 
-- [ ] **3b.1.1** Add failing test `test_confirm_dialog_shown_before_batch_fire`:
-  2 pages selected. Click "Recuperar seleccionadas".
-  Assert confirm dialog is rendered (not yet submitting).
-  Assert batch request NOT sent until user confirms.
+> All 3b.1.x created in `frontend/src/__tests__/features/DescartadasTab.bulk.test.ts`
+> (same `src/__tests__/features/` convention as PR-3a). CONFIRMED RED as a batch:
+> 11/11 failing before the implementation (no dialog element, `recoverBatchMock`
+> never called, mount poll count 0 — each test failed on its own assertion, not a
+> suite-level import error, because DescartadasTab.vue already exists from PR-3a).
+
+- [x] **3b.1.1** Test `shows the confirm dialog and does NOT fire the batch until confirmed`:
+  2 pages selected → click → dialog rendered, `recoverBatchMock` NOT called; confirm →
+  called with `('run-123', [57, 58])`. CONFIRMED RED: no `.descartadas-tab__dialog` element.
   Spec: REV-R30 / REV-R30-S01.
 
-- [ ] **3b.1.2** Add failing test `test_eta_line_shows_approximate_cost`:
-  2 pages selected, both `has_cached_lines=false` (OCR-empty).
-  Assert ETA line mentions "≈ X min" or "~10 s/page" approximation.
-  Assert conditional vision-cost warning shown (K=2 OCR-empty pages → vision fallback possible).
-  Design: A3 (ETA confirm: K × ~10 s, conditional vision warning only when K > 0).
+- [x] **3b.1.2** Test `shows an approximate ETA and the vision-cost warning when OCR-empty pages are selected`:
+  K=2 `has_cached_lines=false` → asserts `/≈\s*\d+\s*min/` AND "~10 s" AND
+  `.descartadas-tab__dialog-warning` mentioning IA/visión. CONFIRMED RED. Design: A3.
 
-- [ ] **3b.1.3** Add failing test `test_confirm_dialog_no_vision_warning_when_all_cached`:
-  3 pages selected, all `has_cached_lines=true` (Tier-1 → near-instant).
-  Assert vision-cost warning NOT shown.
-  Design: A3 (conditional warning only for OCR-empty pages).
+- [x] **3b.1.3** Test `does NOT show the vision-cost warning when every selected page has cached lines`:
+  3 cached pages → warning absent; count "3" in dialog. CONFIRMED RED. Design: A3.
 
-- [ ] **3b.1.4** Add failing test `test_batch_button_disabled_during_flight`:
-  Start batch. While in-flight (mock `done=false`). Assert "Recuperar seleccionadas" button is disabled.
-  Spec: REV-R30 / REV-R30-S05.
+- [x] **3b.1.4** Test `disables "Recuperar seleccionadas" while the batch is in-flight`
+  (mock `done=false` after fire). CONFIRMED RED. Spec: REV-R30 / REV-R30-S05.
 
-- [ ] **3b.1.5** Add failing test `test_progress_incremental_remove_from_list`:
-  3 pages. Status sequence: `{total:3, recovered:1, failed:0, done:false}` → `{total:3, recovered:2, failed:0, done:false}` → `{total:3, recovered:2, failed:1, done:true}`.
-  Assert that after `recovered=1` the list has 2 remaining entries (one removed incrementally — NOT waiting for `done`).
-  Assert page with failed recovery STAYS in list.
-  Spec: REV-R30 / REV-R30-S02 + REV-R30-S04 (incremental progress; failed pages remain).
-  **SA-5 premature-settlement regression lock (PR#49 lesson)**: assert the completion summary "2 recuperadas / 1 falló" appears ONLY after `done=true`. Assert it does NOT appear after the first `recovered=1` status.
+- [x] **3b.1.5** Test `removes recovered pages incrementally and never settles before done=true`:
+  status sequence `{3,1,0,false}` → `{3,2,0,false}` → `{3,2,1,true}`; asserts incremental
+  'refetch' BEFORE done (list shrinks via parent prop refresh — 2 groups remain), the
+  completion summary `.descartadas-tab__batch-summary` is ABSENT after `recovered=1` AND
+  after `recovered=2` (SA-5 premature-settlement regression lock, PR#49 lesson), appears
+  with "2 recuperadas"/"1 falló" only after `done=true`, and the failed page stays listed.
+  CONFIRMED RED. Spec: REV-R30-S02 + REV-R30-S04 + REV-R30-S06.
 
-- [ ] **3b.1.6** Add failing test `test_completion_summary_after_done`:
-  Final status `{total:3, recovered:2, failed:1, done:true}`.
-  Assert summary text contains "2 recuperadas" AND "1 falló".
-  Spec: REV-R30 (completion summary).
+- [x] **3b.1.6** Test `shows the completion summary "2 recuperadas / 1 falló" after done=true`.
+  CONFIRMED RED. Spec: REV-R30 (completion summary).
 
-- [ ] **3b.1.7** Add failing test `test_mount_reattach_in_flight_batch`:
-  Simulate mount with `getDiscardedRecoverStatus` returning `{done:false}` on first poll.
-  Assert component re-attaches (resumes polling) and disables bulk button.
-  Design: A4 (mount re-attach — critical for 1 h batches).
+- [x] **3b.1.7** Test `re-attaches to an in-flight batch on mount: resumes polling and disables the bulk button`:
+  mount status `done:false` → bulk disabled + status called again after a 2.5 s tick.
+  CONFIRMED RED: poll count stayed 0. Design: A4.
 
-- [ ] **3b.1.8** Add failing test `test_mount_no_active_batch_terminal_shape`:
-  `getDiscardedRecoverStatus` returns `{total:0, done:true}` on mount.
-  Assert component does NOT resume polling.
-  Assert bulk button is enabled (no in-flight batch to block).
-  Design: A4 (terminal shape `total=0, done=true` — locked by test 2.1.15; safe to check here).
+- [x] **3b.1.8** Test `does not poll after mount when the status is the terminal no-batch shape`:
+  `{total:0, done:true}` → exactly 1 status call after 5 s; bulk enabled once selected.
+  CONFIRMED RED: mount poll count 0 (no on-mount poll existed). Design: A4 (terminal
+  shape locked by backend test 2.1.15).
 
-- [ ] **3b.1.9** Add failing test `test_single_page_recover_disabled_while_batch_in_flight`:
-  Batch in-flight (`done=false`). Assert individual per-page "Recuperar" button is ALSO disabled.
-  Spec: REV-R30-S05 spirit. Design: A4.
+- [x] **3b.1.9** Test `disables the per-page "Recuperar" buttons while a batch is in-flight`
+  (re-attach `done:false` → per-page button disabled). CONFIRMED RED. Spec: REV-R30-S05 spirit / A4.
 
-- [ ] **3b.1.10** Add failing test `test_refetch_emitted_after_batch_completes`:
-  Batch completes (`done=true`). Assert `emit('refetch')` is fired so parent refreshes the reconciliation grid.
-  Spec: REV-R32 (recovered rows must appear in Reconciliación after batch).
+- [x] **3b.1.10** Test `emits refetch after the batch completes so the parent refreshes the grid`
+  (`done=true` → 'refetch' emitted). CONFIRMED RED. Spec: REV-R32.
+
+- [x] **3b.1.11** (ADDED — ctr-reviewer PR-3a carry-over, orchestrator-mandated) Test
+  `excludes a singly-recovered page from the bulk payload after the list refreshes`:
+  pages {152,153} selected → page 152 recovered singly → parent prop refresh removes it →
+  bulk count shows 1 and `recoverBatchMock` called with `('run-123', [153])` — the stale
+  selected page NEVER reaches the payload. CONFIRMED RED: dialog element missing (and the
+  PR-3a code had no selected∩discardedPages intersection). Spec: REV-R30.9 spirit (only
+  pages from the discarded collection are submitted).
 
 ### Phase 3b.2 — GREEN: Implement PR-3b
 
-- [ ] **3b.2.1** Add `ConfirmRecoverDialog.vue` (or inline confirm section in `DescartadasTab.vue`):
-  Props: `{ selectedCount: number, ocREmptyCount: number }`.
-  Renders: selected count prominent in title + confirm button; ETA line (`ocREmptyCount × ~10 s → "≈ X min"`); conditional vision-cost warning when `ocREmptyCount > 0`; focus trap + focus restore (mirrors Pendientes dialog).
-  Design: A3 (ETA confirm; reuse Pendientes dialog pattern for focus trap).
+- [x] **3b.2.1** DONE — inline confirm section in `DescartadasTab.vue` (task text authorized
+  "or inline"; mirrors the Pendientes dialog verbatim — backdrop, role="dialog",
+  aria-modal, Esc close, Tab focus-trap `onDialogTab`, W2 trigger-focus restore).
+  Count prominent in title (`¿Recuperar N páginas?`) + confirm button (`Confirmar (N)`);
+  body "OCR-primero, IA como último recurso." (REV-R30-S01 wording); ETA line
+  `≈ ceil(K×10s/60) min` labeled "aproximado, ~10 s por página sin OCR en caché"
+  (K=0 → "recuperación casi instantánea"); `.descartadas-tab__dialog-warning` only when
+  K > 0. Counts derive from `selectedLive`/`ocrEmptyCount` computeds. Design: A3.
 
-- [ ] **3b.2.2** Wire batch fire in `DescartadasTab.vue`:
-  "Recuperar seleccionadas" → confirm dialog → on confirm → `recoverDiscardedBatch(runId, [...selected])` (202 response) → begin polling `getDiscardedRecoverStatus` every N seconds until `done=true`.
-  On each poll: compute which pages completed (`recovered+failed` delta vs. previous) and remove recovered pages from the list incrementally. Keep failed pages in list with a failure indicator.
-  `done=true` → render completion summary → emit `'refetch'` → re-enable buttons.
-  NEVER settle `done` before `getDiscardedRecoverStatus.done === true` (PR#49 SA-5 lesson, repeated ×3: STRICT, STRICT, STRICT).
-  Design: A4 + §6 (D6).
+- [x] **3b.2.2** DONE — bulk fire + poll-until-done in `DescartadasTab.vue`:
+  confirm → `recoverDiscardedBatch(runId, selectedLive)` (202; 409 → honest es-PE error,
+  batch never marked in-flight) → `setInterval` poll of `getDiscardedRecoverStatus` every
+  2 s with an immediate kick. Each tick: `recovered+failed` delta vs. last-known → emit
+  'refetch' (recovered pages leave INCREMENTALLY via the parent's refreshed prop; failed
+  pages stay — backend keeps them in `discarded_pages`). Settlement EXCLUSIVELY on
+  `status.done === true` (PR#49 SA-5 lesson ×3: STRICT — no timing heuristic; the
+  30 s/page hard cap is ONLY a hung-batch failsafe, mirroring Pendientes). `done=true` →
+  `.descartadas-tab__batch-summary` "N recuperadas / M falló|fallaron" from the REAL
+  backend counts + final 'refetch' + buttons re-enabled. **Carry-over fix**: the payload
+  is `selectedLive` — `selected` ∩ current `discardedPages` (computed used by ALL
+  selection consumers) + a `watch` pruning the raw Set on prop refresh, so a
+  singly-recovered page never reaches the batch payload. Design: A4 + §6 (D6).
 
-- [ ] **3b.2.3** Add mount re-attach logic to `DescartadasTab.vue`:
-  `onMounted`: call `getDiscardedRecoverStatus(runId)` once.
-  If `done=false`: resume polling (same loop as bulk fire), disable all Recuperar buttons.
-  If `done=true` (including terminal `total=0`): do nothing (no polling, buttons enabled).
-  Design: A4 (1 h batch survivability; safe because terminal shape is locked).
+- [x] **3b.2.3** DONE — `onMounted → reattachBatch()`: one `getDiscardedRecoverStatus`
+  call; `done === false` (strict check — tolerates undefined from partial test mocks) →
+  batch state seeded from the backend `{total, recovered, failed}` + polling resumed
+  (no immediate kick — the status was just read) + all Recuperar buttons (bulk AND
+  per-page) disabled; terminal `{total:0, done:true}` → no polling, buttons enabled.
+  `onBeforeUnmount` clears the timer. Design: A4 (1 h batch survivability).
 
-- [ ] **3b.2.4** Run PR-3b vitest suite:
-  ```
-  cd frontend && npm test -- --testPathPattern="DescartadasTab"
-  ```
-  All vitest tests (3a.1.x + 3b.1.x) MUST be GREEN.
+- [x] **3b.2.4** DONE — `npx vitest run DescartadasTab`: **29/29 GREEN**
+  (14 PR-3a unit + 11 PR-3b bulk + 4 ReviewPage.descartadasTab).
 
-- [ ] **3b.2.5** Run full frontend vitest regression:
-  ```
-  cd frontend && npm test
-  ```
-  All tests MUST be GREEN.
+- [x] **3b.2.5** DONE — full `npm test`: **351/351 GREEN** (35 files; 340 prior + 11 new).
+  `npx vue-tsc --noEmit`: 0 errors.
 
-- [ ] **3b.2.6** Commit work-unit:
-  `feat(review): bulk recovery — ETA confirm, batch fire, poll-until-done, mount re-attach, completion summary (PR-3b)`
-  No push (SA-3).
+- [x] **3b.2.6** DONE — committed as
+  `feat(review): bulk recovery — ETA confirm, batch fire, poll-until-done, mount re-attach, completion summary (PR-3b)`.
+  No push (SA-3 — ship is orchestrator-only).
 
 ### Phase 3b.3 — SA-5 runtime validation (PR-3b — MANDATORY)
 

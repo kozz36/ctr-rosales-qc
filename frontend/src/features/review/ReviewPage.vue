@@ -77,6 +77,28 @@
             {{ erroredCount }}
           </span>
         </button>
+        <button
+          id="tab-descartadas"
+          ref="descartadasTabEl"
+          class="review-page__tab"
+          :class="{ 'review-page__tab--active': activeTab === 'descartadas' }"
+          role="tab"
+          type="button"
+          :aria-selected="activeTab === 'descartadas'"
+          :tabindex="activeTab === 'descartadas' ? 0 : -1"
+          aria-controls="tabpanel-descartadas"
+          @click="activeTab = 'descartadas'"
+          @keydown="onTabKeydown($event, 'descartadas')"
+        >
+          Descartadas para revisión
+          <span
+            v-if="discardedCount > 0"
+            class="review-page__tab-badge"
+            :aria-label="`${discardedCount} páginas descartadas para revisión`"
+          >
+            {{ discardedCount }}
+          </span>
+        </button>
       </div>
 
       <!-- Reconciliación tab -->
@@ -121,6 +143,21 @@
           :errored-guias="erroredGuias"
           :run-id="id"
           :rows="rows"
+          @refetch="void tableQuery.refetch()"
+        />
+      </div>
+
+      <!-- Descartadas para revisión tab (SDD#2 / REV-R27): discarded GUIA pages -->
+      <div
+        v-if="activeTab === 'descartadas'"
+        id="tabpanel-descartadas"
+        role="tabpanel"
+        aria-labelledby="tab-descartadas"
+        tabindex="0"
+      >
+        <DescartadasTab
+          :discarded-pages="discardedPages"
+          :run-id="id"
           @refetch="void tableQuery.refetch()"
         />
       </div>
@@ -169,12 +206,13 @@ import { useReconciliationStore } from '@/stores/reconciliation'
 import { useTable, useReassignGuia, useExportRun, queryKeys } from '@/composables/useReconciliationApi'
 import { getRunStatus } from '@/api/client'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import type { ReconciliationRowResponse, ExportFormat, ReassignRequest, UnresolvedGuiaResponse, ErroredGuiaResponse } from '@/api/types'
+import type { ReconciliationRowResponse, ExportFormat, ReassignRequest, UnresolvedGuiaResponse, ErroredGuiaResponse, DiscardedPageResponse } from '@/api/types'
 import ReviewGrid from './ReviewGrid.vue'
 import GuiaReassignDialog from './GuiaReassignDialog.vue'
 import ExportButton from './ExportButton.vue'
 import UnresolvedGuiasPanel from './UnresolvedGuiasPanel.vue'
 import PendientesPorProcesarTab from './PendientesPorProcesarTab.vue'
+import DescartadasTab from './DescartadasTab.vue'
 import PageSheetViewer from './PageSheetViewer.vue'
 
 const props = defineProps<{
@@ -235,21 +273,38 @@ const erroredGuias = computed<ErroredGuiaResponse[]>(
 /** F3 / REV-R23: Pendientes tab badge count — updates as guías recover. */
 const erroredCount = computed<number>(() => erroredGuias.value.length)
 
+/** SDD#2 (REV-R27/REV-R33): discarded GUIA pages — structurally separate list. */
+const discardedPages = computed<DiscardedPageResponse[]>(
+  () => tableQuery.data.value?.discarded_pages ?? [],
+)
+
+/** SDD#2 (REV-R27): Descartadas tab badge count — updates as pages recover. */
+const discardedCount = computed<number>(() => discardedPages.value.length)
+
 // ---------------------------------------------------------------------------
-// Tabs (F3 / REV-R23 / D7) — local activeTab ref, no vue-router.
+// Tabs (F3 / REV-R23 / D7; SDD#2 REV-R27 third tab) — local activeTab ref.
 // ---------------------------------------------------------------------------
 
-type TabKey = 'reconciliacion' | 'pendientes'
+type TabKey = 'reconciliacion' | 'pendientes' | 'descartadas'
 
 const activeTab = ref<TabKey>('reconciliacion')
 
 // WAI-ARIA tabs pattern (W1): roving tabindex + arrow/Home/End keyboard nav.
-const TAB_ORDER: TabKey[] = ['reconciliacion', 'pendientes']
+// REV-R27: indices preserved — Reconciliación=0, Pendientes=1, Descartadas=2.
+const TAB_ORDER: TabKey[] = ['reconciliacion', 'pendientes', 'descartadas']
 const reconTabEl = ref<HTMLElement | null>(null)
 const pendientesTabEl = ref<HTMLElement | null>(null)
+const descartadasTabEl = ref<HTMLElement | null>(null)
 
 function tabElFor(key: TabKey): HTMLElement | null {
-  return key === 'reconciliacion' ? reconTabEl.value : pendientesTabEl.value
+  switch (key) {
+    case 'reconciliacion':
+      return reconTabEl.value
+    case 'pendientes':
+      return pendientesTabEl.value
+    case 'descartadas':
+      return descartadasTabEl.value
+  }
 }
 
 function activateTab(key: TabKey): void {

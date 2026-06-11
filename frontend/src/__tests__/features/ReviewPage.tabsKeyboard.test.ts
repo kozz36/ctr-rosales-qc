@@ -141,12 +141,15 @@ describe('ReviewPage — tabs keyboard navigation (W1 / WAI-ARIA)', () => {
     const wrapper = mountReviewPage()
     const tabs = wrapper.findAll('[role="tab"]')
     const reconTab = tabs.find((t) => t.text().includes('Reconciliación'))!
-    const pendientesTab = tabs.find((t) => t.text().includes('Pendientes'))!
+    const descartadasTab = tabs.find((t) => t.text().includes('Descartadas'))!
 
+    // SDD#2 REV-R27 [MODIFIED: REV-R23]: the LAST tab is now Descartadas
+    // (index 2). End still jumps to the last tab per WAI-ARIA — unchanged
+    // semantics, new last element.
     await reconTab.trigger('keydown', { key: 'End' })
-    expect(pendientesTab.attributes('aria-selected')).toBe('true')
+    expect(descartadasTab.attributes('aria-selected')).toBe('true')
 
-    await pendientesTab.trigger('keydown', { key: 'Home' })
+    await descartadasTab.trigger('keydown', { key: 'Home' })
     expect(reconTab.attributes('aria-selected')).toBe('true')
   })
 })

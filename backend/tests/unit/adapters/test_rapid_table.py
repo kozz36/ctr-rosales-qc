@@ -58,10 +58,12 @@ def _make_material_engine(
     conf: float = 0.92,
     y_base: float = 150.0,
 ) -> object:
-    """Build an engine returning one valid material row (desc, qty, unit).
+    """Build an engine returning one valid material row (desc, unit, qty).
 
-    Polygon centroids are placed so desc=cx100, qty=cx250, unit=cx320 — all
-    on the same row band (same cy).
+    Polygon centroids follow the REAL GRE physical column order
+    DETALLE | UNIDAD | CANTIDAD (PR#4): desc=cx100, unit=cx250, qty=cx380 —
+    all on the same row band (same cy). The UNIT is the MIDDLE column, so the
+    row is column-anchored and emitted CONFIDENT (requires_review=False).
     """
     def _box(cx: float, cy: float) -> list[list[float]]:
         # 4-point polygon that encloses a 10×10 region around (cx, cy).
@@ -72,8 +74,8 @@ def _make_material_engine(
             [cx - 5, cy + 5],
         ]
 
-    boxes = [_box(100, y_base), _box(250, y_base), _box(320, y_base)]
-    txts = [desc, qty, unit]
+    boxes = [_box(100, y_base), _box(250, y_base), _box(380, y_base)]
+    txts = [desc, unit, qty]
     scores = [conf, conf, conf]
     return _make_engine(boxes, txts, scores)
 
@@ -500,9 +502,9 @@ class TestRapidOCRAdapterOrientationOracleConfidence:
 
         Call 1 = default -90°: empty (forces the retry loop over {0,90,180,270}).
         Then within the retry loop we feed, in _RETRY_ANGLES order:
-          - angle 0   -> TWO relaxed (unit-left-of-qty) rows => 2 flagged rows,
+          - angle 0   -> TWO relaxed (unit-RIGHT-of-qty) rows => 2 flagged rows,
                          0 confident.
-          - angle 90  -> ONE clean DESC|QTY|UNIT row => 1 confident row.
+          - angle 90  -> ONE clean DESC|UNIDAD|CANTIDAD row => 1 confident row.
           - angle 180 -> empty.
           - angle 270 -> empty.
 
@@ -512,11 +514,12 @@ class TestRapidOCRAdapterOrientationOracleConfidence:
         """
         from reconciliation.adapters.ocr.rapid_table import RapidOCRAdapter
 
-        # Two relaxed rows: unit is LEFT of qty (cx_unit < cx_qty) -> relaxed
-        # fallback path in parse_box_rows -> requires_review=True, but parseable.
+        # Two relaxed rows: unit is RIGHT of qty (PR#4 — the preferred order is
+        # DETALLE|UNIDAD|CANTIDAD with unit MIDDLE; unit right of qty violates it)
+        # -> relaxed fallback path -> requires_review=True, but parseable.
         flagged_boxes = [
-            _box(100, 150), _box(320, 150), _box(250, 150),   # row 1: desc, qty(right), unit(left of qty)
-            _box(100, 250), _box(320, 250), _box(250, 250),   # row 2: same shape
+            _box(100, 150), _box(250, 150), _box(380, 150),   # row 1: desc, qty(mid), unit(far right)
+            _box(100, 250), _box(250, 250), _box(380, 250),   # row 2: same shape
         ]
         flagged_txts = (
             "BARRA CORRUGADA 3/8", "0.136", "TN",
@@ -524,9 +527,10 @@ class TestRapidOCRAdapterOrientationOracleConfidence:
         )
         flagged_scores = (0.92,) * 6
 
-        # One clean confident row: DESC | QTY | UNIT, cx ascending -> confident.
-        confident_boxes = [_box(100, 150), _box(250, 150), _box(320, 150)]
-        confident_txts = ("BARRA CORRUGADA 3/8", "0.136", "TN")
+        # One clean confident row: DESC | UNIDAD | CANTIDAD (PR#4 real GRE order,
+        # unit between desc and qty) -> column-anchored -> confident.
+        confident_boxes = [_box(100, 150), _box(250, 150), _box(380, 150)]
+        confident_txts = ("BARRA CORRUGADA 3/8", "TN", "0.136")
         confident_scores = (0.92, 0.92, 0.92)
 
         empty = ([], (), ())
@@ -575,7 +579,7 @@ class TestRapidOCRAdapterOrientationOracleConfidence:
         partial under-extraction.  The secondary tie-break (most ``len(rows)``)
         must select the richer flagged read.
 
-        Sequence (all relaxed/flagged — unit LEFT of qty → requires_review=True):
+        Sequence (all relaxed/flagged — unit RIGHT of qty → requires_review=True):
           - call 1 = default -90° : ONE flagged row  (seed).
           - angle 0   : empty.
           - angle 90  : THREE flagged rows  (most raw rows → must win).
@@ -588,13 +592,18 @@ class TestRapidOCRAdapterOrientationOracleConfidence:
         from reconciliation.adapters.ocr.rapid_table import RapidOCRAdapter
 
         def _flagged_rows(n: int, txts_qty: list[tuple[str, str, str]]):
-            """Build n relaxed (unit-left-of-qty → flagged) rows."""
+            """Build n relaxed (unit-RIGHT-of-qty → flagged) rows.
+
+            PR#4: the preferred (confident) column order is DETALLE | UNIDAD |
+            CANTIDAD (unit MIDDLE). Placing the unit to the RIGHT of the qty
+            (desc < qty < unit) violates that order → relaxed path → flagged.
+            """
             boxes: list = []
             txts: list = []
             for i, (desc, qty, unit) in enumerate(txts_qty[:n]):
                 y = 150.0 + i * 100.0
-                # desc(left) | qty(right) | unit(middle, left of qty) → relaxed → flagged
-                boxes += [_box(100, y), _box(320, y), _box(250, y)]
+                # desc(left) | qty(middle) | unit(far right of qty) → relaxed → flagged
+                boxes += [_box(100, y), _box(250, y), _box(380, y)]
                 txts += [desc, qty, unit]
             scores = tuple(0.92 for _ in txts)
             return boxes, tuple(txts), scores

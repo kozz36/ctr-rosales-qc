@@ -22,12 +22,18 @@ importable and testable without rapidocr or onnxruntime installed.
    - cx_qty > cx_desc               (quantity column is to the RIGHT)
 4. For each paired DESC+QTY, find the UNIT cell on the same row band:
    - |cy_desc - cy_unit| <= band_px
-   - cx_unit > cx_qty               (unit column is furthest right) — preferred,
-     yields a CONFIDENT line
+   - cx_desc < cx_unit < cx_qty     (UNIT is the MIDDLE column, the real GRE
+     DETALLE | UNIDAD | CANTIDAD order — PR#4) — preferred, yields a CONFIDENT line
    - Relaxed fallback: any UNIT cell within band regardless of column order →
      positional evidence violated → requires_review=True (never confident).
    - A unit is only claimed by the desc that OWNS it (band-nearest desc), so a
      unit is never stolen across rows packed tighter than the band.
+
+**Table-region exclusion (PR#4)**: before partitioning, the material-table
+y-band is localized from the QTY+UNIT cell distribution (``_infer_table_region``)
+and out-of-table cells (reception-stamp / footer below the table) are dropped by
+POSITION — never by a material keyword (M-6 anti-pattern guard). Detection
+failure (``None``) keeps all cells (never silent-drop a real material row).
 5. Normalise TNE → TN (label only; cantidad is NEVER changed).
 6. Emit MaterialLine(description_raw, description_canonical, unidad, cantidad,
    confidence, requires_review).
@@ -364,6 +370,68 @@ def _band_px(dpi: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Table-region detection (PR#4 — geometric stamp/footer exclusion by POSITION)
+# ---------------------------------------------------------------------------
+
+
+def _infer_table_region(cells: list[Cell], band: int) -> tuple[float, float] | None:
+    """Estimate the y-band of the material table from cell distribution.
+
+    PR#4 / task 4.2.2. The material-table rows are the ONLY place where a
+    decimal-QTY cell and a UNIT cell coexist on the same row band; the
+    reception-stamp / footer zone below the table has stray numbers and stray
+    text but not the regular QTY+UNIT column structure. We therefore localize
+    the table by clustering the y-positions of the "table-signal" cells
+    (decimal-QTY ∪ UNIT) and taking the LARGEST contiguous cluster.
+
+    Real-geometry basis (task 4.0.1 probe, docs/eval/reg227_section.pdf pages
+    148/156/160 @200 DPI): in-table signal cells cluster at cy ~595–680; the
+    page-156 reception-stamp garble (`4.8` + nothing else regular) sits at
+    cy ~980, ~300 px below — far outside the cluster. The cluster gap-threshold
+    is ``4 * band`` (160 px at 200 DPI, DPI-scaled): real table rows are ~24 px
+    apart so even a sparsely-printed table groups, while the >=300 px stamp gap
+    (>4*band) isolates the stamp. The threshold deliberately exceeds the
+    largest plausible inter-row gap and stays well below the table→stamp gap.
+
+    Returns ``(y_top, y_bottom)`` (already padded by ``band`` on each side) when
+    a table cluster of >=2 signal cells is found, else ``None`` (inconclusive —
+    callers MUST fall back to the unfiltered behaviour, never silent-drop).
+
+    **POSITION-ONLY** — no material keyword is consulted (M-6 guard). This is a
+    purely geometric estimate; the reconciliation gate remains the validator.
+    """
+    signal_cy = sorted(
+        c.cy
+        for c in cells
+        if _is_qty_decimal(c.text.strip()) or _is_unit(c.text.strip())
+    )
+    if len(signal_cy) < 2:
+        # Not enough structure to localize a table → inconclusive.
+        return None
+
+    # Single-link clustering on the sorted y-positions: break a new cluster
+    # whenever the gap to the previous signal cell exceeds 4*band.
+    gap_threshold = 4 * band
+    clusters: list[list[float]] = [[signal_cy[0]]]
+    for y in signal_cy[1:]:
+        if y - clusters[-1][-1] <= gap_threshold:
+            clusters[-1].append(y)
+        else:
+            clusters.append([y])
+
+    # The material table is the LARGEST cluster (most QTY+UNIT signal cells).
+    # Tie-break: the topmost cluster (smallest min cy) — the table is above the
+    # stamp/footer zone on every real page.
+    largest = max(clusters, key=lambda cl: (len(cl), -cl[0]))
+    if len(largest) < 2:
+        return None
+
+    y_top = largest[0] - band
+    y_bottom = largest[-1] + band
+    return (y_top, y_bottom)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -388,6 +456,19 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
         return []
 
     band = _band_px(dpi)
+
+    # PR#4 (task 4.2.2) — table-region exclusion by POSITION. Localize the
+    # material-table y-band from the QTY+UNIT cell distribution and drop any
+    # cell whose cy falls outside it (the reception-stamp / footer zone below
+    # the table). This is purely geometric — NO material keyword (M-6 guard).
+    # If detection is inconclusive (`None`), keep ALL cells (never silent-drop a
+    # real material row just because the table could not be localized).
+    region = _infer_table_region(cells, band)
+    if region is not None:
+        y_top, y_bottom = region
+        cells = [c for c in cells if y_top <= c.cy <= y_bottom]
+        if not cells:
+            return []
 
     # Partition cells by role.
     #   - decimal qty cells: unconditional quantities (2.5, 0.008, 5800.00).
@@ -514,9 +595,14 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
         desc = desc_cells[desc_idx]
         qty = qty_cells[idx]
 
-        # Resolve unit. Preferred column order is DESC | QTY | UNIT, so the
-        # unit cell should be in the same row band AND right of the qty column.
-        # A unit found there is positional evidence → confident.
+        # Resolve unit. PR#4 (task 4.2.1) — the REAL GRE physical column order is
+        # DETALLE | UNIDAD | CANTIDAD (measured on docs/eval/reg227_section.pdf
+        # pages 148/156/160: desc.cx ~350-780 < unit.cx ~1140 < qty.cx ~1295).
+        # The UNIT is the MIDDLE column, BETWEEN the desc and the qty — NOT to the
+        # right of the qty (the prior, inverted assumption). A unit found in that
+        # middle position is positional evidence → CONFIDENT. The threshold bounds
+        # are the desc/qty centroids of the very row being emitted (real per-row
+        # geometry), not hardcoded page constants.
         #
         # Cross-row-theft guard: a unit cell is only eligible for THIS desc if
         # this desc is the band-nearest desc to that unit. Otherwise the unit
@@ -533,16 +619,17 @@ def parse_box_rows(cells: list[Cell], dpi: int) -> list[MaterialLine]:
         unit_cell: Cell | None = None
         unit_cell_idx: int | None = None
         relaxed = False
-        unit_candidates_right = [
+        unit_candidates_middle = [
             (i, u) for i, u in enumerate(unit_cells)
             if abs(u.cy - desc.cy) <= band
-            and u.cx > qty.cx
+            and desc.cx < u.cx < qty.cx  # UNIT between DETALLE and CANTIDAD
             and i not in used_unit
             and _owns(u)
         ]
-        if unit_candidates_right:
+        if unit_candidates_middle:
             unit_cell_idx, unit_cell = min(
-                unit_candidates_right, key=lambda iu: (abs(iu[1].cy - desc.cy), iu[1].cx - qty.cx)
+                unit_candidates_middle,
+                key=lambda iu: (abs(iu[1].cy - desc.cy), qty.cx - iu[1].cx),
             )
         else:
             # Relaxed fallback: any UNIT cell within the band that this desc

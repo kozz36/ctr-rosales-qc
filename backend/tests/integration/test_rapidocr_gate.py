@@ -70,10 +70,21 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 # Allow override via CTR_PDF_PATH; fall back to the section PDF if it exists.
-_SECTION_PDF = Path(__file__).parents[3] / "docs" / "eval" / "reg227_section.pdf"
-_CTR_PDF_PATH: str | None = os.environ.get("CTR_PDF_PATH") or (
-    str(_SECTION_PDF) if _SECTION_PDF.exists() else None
-)
+# The repo root is 3 levels up from this file (backend/tests/integration/).
+_REPO_ROOT = Path(__file__).parents[3]
+_SECTION_PDF = _REPO_ROOT / "docs" / "eval" / "reg227_section.pdf"
+
+# Task 2 — path robustness: resolve a relative CTR_PDF_PATH against the repo
+# root so `cd backend && CTR_PDF_PATH=docs/eval/reg227_section.pdf uv run pytest`
+# works regardless of pytest cwd.  An absolute path is used unchanged.
+_env_path = os.environ.get("CTR_PDF_PATH")
+if _env_path:
+    _env_resolved = Path(_env_path)
+    if not _env_resolved.is_absolute():
+        _env_resolved = _REPO_ROOT / _env_resolved
+    _CTR_PDF_PATH: str | None = str(_env_resolved)
+else:
+    _CTR_PDF_PATH = str(_SECTION_PDF) if _SECTION_PDF.exists() else None
 
 pytestmark = pytest.mark.slow
 
@@ -123,6 +134,26 @@ _GT_0160 = [
     Decimal("1.643"),
     Decimal("0.121"),
 ]
+
+# F1 regression-lock — 1-line guías (the silent-drop trigger pages).
+#
+# These pages each contain exactly ONE material row in a small GRE table.
+# Under the pre-F1 popularity-contest bug (commit 9b83149 / _infer_table_region
+# picking the LARGEST cluster) a noisy reception stamp with many QTY+UNIT signal
+# cells out-voted the 2-cell material table, so the material row was SILENTLY
+# DROPPED (returned 0 rows).  The JD-confirmed F1 fix (commit 1df09a3) replaced
+# LARGEST-cluster with TOPMOST-structural-cluster selection, so the real table
+# (which always sits above the stamp/footer) wins regardless of cluster size.
+#
+# These assertions ARE a characterization / regression-lock test: they pass on
+# HEAD (F1 fix present) and WOULD FAIL on the pre-F1 code where the stamp
+# out-votes the 2-cell table and 0 rows are returned.  Do NOT fake a RED by
+# weakening the parser — if these pages do not parse to their GT under the
+# current code that means F1 is not actually closed (partial → stop + report).
+#
+# GT source: docs/eval/ground_truth.md (authoritative, 300 DPI zoom-confirmed).
+_GT_0141 = [Decimal("2.489")]  # T073-0678223 — 1 line, 8MM X 9M G60 2.489 TNE
+_GT_0164 = [Decimal("0.213")]  # T009-0739444 — 1 line, 3/8" G60 0.213 TNE
 
 
 # ---------------------------------------------------------------------------
@@ -537,4 +568,108 @@ class TestOrientationWiderSample:
             f"Wider-sample orientation hit rate too low: "
             f"{pages_with_rows}/{total_probed} ({hit_rate:.0%}) pages returned ≥1 row. "
             f"Row counts by page: {dict(sorted(row_counts.items()))}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# F1 regression-lock — page 0141 (1-line guía T073-0678223)
+# ---------------------------------------------------------------------------
+
+
+class TestRapidOCRGatePage0141:
+    """F1 regression-lock: page 0141, guía T073-0678223 — 1-row small table.
+
+    This is one of the two F1 trigger pages.  The pre-F1 popularity-contest bug
+    (commit 9b83149 — _infer_table_region picking the LARGEST signal-cell cluster)
+    silently dropped this row: the noisy reception stamp out-voted the 2-cell
+    material table in cluster size, so extract_printed_table returned 0 rows.
+
+    The JD-confirmed F1 fix (commit 1df09a3) selects the TOPMOST structural
+    cluster (the real table sits above the stamp/footer on every real page), so
+    the single material row now survives.
+
+    This test PASSES on HEAD (F1 fix present) and WOULD FAIL on pre-F1 code.
+    Do NOT weaken the parser to manufacture a RED — if this page does not parse
+    to GT it means F1 is NOT closed, which is a finding (stop + report partial).
+
+    GT: docs/eval/ground_truth.md — T073-0678223 — 1 line, 8MM X 9M G60 2.489 TNE.
+    """
+
+    @pytest.mark.slow
+    def test_page_0141_f1_regression_lock_single_row_survives(self) -> None:
+        """Regression-lock: the F1 fix (topmost-structural-cluster) must not regress.
+
+        Asserts:
+        1. Completeness: the single confident GT row (2.489 TN) is emitted.
+        2. No confident spurious: no extra TRUSTED (requires_review=False) rows
+           are emitted for this page.  A stamp/footer row is tolerated only if
+           it is flagged requires_review=True.
+        3. The F1 class is closed on the REAL trigger page: exactly the single
+           1-line material row survives; no silent-drop.
+        """
+        if not _CTR_PDF_PATH:
+            pytest.skip(_SKIP_REASON)
+
+        lines = _extract_lines(_CTR_PDF_PATH, 141)
+
+        # Guard: if 0 rows returned, F1 may not be closed — report, do not paper over.
+        assert len(lines) >= 1, (
+            "page 0141 returned 0 rows — F1 silent-drop regression detected "
+            "(the single 1-line material row was dropped; check _infer_table_region "
+            "topmost-structural-cluster selection)."
+        )
+
+        # Completeness + trust contract via the shared gate helper.
+        _assert_gt_complete_no_confident_spurious(
+            lines, _GT_0141, "page 0141 (F1 regression-lock)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# F1 regression-lock — page 0164 (1-line guía T009-0739444)
+# ---------------------------------------------------------------------------
+
+
+class TestRapidOCRGatePage0164:
+    """F1 regression-lock: page 0164, guía T009-0739444 — 1-row small table.
+
+    This is the second F1 trigger page.  Same pre-F1 failure mode as page 0141:
+    the stamp/footer signal cluster was LARGER than the 2-cell material table,
+    so the material row was silently dropped (0 rows returned).
+
+    The JD-confirmed F1 fix (commit 1df09a3) ensures the topmost structural
+    cluster (the real table) is always chosen over a larger lower cluster.
+
+    This test PASSES on HEAD (F1 fix present) and WOULD FAIL on pre-F1 code.
+    Do NOT weaken the parser to manufacture a RED — stop + report if this page
+    does not parse to GT under the current code.
+
+    GT: docs/eval/ground_truth.md — T009-0739444 — 1 line, 3/8" G60 0.213 TNE.
+    """
+
+    @pytest.mark.slow
+    def test_page_0164_f1_regression_lock_single_row_survives(self) -> None:
+        """Regression-lock: the F1 fix (topmost-structural-cluster) must not regress.
+
+        Asserts:
+        1. Completeness: the single confident GT row (0.213 TN) is emitted.
+        2. No confident spurious: no extra TRUSTED rows for this page.
+        3. The F1 class is closed on the REAL trigger page: the single material
+           row survives, no silent-drop.
+        """
+        if not _CTR_PDF_PATH:
+            pytest.skip(_SKIP_REASON)
+
+        lines = _extract_lines(_CTR_PDF_PATH, 164)
+
+        # Guard: if 0 rows returned, F1 may not be closed.
+        assert len(lines) >= 1, (
+            "page 0164 returned 0 rows — F1 silent-drop regression detected "
+            "(the single 1-line material row was dropped; check _infer_table_region "
+            "topmost-structural-cluster selection)."
+        )
+
+        # Completeness + trust contract via the shared gate helper.
+        _assert_gt_complete_no_confident_spurious(
+            lines, _GT_0164, "page 0164 (F1 regression-lock)"
         )

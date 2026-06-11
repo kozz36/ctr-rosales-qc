@@ -29,6 +29,8 @@ from reconciliation.domain.models import ReconciliationRow
 from reconciliation.infrastructure.api.schemas import (
     AuditEventResponse,
     AuditTrailResponse,
+    DiscardedBatchResponse,
+    DiscardedBatchStatusResponse,
     DiscardedPageResponse,
     ErroredGuiaResponse,
     ErrorResponse,  # noqa: F401 — imported for openapi docs
@@ -38,6 +40,7 @@ from reconciliation.infrastructure.api.schemas import (
     ProgressResponse,
     ReassignRequest,
     ReassignResponse,
+    RecoverPageResponse,
     ReconciliationRowResponse,
     ReconciliationTableResponse,
     ReprocessBatchResponse,
@@ -1304,3 +1307,207 @@ def get_audit_trail(run_id: str, registry: RunRegistry) -> AuditTrailResponse:
         for e in raw_events
     ]
     return AuditTrailResponse(run_id=run_id, events=events)
+
+
+# ---------------------------------------------------------------------------
+# PR-2 — Discarded-page recovery endpoints (EXT-036/037, REV-R31)
+# ---------------------------------------------------------------------------
+
+
+async def _run_discarded_recovery_batch(
+    reprocess_service: Any,
+    pages: list[int],
+    status: dict[str, Any],
+    *,
+    run_id: str,
+) -> None:
+    """Run per-page apply_page_recovery calls concurrently.
+
+    Race-free by construction (mirrors _run_reprocess_batch): asyncio is single-threaded;
+    counter updates are synchronous (no await between read and write).
+    ``done`` flips True only after ``gather`` resolves ALL pages — never settle prematurely
+    (SA-5 / PR-#49 lesson ×3: STRICT, STRICT, STRICT).
+    """
+    status["total"] = len(pages)
+    status["recovered"] = 0
+    status["failed"] = 0
+    status["done"] = False
+
+    async def _one(page: int) -> None:
+        try:
+            result = await reprocess_service.apply_page_recovery(page=page)
+            recovered = bool(getattr(result, "recovered", False))
+        except Exception as exc:  # noqa: BLE001 — per-page isolation
+            logger.warning(
+                "_run_discarded_recovery_batch: apply_page_recovery raised for page=%d "
+                "in run %r: %s",
+                page,
+                run_id,
+                exc,
+            )
+            recovered = False
+        # SYNCHRONOUS counter update — no await between read and write → race-free.
+        if recovered:
+            status["recovered"] = status["recovered"] + 1
+        else:
+            status["failed"] = status["failed"] + 1
+
+    await asyncio.gather(*[_one(p) for p in pages])
+    status["done"] = True
+
+
+@router.post(
+    "/runs/{run_id}/discarded-pages/{page}/recover",
+    response_model=RecoverPageResponse,
+    summary="Recover a single discarded GUIA page via OCR-first chain (PR-2 / REV-R31).",
+)
+async def recover_discarded_page(
+    run_id: str,
+    page: int,
+    registry: RunRegistry,
+) -> RecoverPageResponse:
+    """Recover a single discarded page via Tier-1 cached → Tier-2 OCR → Tier-3 vision.
+
+    Spec: REV-R31. Design §3.
+
+    Returns 200 RecoverPageResponse with recovered=True on success.
+    Returns 200 RecoverPageResponse with recovered=False + reason on failure
+      (reason: "empty" | "not_found").
+
+    Errors:
+        404 — run_id unknown or page not in discarded list.
+        409 — run not in review state.
+    """
+    entry = _require_run(registry, run_id)
+    review_service = _require_review_service(entry, run_id)
+    reprocess_service = _require_reprocess_service(entry, run_id)
+
+    # Verify the page exists in the discarded list BEFORE calling apply_page_recovery.
+    discarded_pages = getattr(review_service, "discarded_pages", [])
+    if not any(dp.page == page for dp in discarded_pages):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Page {page} not found in discarded list for run '{run_id}'.",
+        )
+
+    result = await reprocess_service.apply_page_recovery(page=page)
+
+    updated_rows = [_row_to_response(r) for r in result.rows] if result.rows else []
+    remaining_discarded = [
+        DiscardedPageResponse(
+            page=d.page,
+            registro=d.registro,
+            has_cached_lines=bool(d.lines),
+        )
+        for d in review_service.discarded_pages
+    ]
+
+    return RecoverPageResponse(
+        recovered=result.recovered,
+        page=result.page,
+        guia_id=result.guia_id,
+        reason=result.reason,
+        rows=updated_rows,
+        discarded_pages=remaining_discarded,
+    )
+
+
+@router.post(
+    "/runs/{run_id}/discarded-pages/recover-batch",
+    response_model=DiscardedBatchResponse,
+    status_code=202,
+    summary="Bulk OCR-first recovery of operator-selected discarded pages (PR-2 / REV-R30).",
+)
+async def recover_discarded_batch(
+    run_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    registry: RunRegistry,
+) -> DiscardedBatchResponse:
+    """Start a background batch recovery for operator-selected discarded pages.
+
+    Body: { "pages": [int, ...] }  — operator-selected subset (not all 343 pages blindly).
+
+    One active batch per run (409 if a batch is already in-flight).  Mirrors the
+    _run_reprocess_batch / reprocess_registro convention (routes.py:1123-1243).
+
+    Returns 202 immediately; client polls GET .../recover-status until done=True.
+
+    Spec: REV-R30. Design §3 (SA-5 settle-only-on-done contract).
+
+    Errors:
+        404 — run_id unknown.
+        409 — run not in review state, OR batch already in-flight.
+    """
+    entry = _require_run(registry, run_id)
+    _require_review_service(entry, run_id)
+    reprocess_service = _require_reprocess_service(entry, run_id)
+
+    body = await request.json()
+    pages: list[int] = [int(p) for p in body.get("pages", [])]
+
+    if not pages:
+        raise HTTPException(status_code=400, detail="'pages' must be a non-empty list.")
+
+    # One active batch per run (409 on concurrent).
+    batches: dict[str, Any] = entry.setdefault("discarded_batches", {})
+    existing_status = batches.get("discarded")
+    if existing_status is not None and not existing_status.get("done", True):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A discarded-page recovery batch is already in-flight for run '{run_id}'. "
+                "Wait for it to finish (poll recover-status until done=True) before starting another."
+            ),
+        )
+
+    status: dict[str, Any] = {
+        "total": len(pages),
+        "recovered": 0,
+        "failed": 0,
+        "done": False,
+    }
+    batches["discarded"] = status
+
+    async def _batch() -> None:
+        await _run_discarded_recovery_batch(
+            reprocess_service, pages, status, run_id=run_id
+        )
+
+    background_tasks.add_task(_batch)
+
+    return DiscardedBatchResponse(run_id=run_id, count=len(pages))
+
+
+@router.get(
+    "/runs/{run_id}/discarded-pages/recover-status",
+    response_model=DiscardedBatchStatusResponse,
+    summary="Live status of a bulk discarded-page recovery batch (SA-5 completion signal).",
+)
+def get_discarded_recover_status(
+    run_id: str,
+    registry: RunRegistry,
+) -> DiscardedBatchStatusResponse:
+    """Return the live {total, recovered, failed, done} record for the discarded-page batch.
+
+    SA-5 contract: the frontend polls this until done=True.
+    Terminal shape {total=0, done=True} when no batch has been fired — client NEVER hangs.
+    This terminal shape is LOCKED by test 2.1.15 (PR-3b re-attach on mount depends on it).
+
+    Spec: REV-R30 (progress lifecycle). Design §3.
+
+    Errors:
+        404 — run_id unknown.
+    """
+    entry = _require_run(registry, run_id)
+    batches: dict[str, Any] = entry.get("discarded_batches") or {}
+    status = batches.get("discarded")
+    if status is None:
+        # Terminal shape — no batch fired.
+        return DiscardedBatchStatusResponse(total=0, recovered=0, failed=0, done=True)
+    return DiscardedBatchStatusResponse(
+        total=int(status.get("total", 0)),
+        recovered=int(status.get("recovered", 0)),
+        failed=int(status.get("failed", 0)),
+        done=bool(status.get("done", False)),
+    )

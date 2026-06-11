@@ -325,6 +325,42 @@ def _derive_numero(
 
 
 # ---------------------------------------------------------------------------
+# Shared OCR-selection helper (used by build_pipeline + build_reprocess_service)
+# ---------------------------------------------------------------------------
+
+
+def _build_ocr_extractor_for_config(config: AppConfig) -> ExtractionPort:
+    """Return an OCR ExtractionPort for the given config, using the same branch
+    logic as build_pipeline so the two callers can never drift.
+
+    - ocr.enabled=False                       → NullOcrExtractor (zero OCR calls)
+    - ocr.enabled=True, engine != "paddle"    → factory.build_ocr_extractor(config.ocr)
+    - ocr.enabled=True, engine == "paddle"    → CompositeExtractionAdapter (paddle path)
+
+    The returned object satisfies ExtractionPort.extract_printed_table.  The
+    _declared_adapter wrapper is NOT included — callers that only need OCR don't
+    need the declared side.  For build_pipeline, the CompositeExtractionAdapter is
+    still built in full (declared + ocr) as before.
+
+    NOTE: this helper returns only the OCR-slot adapter (extract_printed_table).
+    build_pipeline continues to build CompositeExtractionAdapter directly so its
+    _declared_adapter slot is also available for page_to_registro mapping.
+    """
+    if not config.ocr.enabled:
+        from reconciliation.adapters.ocr.null_extractor import NullOcrExtractor  # noqa: PLC0415
+
+        return NullOcrExtractor()
+
+    if getattr(config.ocr, "engine", "paddle") != "paddle":
+        from reconciliation.adapters.ocr.factory import build_ocr_extractor  # noqa: PLC0415
+
+        return build_ocr_extractor(config.ocr)
+
+    # Paddle path — return the full CompositeExtractionAdapter (satisfies ExtractionPort)
+    return CompositeExtractionAdapter()
+
+
+# ---------------------------------------------------------------------------
 # Pipeline factory
 # ---------------------------------------------------------------------------
 
@@ -725,6 +761,10 @@ def build_reprocess_service(
     inference_adapter = build_inference_adapter(config)
     key_resolver = MaterialKeyResolver(MaterialKeyNormalizer(), inference_adapter)
 
+    # PR-2: wire OCR ExtractionPort via shared helper (same branch as build_pipeline).
+    # Tier-2 recovery re-runs OCR on a discarded page; NullOcrExtractor when disabled.
+    ocr_extractor = _build_ocr_extractor_for_config(config)
+
     return ReprocessService(
         doc_source=doc_source,
         identity=identity,
@@ -734,6 +774,7 @@ def build_reprocess_service(
         vision=vision_adapter,
         max_concurrency=config.vision.reprocess_max_concurrency,
         downscale_max_edge=config.vision.reprocess_downscale_max_edge,
+        extractor=ocr_extractor,
     )
 
 

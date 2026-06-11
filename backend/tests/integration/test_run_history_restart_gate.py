@@ -24,6 +24,7 @@ import json
 import shutil
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -33,6 +34,209 @@ _REAL_RUNS_DIR = Path(__file__).parent.parent.parent / "runs"
 
 def _fresh_run_id() -> str:
     return str(uuid.uuid4())
+
+
+def _write_complete_run(
+    output_dir: Path,
+    run_id: str,
+    *,
+    new_registro: str = "205",
+) -> tuple[Path, str, str]:
+    """Write a COMPLETE run dir to disk (manifest + cache + sidecar edit + pdf).
+
+    Builds real domain objects (Registro + GuiaDeRemision + MaterialLine) and a
+    real review sidecar carrying ONE field_edit (registro 200 -> new_registro).
+    The edit only becomes visible after the REAL cold-load hydration path
+    rebuilds the ReviewService from the on-disk cache + sidecar (C1 keystone).
+
+    Returns (run_dir, guia_id, original_registro).
+    """
+    from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
+    from reconciliation.domain.models import (  # noqa: PLC0415
+        GuiaDeRemision,
+        MaterialLine,
+        Registro,
+    )
+    from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+        JsonManifestRunHistoryAdapter,
+    )
+
+    run_dir = output_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    guia_id = "T001-1"
+    original_registro = "200"
+
+    ml = MaterialLine(
+        description_raw="FIERRO 1/2",
+        description_canonical="FIERRO 1/2",
+        unidad="KG",
+        cantidad="10",
+        source_page=5,
+    )
+    guia = GuiaDeRemision(
+        guia_id=guia_id,
+        registro=original_registro,
+        fecha=None,
+        lines=[ml],
+        source_pages=[5],
+    )
+    registro = Registro(
+        numero=original_registro,
+        fecha_declarada=None,
+        declared_lines=[ml],
+    )
+    cache = {
+        "declared": [registro.model_dump(mode="json")],
+        "guias": [guia.model_dump(mode="json")],
+        "rows": [],
+        "errored_guias": [],
+        "discarded_pages": [],
+    }
+    (run_dir / "extraction_cache.json").write_text(
+        json.dumps(cache), encoding="utf-8"
+    )
+
+    # Sidecar edit — ONLY visible if the real hydration path replays it.
+    sidecar = {
+        "edits": [
+            {
+                "kind": "field_edit",
+                "target": {"guia_id": guia_id},
+                "field": "registro",
+                "new_value": new_registro,
+            }
+        ]
+    }
+    (run_dir / "review.json").write_text(json.dumps(sidecar), encoding="utf-8")
+
+    # The PDF the run was built from (used for thumbnail fallback render path).
+    # Render a real 1-page PDF via fitz so the thumbnail fallback can open it.
+    pdf_path = run_dir / f"{run_id}.pdf"
+    try:
+        import fitz  # noqa: PLC0415
+
+        doc = fitz.open()
+        doc.new_page()
+        doc.save(str(pdf_path))
+        doc.close()
+    except Exception:  # noqa: BLE001 — fitz unavailable: fall back to a stub.
+        pdf_path.write_bytes(b"%PDF-1.4")
+
+    # Real manifest so the lifespan scan derives a non-degraded review entry.
+    adapter = JsonManifestRunHistoryAdapter()
+    manifest = RunManifest(
+        schema_version=1,
+        run_id=run_id,
+        status="review",
+        started_at="2026-06-11T10:00:00+00:00",
+        completed_at="2026-06-11T10:05:00+00:00",
+        seq=1,
+        registro_min="200",
+        registro_max="200",
+        row_count=2,
+        match_count=0,
+        mismatch_count=0,
+        warnings=[],
+        vision_calls_made=0,
+    )
+    adapter.write_manifest(manifest, output_dir)
+
+    return run_dir, guia_id, original_registro
+
+
+def _cold_load_client(
+    monkeypatch: Any, output_dir: Path
+) -> Any:
+    """Build a TestClient whose REAL lifespan scans *output_dir* (no manual ctx).
+
+    Points the lifespan config at *output_dir* via env override and a
+    non-existent config path (forces env + coded defaults; vision enabled).
+    Returns a TestClient (caller drives it as a context manager so the real
+    lifespan scan + hydration runs).
+    """
+    from fastapi.testclient import TestClient  # noqa: PLC0415
+
+    from reconciliation.infrastructure.api.main import create_app  # noqa: PLC0415
+
+    monkeypatch.setenv("RECONCILIATION_CONFIG", str(output_dir / "_no_such_config.yaml"))
+    monkeypatch.setenv("RECONCILIATION__OUTPUT_DIR", str(output_dir))
+
+    app = create_app()
+    return TestClient(app, raise_server_exceptions=True)
+
+
+# ---------------------------------------------------------------------------
+# C1 KEYSTONE — cold-load hydration through the REAL lifespan + endpoints
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.real_runs_dir
+class TestColdLoadEndpointHydration:
+    """A scanned (cold) run with NO ctx must hydrate on first endpoint access.
+
+    Drives the REAL path end-to-end: a complete run on disk → real create_app()
+    lifespan scan (entry has ctx=None / no ctx key) → GET /table with NO manual
+    ctx injection → 200 with the sidecar edit visible (registro 200 -> 205).
+    Plus export + thumbnail smoke on the same cold entry (C1 blast radius).
+    """
+
+    def test_cold_table_hydrates_and_shows_sidecar_edit(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """GET /table on a cold-scanned run → 200; sidecar edit visible via audit.
+
+        FAILS before C1 fix: scan entries never carry ctx, so _ensure_hydrated
+        reads entry.get('ctx') is None and raises 409 — the cold-load path is dead.
+        """
+        output_dir = tmp_path / "runs"
+        output_dir.mkdir()
+        run_id = _fresh_run_id()
+        _write_complete_run(output_dir, run_id, new_registro="205")
+
+        client = _cold_load_client(monkeypatch, output_dir)
+        with client:
+            # Sanity: the lifespan scan populated the registry from disk (cold).
+            registry = client.app.state.run_registry  # type: ignore[attr-defined]
+            assert run_id in registry, "lifespan scan must seed the cold entry"
+            assert registry[run_id].get("ctx") is None, (
+                "scan entries must NOT carry a ctx (cold-load precondition)"
+            )
+
+            # (0) Thumbnail FIRST on the truly-cold entry — page-viewer must
+            # build ctx itself, not 409 on entry.get('ctx') is None.
+            r_thumb = client.get(f"/api/v1/runs/{run_id}/pages/0/thumbnail")
+            assert r_thumb.status_code in (200, 404), (
+                "thumbnail on a cold run must NOT 409 on ctx; "
+                f"got {r_thumb.status_code}: {r_thumb.text}"
+            )
+
+            # (1) GET /table — REAL hydration, NO manual ctx injection.
+            r_table = client.get(f"/api/v1/runs/{run_id}/table")
+            assert r_table.status_code == 200, (
+                f"cold GET /table must 200 via lazy hydration; "
+                f"got {r_table.status_code}: {r_table.text}"
+            )
+
+            # (2) Sidecar edit must be visible — proves hydration replayed it.
+            r_audit = client.get(f"/api/v1/runs/{run_id}/audit")
+            assert r_audit.status_code == 200, f"audit: {r_audit.text}"
+            events = r_audit.json()["events"]
+            assert any(
+                e["kind"] == "field_edit"
+                and e.get("new_value") == "205"
+                and e["target"].get("guia_id") == "T001-1"
+                for e in events
+            ), f"sidecar field_edit must be visible after cold hydration; got {events}"
+
+            # (3) Export smoke on the cold entry (routes.py export uses entry['ctx']).
+            r_export = client.post(
+                f"/api/v1/runs/{run_id}/export", json={"fmt": "csv"}
+            )
+            assert r_export.status_code == 200, (
+                f"export on cold entry must 200 (ctx hydrated); "
+                f"got {r_export.status_code}: {r_export.text}"
+            )
 
 
 # ---------------------------------------------------------------------------

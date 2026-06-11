@@ -187,6 +187,46 @@ def _require_review_service(entry: Any, run_id: str) -> Any:
     return review_service
 
 
+# Module-level lock serialising the check-build-cache of _ensure_hydrated (M-2).
+# Sync endpoints run in Starlette's threadpool, so concurrent first-access
+# requests for the same cold entry could double-build the services. A thread
+# lock (not asyncio) is correct here. Local single-user → contention is trivial.
+_HYDRATION_LOCK = __import__("threading").Lock()
+
+# Module-level lock guarding the retry check-and-set (M-1 double-fire TOCTOU).
+# Two concurrent POST /retry both pass the status==error check then both flip
+# to pending and both add a background task. Mirrors the batch check-and-set
+# discipline. Sync endpoint → threadpool → thread lock is correct.
+_RETRY_LOCK = __import__("threading").Lock()
+
+
+def _build_cold_ctx(entry: dict[str, Any], run_id: str, config: Any) -> Any:
+    """Construct a RunContext attached to an EXISTING cold-scanned run dir.
+
+    C1 / D4: scan entries carry no ctx (only manifest fields). The run dir at
+    ``config.output_dir / run_id`` already exists on disk; RunContext attaches
+    to it (mkdir exist_ok=True — never a NEW dir). The PDF reference points at
+    the stored ``{run_id}.pdf`` convention (or entry['pdf_path'] if present).
+
+    Returns the RunContext, or None when the run directory does not exist
+    (genuinely-deleted dir → caller raises the truthful 409).
+    """
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    from reconciliation.application.run_context import RunContext  # noqa: PLC0415
+
+    output_base: _Path = config.output_dir
+    run_dir = output_base / run_id
+    if not run_dir.is_dir():
+        return None
+
+    pdf_path_str: str | None = entry.get("pdf_path")
+    pdf_path = _Path(pdf_path_str) if pdf_path_str else run_dir / f"{run_id}.pdf"
+
+    # run_id + output_base → run_dir is the existing dir (exist_ok=True attach).
+    return RunContext(pdf_path=pdf_path, output_base=output_base, run_id=run_id)
+
+
 def _ensure_hydrated(entry: dict[str, Any], run_id: str, config: Any) -> None:
     """Lazily build ReviewService + ReprocessService for a cold-started run entry.
 
@@ -216,39 +256,80 @@ def _ensure_hydrated(entry: dict[str, Any], run_id: str, config: Any) -> None:
         # Error or pending entries are never hydrated here — callers handle those.
         return
 
-    ctx = entry.get("ctx")
-    if ctx is None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Run '{run_id}' cannot be hydrated: no RunContext found. "
-                "The run directory may have been deleted or is corrupted."
-            ),
+    # M-2: serialise the check-build-cache so two concurrent first-access threads
+    # (sync endpoints run in the threadpool) cannot double-build the services.
+    with _HYDRATION_LOCK:
+        # Re-check under the lock: a racing thread may have hydrated already.
+        if entry.get("hydrated") is not False:
+            return
+
+        ctx = entry.get("ctx")
+        if ctx is None:
+            # C1: scanned (cold) entries NEVER carry a ctx — _derive_entry only
+            # reads the manifest. D4 mandates lazy hydration CONSTRUCTS the
+            # RunContext on first access. Attach to the EXISTING run dir (run_id +
+            # output_base); RunContext.__init__ uses mkdir(exist_ok=True) so this
+            # never creates a new tree. A genuinely-missing extraction cache later
+            # surfaces as a 500 via build_review_service; only a missing dir is a
+            # true 409.
+            ctx = _build_cold_ctx(entry, run_id, config)
+            if ctx is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Run '{run_id}' cannot be hydrated: run directory not found. "
+                        "The run directory may have been deleted."
+                    ),
+                )
+            entry["ctx"] = ctx
+
+        from reconciliation.infrastructure.container import (  # noqa: PLC0415
+            build_review_service,
+            build_reprocess_service,
         )
 
-    from reconciliation.infrastructure.container import (  # noqa: PLC0415
-        build_review_service,
-        build_reprocess_service,
-    )
+        try:
+            review_service = build_review_service(ctx)
+        except Exception as exc:  # noqa: BLE001
+            # Honest 500; entry untouched (hydrated stays False) → retryable.
+            raise HTTPException(
+                status_code=500,
+                detail=f"Run '{run_id}' cold-load hydration failed: {exc}",
+            ) from exc
 
-    try:
-        review_service = build_review_service(ctx)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=500,
-            detail=f"Run '{run_id}' cold-load hydration failed: {exc}",
-        ) from exc
+        try:
+            reprocess_service = build_reprocess_service(
+                config=config,
+                ctx=ctx,
+                review_service=review_service,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # M-2: mirror build_review_service — honest 500, entry untouched
+            # (hydrated stays False, review_service NOT cached) → retryable.
+            raise HTTPException(
+                status_code=500,
+                detail=f"Run '{run_id}' cold-load reprocess-service build failed: {exc}",
+            ) from exc
 
-    reprocess_service = build_reprocess_service(
-        config=config,
-        ctx=ctx,
-        review_service=review_service,
-    )
+        entry["review_service"] = review_service
+        entry["reprocess_service"] = reprocess_service
+        entry["hydrated"] = True
+        logger.info("run_history: lazily hydrated run %s from disk cache", run_id)
 
-    entry["review_service"] = review_service
-    entry["reprocess_service"] = reprocess_service
-    entry["hydrated"] = True
-    logger.info("run_history: lazily hydrated run %s from disk cache", run_id)
+
+def _get_hydrated_ctx(entry: dict[str, Any], run_id: str, config: Any) -> Any:
+    """Ensure a RunContext exists for an entry then return it (C1 blast radius).
+
+    Page-viewer endpoints (thumbnail/image) need only the RunContext, not the
+    ReviewService. For a cold-scanned 'review' entry (hydrated=False, ctx absent)
+    this triggers full hydration so the ctx is constructed and cached. For
+    fresh in-process runs the ctx is already present. Returns None only when the
+    run has no ctx and cannot be hydrated (pending/error/processing) — callers
+    map that to the existing 409.
+    """
+    if entry.get("status") == "review" and entry.get("hydrated") is False:
+        _ensure_hydrated(entry, run_id, config)
+    return entry.get("ctx")
 
 
 def _get_hydrated_review_service(entry: dict[str, Any], run_id: str, config: Any) -> Any:
@@ -1054,7 +1135,14 @@ def export_run(
     """
     entry = _require_run(registry, run_id)
     review_service = _get_hydrated_review_service(entry, run_id, config)
-    ctx = entry["ctx"]
+    # C1 blast radius: hydration above set entry['ctx'] for cold entries; use
+    # .get to avoid a KeyError on scan entries that never carried the 'ctx' key.
+    ctx = entry.get("ctx")
+    if ctx is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run '{run_id}' has no processed context yet (status: {entry.get('status')}).",
+        )
 
     from reconciliation.adapters.report.xlsx_report import ExcelReportAdapter  # noqa: PLC0415
 
@@ -1093,6 +1181,7 @@ def get_page_thumbnail(
     run_id: str,
     page: int,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> FileResponse:
     """Return a PNG thumbnail for page *page* (0-based) of run *run_id*.
 
@@ -1116,7 +1205,8 @@ def get_page_thumbnail(
     a GPU runtime.  Input PDF is opened read-only; no mutation.
     """
     entry = _require_run(registry, run_id)
-    ctx = entry.get("ctx")
+    # C1 blast radius: re-activate a cold-scanned run so the page viewer serves it.
+    ctx = _get_hydrated_ctx(entry, run_id, config)
     if ctx is None:
         raise HTTPException(
             status_code=409,
@@ -1206,6 +1296,7 @@ def get_page_image(
     run_id: str,
     page: int,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> FileResponse:
     """Return a high-resolution PNG for page *page* (0-based) of run *run_id*.
 
@@ -1232,7 +1323,8 @@ def get_page_image(
     Input PDF is opened read-only; renders write only under the run's own output dir.
     """
     entry = _require_run(registry, run_id)
-    ctx = entry.get("ctx")
+    # C1 blast radius: re-activate a cold-scanned run so the page viewer serves it.
+    ctx = _get_hydrated_ctx(entry, run_id, config)
     if ctx is None:
         raise HTTPException(
             status_code=409,

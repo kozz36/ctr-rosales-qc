@@ -114,6 +114,8 @@ class TestGetTableTriggersLazyHydration:
         mock_review_service.discarded_pages = []
 
         # Simulate a RunContext on disk with an extraction_cache.json
+        # Seed the DISK (not the registry entry) — the cold-load path must
+        # CONSTRUCT the RunContext itself (C1); the test never hand-seeds ctx.
         run_dir = tmp_path / "runs" / run_id
         run_dir.mkdir(parents=True)
         (run_dir / "extraction_cache.json").write_text(
@@ -122,12 +124,6 @@ class TestGetTableTriggersLazyHydration:
         )
         pdf_path = run_dir / f"{run_id}.pdf"
         pdf_path.write_bytes(b"%PDF-1.4")
-
-        # Build a minimal RunContext for the hydration dep.
-        # RunContext(pdf_path, output_base, run_id) creates run_dir under output_base.
-        from reconciliation.application.run_context import RunContext  # noqa: PLC0415
-
-        ctx = RunContext(pdf_path=pdf_path, output_base=tmp_path / "runs", run_id=run_id)
 
         call_count = {"n": 0}
 
@@ -160,7 +156,7 @@ class TestGetTableTriggersLazyHydration:
                     "degraded": False,
                     "hydrated": False,
                     "error": None,
-                    "ctx": ctx,
+                    # NO ctx — cold-scan entries never carry one (C1).
                 }
                 resp = client.get(f"/api/v1/runs/{run_id}/table")
 
@@ -200,6 +196,7 @@ class TestGetTableSecondCallNoReHyd:
         mock_review_service.errored_guias = []
         mock_review_service.discarded_pages = []
 
+        # Seed the DISK only — cold-load constructs ctx itself (C1).
         run_dir = tmp_path / "runs" / run_id
         run_dir.mkdir(parents=True)
         (run_dir / "extraction_cache.json").write_text(
@@ -208,10 +205,6 @@ class TestGetTableSecondCallNoReHyd:
         )
         pdf_path = run_dir / f"{run_id}.pdf"
         pdf_path.write_bytes(b"%PDF-1.4")
-
-        from reconciliation.application.run_context import RunContext  # noqa: PLC0415
-
-        ctx = RunContext(pdf_path=pdf_path, output_base=tmp_path / "runs", run_id=run_id)
 
         call_count = {"n": 0}
 
@@ -234,7 +227,7 @@ class TestGetTableSecondCallNoReHyd:
                     "started_at": "2026-06-11T00:00:00+00:00",
                     "hydrated": False,
                     "error": None,
-                    "ctx": ctx,
+                    # NO ctx — cold-scan entries never carry one (C1).
                     "row_count": 0, "match_count": 0, "mismatch_count": 0,
                     "warnings": [], "vision_calls_made": 0,
                 }

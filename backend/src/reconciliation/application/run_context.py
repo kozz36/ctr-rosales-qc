@@ -154,19 +154,17 @@ class RunContext:
         return self.extraction_cache.exists()
 
     def write_extraction_cache(self, data: dict[str, Any]) -> None:
-        """Persist extraction results atomically.
+        """Persist extraction results atomically (atomic overwrite).
 
-        This is a write-once operation — calling this when the cache already
-        exists is a programming error and raises RuntimeError.
+        Overwrites any existing cache — NOT write-once.  Retry semantics
+        (SDD#3 PR-2) reset the run dir by deleting extraction_cache.json
+        before re-firing the pipeline, so the write-once guard is no longer
+        correct.  The atomic-overwrite semantic (temp-file + rename) is
+        preserved: partial writes are still impossible.
 
         Args:
             data: Serialisable dict produced by the extraction stage.
         """
-        if self.has_extraction_cache():
-            raise RuntimeError(
-                f"Extraction cache already exists: {self.extraction_cache}. "
-                "It is immutable after first write."
-            )
         _atomic_json_write(self.extraction_cache, data)
 
     def read_extraction_cache(self) -> dict[str, Any]:

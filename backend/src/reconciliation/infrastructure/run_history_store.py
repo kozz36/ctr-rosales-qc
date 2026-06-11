@@ -115,6 +115,7 @@ class JsonManifestRunHistoryAdapter:
         self,
         manifest: "RunManifest",  # type: ignore[name-defined]
         output_dir: Path,
+        force_seq: int | None = None,
     ) -> None:
         """Persist a completed run manifest with write-time seq allocation.
 
@@ -124,6 +125,10 @@ class JsonManifestRunHistoryAdapter:
         Args:
             manifest:   RunManifest to persist (seq field overwritten here).
             output_dir: Root output directory.
+            force_seq:  L-3: when set (a same-day retry completion), reuse the
+                        run's ORIGINAL per-day seq instead of allocating a new
+                        one — the display identity (#N) must be stable per D3.
+                        Allocation is skipped entirely in this case.
         """
         from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
 
@@ -133,7 +138,10 @@ class JsonManifestRunHistoryAdapter:
             # the TOCTOU window; writes are ~ms, contention trivial single-process).
             prefix = _date_prefix(manifest.started_at)
             with _SEQ_LOCK:
-                seq = self._scan_max_seq(prefix, output_dir) + 1
+                if force_seq is not None:
+                    seq = force_seq
+                else:
+                    seq = self._scan_max_seq(prefix, output_dir) + 1
 
                 # Build updated manifest data (overwrite seq with allocated value)
                 data = manifest.model_dump()
@@ -162,6 +170,7 @@ class JsonManifestRunHistoryAdapter:
         started_at: str,
         error_str: str,
         output_dir: Path,
+        force_seq: int | None = None,
     ) -> None:
         """Write a failure manifest (status='error', counts 0) to disk.
 
@@ -172,6 +181,10 @@ class JsonManifestRunHistoryAdapter:
             started_at: ISO-8601 UTC start timestamp.
             error_str:  str(exc) from the except branch.
             output_dir: Root output directory.
+            force_seq:  F-4: when set (a same-day retry that fails AGAIN), reuse
+                        the run's ORIGINAL per-day seq instead of allocating a
+                        new one — a failed retry must keep its #N (symmetry with
+                        write_manifest). None → allocate fresh (cross-day path).
         """
         from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
 
@@ -179,7 +192,10 @@ class JsonManifestRunHistoryAdapter:
             prefix = _date_prefix(started_at)
             # D3/RH-004: hold _SEQ_LOCK across scan AND write (see write_manifest).
             with _SEQ_LOCK:
-                seq = self._scan_max_seq(prefix, output_dir) + 1
+                if force_seq is not None:
+                    seq = force_seq
+                else:
+                    seq = self._scan_max_seq(prefix, output_dir) + 1
 
                 manifest = RunManifest(
                     schema_version=1,
@@ -208,6 +224,76 @@ class JsonManifestRunHistoryAdapter:
         except OSError as exc:
             logger.warning(
                 "run_history: failure manifest write failed for run_id=%s (non-fatal): %s",
+                run_id, exc,
+            )
+
+    # ------------------------------------------------------------------
+    # read_seq / mark_pending (retry support — L-3 seq stability, H-1 belt)
+    # ------------------------------------------------------------------
+
+    def read_seq(self, run_id: str, output_dir: Path) -> int | None:
+        """Return the per-day seq stored in the run's manifest, or None.
+
+        L-3: a same-day retry must PRESERVE its original display seq (#N). The
+        prior manifest survives the retry dir reset (only cache/review/pages are
+        deleted), so its seq is read here and threaded back into the completion
+        manifest write.
+        """
+        manifest_path = output_dir / run_id / "run_manifest.json"
+        if not manifest_path.exists():
+            return None
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            seq = data.get("seq")
+            return seq if isinstance(seq, int) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def read_started_at(self, run_id: str, output_dir: Path) -> str | None:
+        """Return the ISO-8601 started_at stored in the run's manifest, or None.
+
+        L-3/F-3: a retry preserves the per-day seq ONLY when the original run
+        started TODAY. The route compares this manifest date (day component)
+        against the current UTC date to decide same-day vs cross-day.
+        """
+        manifest_path = output_dir / run_id / "run_manifest.json"
+        if not manifest_path.exists():
+            return None
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            started = data.get("started_at")
+            return started if isinstance(started, str) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def mark_pending(self, run_id: str, output_dir: Path) -> None:
+        """Rewrite the run's manifest status to 'pending' (truthful disk state).
+
+        H-1 belt: when a retry resets a failed run, the stale on-disk manifest
+        still reads status='error'. A concurrent sweep that consults only the
+        disk would delete the in-flight dir. Rewriting status to 'pending' makes
+        the disk truthful so the sweep's error-only guard skips it (the suspenders
+        side is the registry skip-set passed to sweep_failed). Identity fields
+        (run_id, started_at, seq) are preserved; error is cleared. Non-fatal.
+        """
+        manifest_path = output_dir / run_id / "run_manifest.json"
+        if not manifest_path.exists():
+            return
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "run_history: mark_pending could not read manifest for %s (non-fatal): %s",
+                run_id, exc,
+            )
+            return
+        data["status"] = "pending"
+        data["error"] = None
+        try:
+            _atomic_json_write(manifest_path, data)
+        except OSError as exc:
+            logger.warning(
+                "run_history: mark_pending write failed for %s (non-fatal): %s",
                 run_id, exc,
             )
 
@@ -267,6 +353,29 @@ class JsonManifestRunHistoryAdapter:
         if manifest_path.exists():
             try:
                 data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                # F-1 pending-zombie: a crash/shutdown mid-retry can leave the
+                # on-disk manifest at an in-flight status ('pending'/'processing'
+                # — written as raw JSON by mark_pending/background, bypassing the
+                # RunManifest Literal). A FRESH process cannot own any in-flight
+                # run, so such a status is a zombie: DELETE 409 (in-flight guard),
+                # RETRY 409 (not error), sweep skips (error-only) → unrecoverable.
+                # Coerce to 'error' with an honest reason so the run becomes
+                # retryable + deletable + sweepable, and persist atomically so
+                # GET /runs and the lazy sweep see the corrected disk state too.
+                if data.get("status") in ("pending", "processing"):
+                    data["status"] = "error"
+                    if not data.get("error"):
+                        data["error"] = "interrupted by restart"
+                    if data.get("completed_at") is None:
+                        data["completed_at"] = _utc_now_iso()
+                    try:
+                        _atomic_json_write(manifest_path, data)
+                    except OSError as exc:
+                        logger.warning(
+                            "run_history: pending-zombie rewrite failed for %s "
+                            "(non-fatal, registry still coerced): %s",
+                            run_id, exc,
+                        )
                 return {
                     # F7: key by the UUID-validated dir name, NOT the manifest's
                     # self-reported run_id (the dir name is the trusted identity;
@@ -317,6 +426,7 @@ class JsonManifestRunHistoryAdapter:
         self,
         output_dir: Path,
         cutoff: datetime,
+        skip_run_ids: set[str] | None = None,
     ) -> list[str]:
         """Delete error-status runs older than cutoff from disk.
 
@@ -325,14 +435,20 @@ class JsonManifestRunHistoryAdapter:
         Per-dir try/except — never crashes.
 
         Args:
-            output_dir: Root output directory.
-            cutoff:     Timezone-aware datetime; dirs whose completed_at (or
-                        mtime fallback) is before this are deleted.
+            output_dir:   Root output directory.
+            cutoff:       Timezone-aware datetime; dirs whose completed_at (or
+                          mtime fallback) is before this are deleted.
+            skip_run_ids: Run IDs that are currently in-flight (pending/processing)
+                          per the in-memory registry. H-1: NEVER sweep these — a
+                          retry may have just reset the run while the on-disk
+                          manifest still reads stale status=error, and rmtree
+                          would delete the PDF out from under the running pipeline.
 
         Returns:
             List of run_ids whose directories were deleted.
         """
         deleted: list[str] = []
+        skip = skip_run_ids or set()
 
         if not output_dir.is_dir():
             return deleted
@@ -341,6 +457,9 @@ class JsonManifestRunHistoryAdapter:
             if not entry.is_dir() or not _is_valid_uuid(entry.name):
                 continue
             run_id = entry.name
+            if run_id in skip:
+                # H-1: in-flight run — never delete (belt: see also pending manifest).
+                continue
             try:
                 deleted_id = self._try_sweep_dir(run_id, entry, cutoff)
                 if deleted_id:

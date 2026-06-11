@@ -70,7 +70,12 @@ class RunHistoryPort(Protocol):
     All methods interact with the filesystem; the protocol itself is pure.
     """
 
-    def write_manifest(self, manifest: RunManifest, output_dir: Path) -> None:
+    def write_manifest(
+        self,
+        manifest: RunManifest,
+        output_dir: Path,
+        force_seq: int | None = None,
+    ) -> None:
         """Persist a completed run manifest atomically.
 
         On IOError / OSError: log and return without propagating — manifest
@@ -79,6 +84,9 @@ class RunHistoryPort(Protocol):
         Args:
             manifest:   Completed RunManifest (seq already allocated).
             output_dir: Root output directory (AppConfig.output_dir).
+            force_seq:  L-3: when set (same-day retry completion), reuse the
+                        run's ORIGINAL per-day seq instead of allocating a new
+                        one, so the display identity (#N) stays stable (D3).
         """
         ...
 
@@ -88,6 +96,7 @@ class RunHistoryPort(Protocol):
         started_at: str,
         error_str: str,
         output_dir: Path,
+        force_seq: int | None = None,
     ) -> None:
         """Write a failure manifest for an exceptioned pipeline run.
 
@@ -99,6 +108,9 @@ class RunHistoryPort(Protocol):
             started_at: ISO-8601 UTC string when the run started.
             error_str:  str(exc) from the except branch.
             output_dir: Root output directory.
+            force_seq:  F-4: when set (same-day retry that fails again), reuse the
+                        run's ORIGINAL per-day seq so a failed retry keeps its #N
+                        (symmetry with write_manifest). None → allocate fresh.
         """
         ...
 
@@ -128,6 +140,7 @@ class RunHistoryPort(Protocol):
         self,
         output_dir: Path,
         cutoff: datetime,
+        skip_run_ids: set[str] | None = None,
     ) -> list[str]:
         """Delete error-status runs older than cutoff.
 
@@ -135,12 +148,40 @@ class RunHistoryPort(Protocol):
         Per-dir try/except — never crashes.
 
         Args:
-            output_dir: Root output directory.
-            cutoff:     datetime; runs with completed_at (or mtime) before
-                        this value are eligible for deletion.
+            output_dir:   Root output directory.
+            cutoff:       datetime; runs with completed_at (or mtime) before
+                          this value are eligible for deletion.
+            skip_run_ids: H-1: run IDs currently in-flight (pending/processing)
+                          per the in-memory registry — NEVER swept, protecting a
+                          mid-retry run's PDF from rmtree.
 
         Returns:
             List of run_ids deleted (for caller to remove from registry).
+        """
+        ...
+
+    def read_seq(self, run_id: str, output_dir: Path) -> int | None:
+        """Return the per-day seq stored in the run's manifest, or None.
+
+        L-3: read before a retry dir reset so the original display seq (#N)
+        can be threaded into the completion manifest write (force_seq).
+        """
+        ...
+
+    def read_started_at(self, run_id: str, output_dir: Path) -> str | None:
+        """Return the ISO-8601 started_at stored in the run's manifest, or None.
+
+        F-3: a retry preserves the per-day seq ONLY when the original run
+        started TODAY (same-day). The route uses this to compare day components.
+        """
+        ...
+
+    def mark_pending(self, run_id: str, output_dir: Path) -> None:
+        """Rewrite the run's manifest status to 'pending' (truthful disk state).
+
+        H-1 belt: after a retry resets a failed run, the stale on-disk manifest
+        still reads status='error'; rewriting to 'pending' makes a concurrent
+        sweep's error-only guard skip the in-flight dir. Non-fatal on IOError.
         """
         ...
 

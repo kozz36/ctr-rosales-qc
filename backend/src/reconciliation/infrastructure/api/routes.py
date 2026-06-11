@@ -51,6 +51,7 @@ from reconciliation.infrastructure.api.schemas import (
     RowEditRequest,
     RowEditResponse,
     RunCreateResponse,
+    RunRetryResponse,
     RunStatusResponse,
     RunSummaryResponse,
     UnresolvedGuiaResponse,
@@ -164,7 +165,11 @@ def _require_run(registry: dict[str, Any], run_id: str) -> Any:
 
 
 def _require_review_service(entry: Any, run_id: str) -> Any:
-    """Return the ReviewService from a run entry, or raise 409 if not ready."""
+    """Return the ReviewService from a run entry, or raise 409 if not ready.
+
+    Does NOT trigger lazy hydration — use _get_hydrated_review_service for
+    endpoints that need the ReviewService and may receive a cold-started entry.
+    """
     review_service = entry.get("review_service")
     if review_service is None:
         status = entry.get("status", "unknown")
@@ -175,23 +180,182 @@ def _require_review_service(entry: Any, run_id: str) -> Any:
                 status_code=422,
                 detail=f"Run '{run_id}' ended in error: {err}",
             )
-        # An entry hydrated from a prior session's manifest scan has status
-        # "review" but no live review_service yet (lazy hydration is PR-2).
-        # Distinguish it from a run that is genuinely mid-pipeline so the
-        # operator/UI knows a reload is pending rather than a transient state.
-        if entry.get("hydrated") is False and status == "review":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Run '{run_id}' is from a previous session; "
-                    "reload is pending (PR-2)."
-                ),
-            )
         raise HTTPException(
             status_code=409,
             detail=f"Run '{run_id}' is not yet in review state (current: {status}).",
         )
     return review_service
+
+
+# Module-level lock serialising the check-build-cache of _ensure_hydrated (M-2).
+# Sync endpoints run in Starlette's threadpool, so concurrent first-access
+# requests for the same cold entry could double-build the services. A thread
+# lock (not asyncio) is correct here. Local single-user → contention is trivial.
+# Tradeoff (M-2, accepted): the few async endpoints (reprocess_guia/registro)
+# call _get_hydrated_review_service synchronously, so a cold first-access build
+# briefly blocks the event loop; acceptable for the local single-user MVP — no
+# offload to a threadpool executor is added.
+_HYDRATION_LOCK = __import__("threading").Lock()
+
+# Module-level lock guarding the retry check-and-set (M-1 double-fire TOCTOU).
+# Two concurrent POST /retry both pass the status==error check then both flip
+# to pending and both add a background task. Mirrors the batch check-and-set
+# discipline. Sync endpoint → threadpool → thread lock is correct.
+_RETRY_LOCK = __import__("threading").Lock()
+
+
+def _build_cold_ctx(entry: dict[str, Any], run_id: str, config: Any) -> Any:
+    """Construct a RunContext attached to an EXISTING cold-scanned run dir.
+
+    C1 / D4: scan entries carry no ctx (only manifest fields). The run dir at
+    ``config.output_dir / run_id`` already exists on disk; RunContext attaches
+    to it (mkdir exist_ok=True — never a NEW dir). The PDF reference points at
+    the stored ``{run_id}.pdf`` convention (or entry['pdf_path'] if present).
+
+    Returns the RunContext, or None when the run directory does not exist
+    (genuinely-deleted dir → caller raises the truthful 409).
+    """
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    from reconciliation.application.run_context import RunContext  # noqa: PLC0415
+
+    output_base: _Path = config.output_dir
+    run_dir = output_base / run_id
+    if not run_dir.is_dir():
+        return None
+
+    pdf_path_str: str | None = entry.get("pdf_path")
+    pdf_path = _Path(pdf_path_str) if pdf_path_str else run_dir / f"{run_id}.pdf"
+
+    # run_id + output_base → run_dir is the existing dir (exist_ok=True attach).
+    return RunContext(pdf_path=pdf_path, output_base=output_base, run_id=run_id)
+
+
+def _ensure_hydrated(entry: dict[str, Any], run_id: str, config: Any) -> None:
+    """Lazily build ReviewService + ReprocessService for a cold-started run entry.
+
+    Called on the first review-service request for an entry that was scanned at
+    startup (hydrated=False) but has never served a live request.  Builds the
+    services from the on-disk extraction cache and caches them back into the
+    entry dict so subsequent requests skip re-building (Virtual Proxy pattern).
+
+    Design: D4 (lazy hydration on first review-endpoint access).
+    Spec: RH-005, RH-011-S01.
+
+    Args:
+        entry:   Registry entry dict (mutated in place on success).
+        run_id:  Run UUID string (for error messages only).
+        config:  AppConfig used to build the reprocess service.
+
+    Raises:
+        HTTPException 409: if the entry is not in 'review' status or lacks
+                           a RunContext (ctx) needed for hydration.
+        HTTPException 500: if build_review_service fails (disk read error).
+    """
+    if entry.get("hydrated") is not False:
+        return  # Already hydrated (True) or a fresh in-process run (None).
+
+    status = entry.get("status", "unknown")
+    if status != "review":
+        # Error or pending entries are never hydrated here — callers handle those.
+        return
+
+    # M-2: serialise the check-build-cache so two concurrent first-access threads
+    # (sync endpoints run in the threadpool) cannot double-build the services.
+    with _HYDRATION_LOCK:
+        # Re-check under the lock: a racing thread may have hydrated already.
+        if entry.get("hydrated") is not False:
+            return
+
+        ctx = entry.get("ctx")
+        if ctx is None:
+            # C1: scanned (cold) entries NEVER carry a ctx — _derive_entry only
+            # reads the manifest. D4 mandates lazy hydration CONSTRUCTS the
+            # RunContext on first access. Attach to the EXISTING run dir (run_id +
+            # output_base); RunContext.__init__ uses mkdir(exist_ok=True) so this
+            # never creates a new tree. A genuinely-missing extraction cache later
+            # surfaces as a 500 via build_review_service; only a missing dir is a
+            # true 409.
+            ctx = _build_cold_ctx(entry, run_id, config)
+            if ctx is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Run '{run_id}' cannot be hydrated: run directory not found. "
+                        "The run directory may have been deleted."
+                    ),
+                )
+            entry["ctx"] = ctx
+
+        from reconciliation.infrastructure.container import (  # noqa: PLC0415
+            build_review_service,
+            build_reprocess_service,
+        )
+
+        try:
+            review_service = build_review_service(ctx)
+        except Exception as exc:  # noqa: BLE001
+            # Honest 500; entry untouched (hydrated stays False) → retryable.
+            raise HTTPException(
+                status_code=500,
+                detail=f"Run '{run_id}' cold-load hydration failed: {exc}",
+            ) from exc
+
+        try:
+            reprocess_service = build_reprocess_service(
+                config=config,
+                ctx=ctx,
+                review_service=review_service,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # M-2: mirror build_review_service — honest 500, entry untouched
+            # (hydrated stays False, review_service NOT cached) → retryable.
+            raise HTTPException(
+                status_code=500,
+                detail=f"Run '{run_id}' cold-load reprocess-service build failed: {exc}",
+            ) from exc
+
+        entry["review_service"] = review_service
+        entry["reprocess_service"] = reprocess_service
+        entry["hydrated"] = True
+        logger.info("run_history: lazily hydrated run %s from disk cache", run_id)
+
+
+def _get_hydrated_ctx(entry: dict[str, Any], run_id: str, config: Any) -> Any:
+    """Ensure a RunContext exists for an entry then return it (C1 blast radius).
+
+    Page-viewer endpoints (thumbnail/image) need only the RunContext, not the
+    ReviewService. For a cold-scanned 'review' entry (hydrated=False, ctx absent)
+    this triggers full hydration so the ctx is constructed and cached. For
+    fresh in-process runs the ctx is already present. Returns None only when the
+    run has no ctx and cannot be hydrated (pending/error/processing) — callers
+    map that to the existing 409.
+    """
+    if entry.get("status") == "review" and entry.get("hydrated") is False:
+        _ensure_hydrated(entry, run_id, config)
+    return entry.get("ctx")
+
+
+def _get_hydrated_review_service(entry: dict[str, Any], run_id: str, config: Any) -> Any:
+    """Ensure the entry is hydrated then return the ReviewService.
+
+    Replaces the pair (_require_run + _require_review_service) on all
+    review-service endpoints so that cold-started entries (hydrated=False)
+    are transparently built on the first access instead of returning 409.
+
+    Args:
+        entry:   Registry entry returned by _require_run.
+        run_id:  Run UUID (for error messages).
+        config:  AppConfig from app.state.
+
+    Returns:
+        The ReviewService for the run.
+
+    Raises:
+        HTTPException 409/422/500 via _ensure_hydrated or _require_review_service.
+    """
+    _ensure_hydrated(entry, run_id, config)
+    return _require_review_service(entry, run_id)
 
 
 def _require_reprocess_service(entry: Any, run_id: str) -> Any:
@@ -399,6 +563,9 @@ def _run_pipeline_background(
                 "vision_calls_made": result.vision_calls_made,
                 "warnings": result.warnings,
                 "errored_guias": result.errored_guias,
+                # L-1: a fresh in-process run is fully built — mark hydrated so the
+                # lazy-hydration guard never re-builds services for it.
+                "hydrated": True,
             }
         )
         logger.info("pipeline run %s completed; %d rows", run_id, len(result.rows))
@@ -407,7 +574,11 @@ def _run_pipeline_background(
         # Uses the single app.state.run_history adapter passed in from create_run.
         try:
             manifest = _build_run_manifest(result, registry[run_id], started_at, run_id)
-            run_history.write_manifest(manifest, config.output_dir)
+            # L-3: a same-day retry carries its original seq forward (stable #N).
+            preserved_seq = registry[run_id].get("preserved_seq")
+            run_history.write_manifest(
+                manifest, config.output_dir, force_seq=preserved_seq
+            )
         except Exception as _mex:  # noqa: BLE001
             logger.warning("run_history: manifest write error for %s (non-fatal): %s", run_id, _mex)
 
@@ -418,11 +589,16 @@ def _run_pipeline_background(
         # --- Failure manifest (D1: non-fatal; always try after registry update) ---
         # Uses the single app.state.run_history adapter passed in from create_run.
         try:
+            # F-4: a same-day retry that fails AGAIN keeps its #N — thread the
+            # preserved seq through the failure path exactly as the success path
+            # does (symmetry; None on a first run or a cross-day retry).
+            preserved_seq = registry[run_id].get("preserved_seq")
             run_history.write_failure_manifest(
                 run_id=run_id,
                 started_at=started_at,
                 error_str=str(exc),
                 output_dir=config.output_dir,
+                force_seq=preserved_seq,
             )
         except Exception as _mex:  # noqa: BLE001
             logger.warning(
@@ -501,6 +677,9 @@ async def create_run(
 
     # --- Register the run (pending → processing transition in background) ---
     registry[run_id] = {
+        # Judge-A L3: list_runs reads e["run_id"]; a same-session entry created
+        # here MUST carry the run_id key or GET /runs raises a latent KeyError.
+        "run_id": run_id,
         "status": "pending",
         "pdf_path": str(pdf_path),
         "review_service": None,
@@ -543,7 +722,16 @@ def list_runs(
     # D1: reuse the single app.state.run_history adapter, not a fresh inline one.
     try:
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=48)
-        deleted_ids = run_history.sweep_failed(config.output_dir, cutoff)
+        # H-1: never sweep a run that the registry shows in-flight (pending/
+        # processing) — a retry may have reset it while the on-disk manifest
+        # still reads stale status=error. Skipping protects the live pipeline's
+        # PDF from rmtree. (Belt: retry also rewrites the manifest to pending.)
+        in_flight = {
+            rid
+            for rid, e in registry.items()
+            if e.get("status") in {"pending", "processing"}
+        }
+        deleted_ids = run_history.sweep_failed(config.output_dir, cutoff, skip_run_ids=in_flight)
         for rid in deleted_ids:
             registry.pop(rid, None)
             logger.info("run_history: swept run %s from registry", rid)
@@ -576,6 +764,214 @@ def list_runs(
         )
         for e in ordered
     ]
+
+
+@router.delete(
+    "/runs/{run_id}",
+    status_code=204,
+    summary="Delete a completed or failed run and its on-disk directory (RH-009).",
+)
+def delete_run(
+    run_id: str,
+    registry: RunRegistry,
+    config: AppConfigDep,
+    run_history: RunHistoryDep,
+) -> None:
+    """Remove a run's directory from disk and purge it from the in-memory registry.
+
+    Security:
+    - UUID-validates run_id before any filesystem operation (CWE-22, D5).
+    - rmtree is scoped strictly to config.output_dir / run_id (own-dir-only invariant).
+
+    Spec: RH-009, D5.
+    Returns 204 on success (no body).
+
+    Errors:
+        400 — run_id is not a valid UUID4 string.
+        404 — run_id not found in registry.
+        409 — run is pending or processing (cannot delete an in-flight run).
+    """
+    from reconciliation.infrastructure.run_history_store import _is_valid_uuid  # noqa: PLC0415
+
+    if not _is_valid_uuid(run_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"run_id must be a valid UUID4; got {run_id!r}.",
+        )
+
+    entry = registry.get(run_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+
+    status = entry.get("status", "unknown")
+    if status in {"pending", "processing"}:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Run '{run_id}' is currently {status!r}. "
+                "Cannot delete an in-flight run."
+            ),
+        )
+
+    # rmtree own-dir-only (never uses client input directly as path).
+    run_history.delete_run(run_id, config.output_dir)
+    registry.pop(run_id, None)
+    logger.info("run_history: deleted run %s (status was %s)", run_id, status)
+
+
+@router.post(
+    "/runs/{run_id}/retry",
+    response_model=RunRetryResponse,
+    status_code=202,
+    summary="Retry a failed run with the same run_id (RH-007-S02, D5).",
+)
+def retry_run(
+    run_id: str,
+    background_tasks: BackgroundTasks,
+    registry: RunRegistry,
+    config: AppConfigDep,
+    run_history: RunHistoryDep,
+) -> RunRetryResponse:
+    """Reset a failed run's working directory and re-fire the pipeline.
+
+    Same run_id semantics: the PDF and sunat/ cache are preserved; only
+    extraction_cache.json, review.json, and pages/ are deleted before re-firing.
+    The pipeline background task will write a new manifest on completion.
+
+    Spec: RH-007-S02, D5.
+    Returns 202 immediately (background task started).
+
+    Errors:
+        400 — run_id is not a valid UUID4.
+        404 — run_id not found in registry.
+        409 — run is not in error status (retry only valid on failed runs).
+    """
+    import shutil  # noqa: PLC0415
+
+    from reconciliation.infrastructure.run_history_store import _is_valid_uuid  # noqa: PLC0415
+
+    if not _is_valid_uuid(run_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"run_id must be a valid UUID4; got {run_id!r}.",
+        )
+
+    if registry.get(run_id) is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+
+    # M-1: serialise the whole check-and-set so two concurrent POST /retry (sync
+    # endpoints → threadpool) cannot both pass the guards and both fire. Mirrors
+    # the batch check-and-set discipline. The status flip happens inside the lock.
+    with _RETRY_LOCK:
+        # Re-fetch under the lock: the loser of a concurrent double-fire must see
+        # the winner's status flip. Reading the pre-lock entry reference would let
+        # both threads observe the original 'error' status (TOCTOU).
+        entry = registry.get(run_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+        status = entry.get("status", "unknown")
+        if status != "error":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Run '{run_id}' cannot be retried: status is {status!r}. "
+                    "Retry is only valid for failed (error) runs."
+                ),
+            )
+
+        # RH-007-S04: single-pipeline rule. Reject if ANY OTHER run is currently
+        # pending/processing — never silently drop or queue concurrently.
+        busy = next(
+            (
+                rid
+                for rid, e in registry.items()
+                if rid != run_id and e.get("status") in {"pending", "processing"}
+            ),
+            None,
+        )
+        if busy is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot retry run '{run_id}': another run ({busy}) is currently "
+                    "in progress. Wait for it to finish (single-pipeline rule)."
+                ),
+            )
+
+        run_dir = config.output_dir / run_id
+
+        # L-3/F-3: capture the original per-day seq BEFORE the reset so the
+        # SAME-DAY retry keeps its #N display identity (the prior manifest
+        # survives the reset; only cache/review/pages are deleted). seq is a
+        # PER-DAY identity: a run that failed on day X and is retried on day Y
+        # belongs to day Y's sequence — preserving X's seq would duplicate day
+        # Y's existing #N. So only preserve when the original started_at day ==
+        # today (UTC); otherwise let write_manifest allocate a fresh seq.
+        import datetime  # noqa: PLC0415
+
+        preserved_seq = None
+        _orig_started = run_history.read_started_at(run_id, config.output_dir)
+        _today = datetime.datetime.now(datetime.UTC).date().isoformat()
+        if _orig_started is not None and _orig_started[:10] == _today:
+            preserved_seq = run_history.read_seq(run_id, config.output_dir)
+
+        # Reset the run dir: delete cache/review/pages; keep pdf + sunat/.
+        for name in ("extraction_cache.json", "review.json"):
+            target = run_dir / name
+            if target.exists():
+                target.unlink()
+
+        pages_dir = run_dir / "pages"
+        if pages_dir.exists():
+            shutil.rmtree(pages_dir, ignore_errors=True)
+
+        # H-1 belt: make the on-disk manifest truthful (status='pending') so a
+        # concurrent sweep's error-only guard skips the in-flight dir even if the
+        # registry skip-set were somehow stale. Non-fatal side-channel.
+        try:
+            run_history.mark_pending(run_id, config.output_dir)
+        except Exception as _mex:  # noqa: BLE001
+            logger.warning(
+                "run_history: mark_pending failed for %s (non-fatal): %s", run_id, _mex
+            )
+
+        # Resolve the PDF path — prefer the stored pdf_path, fall back to convention.
+        pdf_path_str: str | None = entry.get("pdf_path")
+        if pdf_path_str:
+            from pathlib import Path as _Path  # noqa: PLC0415
+            pdf_path = _Path(pdf_path_str)
+        else:
+            pdf_path = run_dir / f"{run_id}.pdf"
+
+        # Reset registry to in-flight. L-1: drop stale degraded/completed_at/
+        # progress keys carried from the prior failed entry so the re-run starts
+        # clean. L-2: status is 'processing' to match the response value below.
+        # L-3: thread the preserved seq through so the completion manifest keeps it.
+        new_entry = {
+            **entry,
+            "status": "processing",
+            "review_service": None,
+            "reprocess_service": None,
+            "ctx": None,
+            "result": None,
+            "vision_calls_made": 0,
+            "warnings": [],
+            "errored_guias": [],
+            "error": None,
+            "hydrated": False,
+            "preserved_seq": preserved_seq,
+        }
+        for stale in ("degraded", "completed_at", "progress"):
+            new_entry.pop(stale, None)
+        registry[run_id] = new_entry
+
+    background_tasks.add_task(
+        _run_pipeline_background, run_id, pdf_path, config, registry, run_history
+    )
+
+    logger.info("run_history: retry fired for run %s", run_id)
+    # L-2: response matches the registry status just set (truthful).
+    return RunRetryResponse(run_id=run_id, status="processing")
 
 
 @router.get(
@@ -628,14 +1024,14 @@ def get_run_status(run_id: str, registry: RunRegistry) -> RunStatusResponse:
     response_model=ReconciliationTableResponse,
     summary="Fetch the reconciliation table for a completed run.",
 )
-def get_table(run_id: str, registry: RunRegistry) -> ReconciliationTableResponse:
+def get_table(run_id: str, registry: RunRegistry, config: AppConfigDep) -> ReconciliationTableResponse:
     """Return reconciliation rows and unresolved guías for the run.
 
     Spec: REC-C05 / REV-C04 — guías whose ``registro`` is ``None`` surface in
     ``unresolved_guias`` and are NEVER included in ``rows``.
     """
     entry = _require_run(registry, run_id)
-    review_service = _require_review_service(entry, run_id)
+    review_service = _get_hydrated_review_service(entry, run_id, config)
     rows = [_row_to_response(r) for r in review_service.rows]
 
     # Populate unresolved_guias: any guía in the service whose registro is None
@@ -697,6 +1093,7 @@ def edit_row(
     row_id: str,  # noqa: ARG001 — present for URL routing; edit targets guia_id
     body: RowEditRequest,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> RowEditResponse:
     """Update a single field on a GuiaDeRemision and return updated rows.
 
@@ -707,7 +1104,7 @@ def edit_row(
         ``summed_qty`` — computed property; returns 422 (REC-C04).
     """
     entry = _require_run(registry, run_id)
-    review_service = _require_review_service(entry, run_id)
+    review_service = _get_hydrated_review_service(entry, run_id, config)
 
     # Note: field='summed_qty' is rejected by Pydantic before reaching here
     # (RowEditRequest.field is Literal["fecha", "registro"]).  The ReviewService
@@ -738,6 +1135,7 @@ def edit_guia_line(
     guia_id: str,
     body: GuiaLineEditRequest,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> RowEditResponse:
     """Update the cantidad of a specific material line on a GuiaDeRemision.
 
@@ -749,7 +1147,7 @@ def edit_guia_line(
         - Idempotent: sending the same request twice returns the same result.
     """
     entry = _require_run(registry, run_id)
-    review_service = _require_review_service(entry, run_id)
+    review_service = _get_hydrated_review_service(entry, run_id, config)
 
     from decimal import Decimal, InvalidOperation  # noqa: PLC0415
 
@@ -787,10 +1185,11 @@ def reassign_guia(
     run_id: str,
     body: ReassignRequest,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> ReassignResponse:
     """Move a guía to a new registro+fecha and return the updated table."""
     entry = _require_run(registry, run_id)
-    review_service = _require_review_service(entry, run_id)
+    review_service = _get_hydrated_review_service(entry, run_id, config)
 
     try:
         updated_rows = review_service.apply_reassignment(
@@ -824,8 +1223,15 @@ def export_run(
     exports overwrite the same file rather than accumulating copies.
     """
     entry = _require_run(registry, run_id)
-    review_service = _require_review_service(entry, run_id)
-    ctx = entry["ctx"]
+    review_service = _get_hydrated_review_service(entry, run_id, config)
+    # C1 blast radius: hydration above set entry['ctx'] for cold entries; use
+    # .get to avoid a KeyError on scan entries that never carried the 'ctx' key.
+    ctx = entry.get("ctx")
+    if ctx is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run '{run_id}' has no processed context yet (status: {entry.get('status')}).",
+        )
 
     from reconciliation.adapters.report.xlsx_report import ExcelReportAdapter  # noqa: PLC0415
 
@@ -864,6 +1270,7 @@ def get_page_thumbnail(
     run_id: str,
     page: int,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> FileResponse:
     """Return a PNG thumbnail for page *page* (0-based) of run *run_id*.
 
@@ -887,7 +1294,8 @@ def get_page_thumbnail(
     a GPU runtime.  Input PDF is opened read-only; no mutation.
     """
     entry = _require_run(registry, run_id)
-    ctx = entry.get("ctx")
+    # C1 blast radius: re-activate a cold-scanned run so the page viewer serves it.
+    ctx = _get_hydrated_ctx(entry, run_id, config)
     if ctx is None:
         raise HTTPException(
             status_code=409,
@@ -977,6 +1385,7 @@ def get_page_image(
     run_id: str,
     page: int,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> FileResponse:
     """Return a high-resolution PNG for page *page* (0-based) of run *run_id*.
 
@@ -1003,7 +1412,8 @@ def get_page_image(
     Input PDF is opened read-only; renders write only under the run's own output dir.
     """
     entry = _require_run(registry, run_id)
-    ctx = entry.get("ctx")
+    # C1 blast radius: re-activate a cold-scanned run so the page viewer serves it.
+    ctx = _get_hydrated_ctx(entry, run_id, config)
     if ctx is None:
         raise HTTPException(
             status_code=409,
@@ -1094,6 +1504,7 @@ def retry_errored_guia(
     run_id: str,
     guia_id: str,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> RetryGuiaResponse:
     """Attempt to recover a single errored guía using SUNAT descargaqr (REINTENTAR).
 
@@ -1110,10 +1521,10 @@ def retry_errored_guia(
         503 — SUNAT fetch is disabled (sunat.enabled=False); REINTENTAR requires SUNAT.
     """
     entry = _require_run(registry, run_id)
+    review_service = _get_hydrated_review_service(entry, run_id, config)
     reprocess_service = _require_reprocess_service(entry, run_id)
     # REINTENTAR requires SUNAT; raise 503 if the service was built for vision-only.
     _require_sunat_on_service(reprocess_service, run_id)
-    review_service = _require_review_service(entry, run_id)
 
     # Verify guia_id is in the errored_guias list.
     errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []
@@ -1170,6 +1581,7 @@ def retry_registro(
     registro: str,
     background_tasks: BackgroundTasks,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> RetryBatchResponse:
     """Start a background batch retry for all errored guías in a registro.
 
@@ -1186,10 +1598,10 @@ def retry_registro(
         503 — SUNAT fetch is disabled.
     """
     entry = _require_run(registry, run_id)
+    review_service = _get_hydrated_review_service(entry, run_id, config)
     reprocess_service = _require_reprocess_service(entry, run_id)
     # Batch REINTENTAR also requires SUNAT.
     _require_sunat_on_service(reprocess_service, run_id)
-    review_service = _require_review_service(entry, run_id)
 
     errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []
     target_guias = [e for e in errored_list if e.registro == registro]
@@ -1243,6 +1655,7 @@ async def reprocess_guia(
     run_id: str,
     guia_id: str,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> ReprocessGuiaResponse:
     """Attempt to recover a single errored guía via vision (Reprocesar con IA, PR#3).
 
@@ -1263,10 +1676,10 @@ async def reprocess_guia(
               (REV-R16-S03; distinct from 200 vision_empty when vision is on).
     """
     entry = _require_run(registry, run_id)
+    review_service = _get_hydrated_review_service(entry, run_id, config)
     reprocess_service = _require_reprocess_service(entry, run_id)
     # Reprocesar con IA requires a real vision adapter (NOT NullVisionAdapter).
     _require_vision_on_service(reprocess_service, run_id)
-    review_service = _require_review_service(entry, run_id)
 
     # Verify guia_id is in errored_guias.
     errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []
@@ -1366,6 +1779,7 @@ async def reprocess_registro(
     registro: str,
     background_tasks: BackgroundTasks,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> ReprocessBatchResponse:
     """Start a background async batch reprocess for all errored guías in a registro.
 
@@ -1386,10 +1800,10 @@ async def reprocess_registro(
         503 — vision disabled (NullVisionAdapter) or reprocess_service is None.
     """
     entry = _require_run(registry, run_id)
+    review_service = _get_hydrated_review_service(entry, run_id, config)
     reprocess_service = _require_reprocess_service(entry, run_id)
     # Bulk AI reprocess requires a real vision adapter (NOT NullVisionAdapter).
     _require_vision_on_service(reprocess_service, run_id)
-    review_service = _require_review_service(entry, run_id)
 
     errored_list = review_service.errored_guias if hasattr(review_service, "errored_guias") else []
     target_guias = [e for e in errored_list if e.registro == registro]
@@ -1470,10 +1884,10 @@ def get_reprocess_status(
     response_model=AuditTrailResponse,
     summary="Retrieve the audit trail for a run.",
 )
-def get_audit_trail(run_id: str, registry: RunRegistry) -> AuditTrailResponse:
+def get_audit_trail(run_id: str, registry: RunRegistry, config: AppConfigDep) -> AuditTrailResponse:
     """Return the ordered list of review edits and reassignments."""
     entry = _require_run(registry, run_id)
-    review_service = _require_review_service(entry, run_id)
+    review_service = _get_hydrated_review_service(entry, run_id, config)
 
     raw_events = review_service.get_audit_trail()
     events = [
@@ -1560,6 +1974,7 @@ async def recover_discarded_page(
     run_id: str,
     page: int,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> RecoverPageResponse:
     """Recover a single discarded page via Tier-1 cached → Tier-2 OCR → Tier-3 vision.
 
@@ -1574,7 +1989,7 @@ async def recover_discarded_page(
         409 — run not in review state.
     """
     entry = _require_run(registry, run_id)
-    review_service = _require_review_service(entry, run_id)
+    review_service = _get_hydrated_review_service(entry, run_id, config)
     reprocess_service = _require_reprocess_service(entry, run_id)
 
     # Verify the page exists in the discarded list BEFORE calling apply_page_recovery.
@@ -1618,6 +2033,7 @@ async def recover_discarded_batch(
     request: Request,
     background_tasks: BackgroundTasks,
     registry: RunRegistry,
+    config: AppConfigDep,
 ) -> DiscardedBatchResponse:
     """Start a background batch recovery for operator-selected discarded pages.
 
@@ -1635,7 +2051,7 @@ async def recover_discarded_batch(
         409 — run not in review state, OR batch already in-flight.
     """
     entry = _require_run(registry, run_id)
-    _require_review_service(entry, run_id)
+    _get_hydrated_review_service(entry, run_id, config)
     reprocess_service = _require_reprocess_service(entry, run_id)
 
     body = await request.json()

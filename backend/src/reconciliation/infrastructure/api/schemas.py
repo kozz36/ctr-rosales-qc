@@ -709,6 +709,16 @@ class RunSummaryResponse(BaseModel):
     error: str | None = None
 
 
+class RunRetryResponse(BaseModel):
+    """Response for POST /runs/{run_id}/retry (RH-007-S02, D5).
+
+    Returns the same run_id (SAME run_id semantics) and the new status.
+    """
+
+    run_id: str
+    status: str  # always "processing" immediately after retry fires
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

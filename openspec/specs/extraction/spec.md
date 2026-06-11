@@ -1049,6 +1049,416 @@ And an empty list is returned (no fetches performed)
 
 ---
 
+---
+
+## Delta — deterministic-ocr-backend (SDD#1, 2026-06-10): RapidOCR as primary quantity extractor
+
+> The requirements below ADD or MODIFY behaviour relative to EXT-001 through EXT-026 above.
+> Source change: `deterministic-ocr-backend` — PR#1 (#51) · PR#2 (#52) · PR#3 (#53) · PR#4 (#54).
+> All merged to `main`. Dual-blind judgment-day PASS×2 (Opus 4.8 + Fable 5) on all PRs.
+> Real-data gate 13/13 GREEN (pages 148/156/160 + F1 regression-locks 0141/0164).
+> Marked [ADDED] or [MODIFIED].
+
+### EXT-027 — [MODIFIED: replaces EXT-004 engine coupling] Engine-agnostic OCR config and factory
+
+**[MODIFIED: EXT-004 binds `extract_printed_table` to PaddleOCR via `PrintedTableAdapter`
+specifically. This change makes engine selection provider-agnostic via config and a factory,
+so the deploy target (RapidOCR, no paddle) and the dev alternative (paddle) coexist without
+code change.]**
+
+`OcrConfig` MUST expose an `engine` field of type `Literal["paddle", "rapidocr"]` with a
+default of `"paddle"` (backward-compatible). The field MUST be settable via the environment
+variable `RECONCILIATION__OCR__ENGINE` (Pydantic-settings env_prefix `RECONCILIATION__`,
+nested delimiter `__`).
+
+A factory function `build_ocr_extractor(cfg: OcrConfig) -> ExtractionPort` MUST exist in the
+adapter layer (at `adapters/ocr/factory.py`). This factory is the **sole** module that imports
+any concrete OCR adapter class. It MUST lazy-import concrete adapters inside its body (not at
+module top level) so the test suite runs without any OCR SDK installed.
+
+`build_ocr_extractor` MUST apply the following selection logic:
+
+| `ocr.enabled` | `ocr.engine` | Resolved adapter |
+|---|---|---|
+| `False` | any | `NullOcrExtractor` (zero OCR calls) |
+| `True` | `"rapidocr"` | `RapidOCRAdapter` |
+| `True` | `"paddle"` | `PrintedTableAdapter` (existing) |
+
+`application/pipeline.py` MUST NOT import `RapidOCRAdapter`, `PrintedTableAdapter`, or any
+concrete OCR adapter class — it depends only on `ExtractionPort`.
+
+The deploy defaults MUST be `RECONCILIATION__OCR__ENABLED=true` and
+`RECONCILIATION__OCR__ENGINE=rapidocr`.
+
+#### Scenario EXT-S027a — engine=rapidocr resolves to RapidOCRAdapter
+
+Given `ocr.enabled=true` and `ocr.engine="rapidocr"` in config
+When `build_ocr_extractor(cfg)` is called
+Then an instance satisfying `ExtractionPort` is returned
+And the instance is a `RapidOCRAdapter`
+And no `paddle` or `paddleocr` symbol is imported during the call
+
+#### Scenario EXT-S027b — engine=paddle resolves to PrintedTableAdapter
+
+Given `ocr.enabled=true` and `ocr.engine="paddle"` in config
+When `build_ocr_extractor(cfg)` is called
+Then an instance satisfying `ExtractionPort` is returned
+And the instance is a `PrintedTableAdapter`
+And no `rapidocr` symbol is imported during the call
+
+#### Scenario EXT-S027c — enabled=false resolves to NullOcrExtractor regardless of engine
+
+Given `ocr.enabled=false` in config (any engine value)
+When `build_ocr_extractor(cfg)` is called
+Then a `NullOcrExtractor` is returned
+And neither `rapidocr` nor `paddle` nor `paddleocr` is imported
+
+#### Scenario EXT-S027d — pipeline.py imports zero concrete OCR adapters
+
+Given the `deterministic-ocr-backend` change fully applied
+When `import backend.src.reconciliation.application.pipeline` is executed
+Then the module-level namespace contains no reference to `RapidOCRAdapter`,
+  `PrintedTableAdapter`, or any concrete OCR adapter class
+And the import succeeds without installing `rapidocr` or `paddleocr`
+
+#### Scenario EXT-S027e — engine selector configurable via env var
+
+Given `RECONCILIATION__OCR__ENGINE=rapidocr` set in the environment
+And `RECONCILIATION__OCR__ENABLED=true`
+When `OcrConfig` is instantiated and `build_ocr_extractor` is called
+Then the active extractor is a `RapidOCRAdapter`
+And no code modification is required
+
+---
+
+### EXT-028 — [ADDED] RapidOCRAdapter — printed table extraction contract
+
+`RapidOCRAdapter` MUST implement `ExtractionPort` with the following contract:
+
+- `extract_printed_table(image: bytes) -> list[MaterialLine]` — the primary operation.
+  Given a guía page image (PNG bytes), it MUST return one `MaterialLine` per valid table row.
+- `extract_declared(text: str) -> list[DeclaredMaterial]` — MUST return `[]` (the declared
+  side is always sourced from digital text, never from this adapter).
+
+`RapidOCRAdapter` MUST lazy-import `rapidocr`, `onnxruntime`, `numpy`, and `PIL` (Pillow)
+INSIDE its methods — never at module top level. The test suite MUST run without these
+packages installed when the adapter is not exercised.
+
+`RapidOCRAdapter` MUST own the orientation retry loop (see EXT-030) — this is an adapter
+concern, not a domain concern.
+
+The adapter MUST NOT be imported by `domain/` or `application/pipeline.py`.
+
+#### Scenario EXT-S028a — extract_declared always returns empty list
+
+Given a `RapidOCRAdapter` instance
+When `extract_declared(text="any text")` is called
+Then `[]` is returned with no exception raised
+And no OCR engine call is made
+
+#### Scenario EXT-S028b — heavy imports absent at module load
+
+Given the `adapters/ocr/rapid_table.py` module is imported at module level
+When the module is first imported
+Then `sys.modules` does NOT contain `rapidocr`, `onnxruntime`, or `numpy`
+  (these are imported inside methods only)
+
+---
+
+### EXT-029 — [ADDED] Box-row parser — pure function, engine-independent
+
+A standalone pure function (module: `adapters/ocr/box_row_parser.py`) MUST convert a list
+of `(box: Sequence[Sequence[float]], text: str, score: float)` OCR cells into a
+`list[MaterialLine]`.
+
+"Pure" MUST mean: the function has no import of `rapidocr`, `onnxruntime`, `paddleocr`, or
+any IO library. It MUST be importable and unit-testable with NO OCR SDK installed.
+
+**DESC↔QTY pairing algorithm (MUST):**
+
+1. Compute the centroid Y coordinate for each cell.
+2. Group cells into row bands using a DPI-scaled tolerance:
+   `row_band_px = round(40 * (dpi / 200))` where `dpi` is the render DPI of the image.
+   Two cells are in the same row band when `|centroid_y_A − centroid_y_B| <= row_band_px`.
+3. For each row band, classify cells as:
+   - **QTY**: text is EITHER (a) a decimal number `^\d+[.,]\d{1,3}$` (1–3 fractional digits;
+     4-digit fraction is a year/date shape and MUST be STRUCTURALLY rejected), OR (b) a bare
+     integer `^\d+$` that has an adjacent UNIT cell in its row band (the unit-suffix
+     disambiguator). A bare integer with NO adjacent unit is NOT a QTY.
+   - **DESC**: text matching a material descriptor pattern recognizing at least: `BARRA`,
+     `ACERO`, `A615`, `A706`, `FIERRO`, `VARILLA`, `ALAMBRE`, codes like `40xxxx`, diameter
+     notations `\d+/\d+"` or `\d+[Mm][Mm]`. Any token containing a ≥3-letter alphabetic run
+     also qualifies.
+   - **IGNORED**: cells matching neither (header cells, row-number cells, supplier text).
+4. For each QTY cell, the DESC cell in the SAME row band nearest to its LEFT MUST be the
+   description for that quantity. A QTY cell with no DESC to its left MUST be ignored.
+   Ownership is decided PER QTY by geometric nearness (smallest `|Δcy|`); a noise/header
+   desc MUST NOT greedily claim the real material's qty and cause a real material row to
+   silently vanish.
+5. **Preferred column order** (real GRE physical layout: `DETALLE | UNIDAD | CANTIDAD`):
+   A UNIT cell found in the PREFERRED column position — `desc.cx < unit.cx < qty.cx` (UNIT
+   between DESC and QTY centroids) — yields a CONFIDENT line (`requires_review=False`).
+   A unit claimed via the relaxed out-of-column fallback (any in-band unit regardless of
+   column order) MUST set `requires_review=True`.
+6. **Table-region detection**: `_infer_table_region(cells)` MUST estimate the y-band of the
+   material table from cell geometry (topmost structural cluster carrying paired QTY+UNIT
+   cells). Cells whose `cy` falls outside the detected region are excluded from the
+   DESC/QTY/UNIT partition before the pairing loop. Detection MUST be position-based only —
+   no keyword list (M-6 anti-pattern guard). Returns `None` on inconclusive detection;
+   falls back to the unrestricted pairing loop. MUST NOT silently drop any cell within the
+   detected table region. The anchor is the TOPMOST cluster of structural pairs (not the
+   largest — the largest-cluster popularity contest silently drops real material rows when
+   a noisy footer out-signals a small/garbled table; PR#4 JD F1 finding).
+
+**Unit normalization (label-only — NOT a conversion):**
+
+`TNE` MUST be normalized to `TN` in the output `MaterialLine.unidad`. No other unit
+conversion is permitted. KG, TN, RD, Rollo MUST remain as-is.
+
+**Incidental-number guard (MUST):** standalone integers with NO adjacent unit and standalone
+diameter leads (`1"`, `1 3/8"`) MUST NOT be classified as QTY.
+
+The parser function MUST accept a `dpi: int` parameter (default `200`).
+
+#### Scenario EXT-S029a — correct DESC↔QTY pairing on a multi-row table
+
+Given a list of OCR cells representing a 4-row GRE table at Y centroids [120,160,200,240] (DPI=200)
+When `parse_box_rows(cells, dpi=200)` is called
+Then 4 `MaterialLine`-shaped rows are returned with QTY values {0.008,0.136,0.191,0.041}
+And each row pairs QTY with the DESC in its own row band (never cross-band)
+
+#### Scenario EXT-S029b — TNE normalized to TN; KG/RD/Rollo unchanged
+
+Given a row with unidad `TNE` and cantidad `0.136`
+Then the emitted row has `unidad="TN"` and `cantidad=0.136` (value unchanged)
+
+Given rows with unidad values `KG`, `RD`, `Rollo`
+Then the emitted rows have `unidad` values `KG`, `RD`, `Rollo` respectively
+
+#### Scenario EXT-S029c — columnar GRE table where _LINE_RE yields zero lines
+
+Given OCR cells from a columnar GRE table with non-contiguous bounding boxes
+When `parse_box_rows(cells, dpi=200)` is called
+Then at least 1 valid `MaterialLine`-shaped row is returned
+
+#### Scenario EXT-S029d — incidental numbers not misread as QTY
+
+Given cells containing `1` (leftmost), `1"` (diameter), `408916` (product code), `0.037` (valid qty)
+When `parse_box_rows` is called
+Then only `0.037` is classified as QTY
+
+#### Scenario EXT-S029e — non-rebar descriptor still recognized
+
+Given a DESC cell with text `FIERRO CORRUGADO 1/2"`
+When `parse_box_rows` is called
+Then the cell is classified as DESC and its associated QTY is included in output
+
+#### Scenario EXT-S029f — pure function: importable without any OCR SDK
+
+Given `rapidocr`, `onnxruntime`, `paddleocr` are NOT installed
+When the box-row parser module is imported and `parse_box_rows` is called with synthetic data
+Then no `ImportError` is raised and the function returns the expected rows
+
+#### Scenario EXT-S029g — DPI-scaled band: 150 DPI yields 30px; 300 DPI yields 60px
+
+Given `dpi=150`: `row_band_px = round(40 * (150/200)) = 30`
+Given `dpi=300`: `row_band_px = round(40 * (300/200)) = 60`
+
+#### Scenario EXT-S029h — trusted read on DETALLE|UNIDAD|CANTIDAD column order
+
+Given synthetic cells: DESC at `cx=50`, UNIT `TNE` at `cx=200`, QTY at `cx=350` (same band)
+When `parse_box_rows` is called
+Then the emitted row has `requires_review=False` (UNIT between DESC and QTY → preferred column)
+
+#### Scenario EXT-S029i — stamp rows excluded by position, not keyword
+
+Given a 2-row material table at cy≈[100,140] plus a stamp-region pair at cy≈[420]
+When `parse_box_rows` is called
+Then only 2 rows are returned (stamp row excluded by table-region geometry)
+And no keyword appears in the exclusion logic (M-6 anti-pattern guard)
+
+---
+
+### EXT-030 — [ADDED] Self-scoring orientation auto-fix (adapter strategy)
+
+`RapidOCRAdapter.extract_printed_table` MUST apply an orientation auto-fix before returning
+rows, using the box-row parser as the oracle:
+
+**Default rotation**: rotate the input image by **−90°** before the first OCR call.
+(All 165 reg227 pages scanned sideways — this default handles the known convention.)
+
+**Retry fallback**: if the box-row parser returns 0 valid rows after −90°, retry with
+rotations `{0°, 90°, 180°, 270°}` and select the rotation yielding the most valid rows.
+Ties broken by order `[0, 90, 180, 270]`. The orientation retry MUST apply ONLY inside
+`extract_printed_table`; it MUST NOT apply to `extract_declared` or non-guía pages.
+
+#### Scenario EXT-S030a — default -90° rotation applied on a sideways page
+
+Given a guía page scanned sideways (the default reg227 convention)
+When `RapidOCRAdapter.extract_printed_table(image)` is called
+Then the image is rotated -90° before the first OCR pass
+And the parser returns N > 0 valid rows with no retry triggered
+
+#### Scenario EXT-S030b — retry triggered when default yields 0 rows
+
+Given a guía page that is upright (0°)
+When `extract_printed_table(image)` is called
+Then the first pass (−90°) yields 0 rows
+And the adapter retries {0°,90°,180°,270°} and returns rows from the 0° candidate
+
+#### Scenario EXT-S030c — extract_declared path never force-rotated
+
+Given `extract_declared(text)` is called
+Then no image rotation is applied and no RapidOCR engine call is made
+
+---
+
+### EXT-031 — [ADDED] Ground-truth real-data accuracy gate
+
+`RapidOCRAdapter.extract_printed_table` MUST pass a real-data accuracy gate against confirmed
+ground-truth pages (keyed on `CTR_PDF_PATH` env var, `@pytest.mark.slow`).
+
+**Ground-truth targets (from `docs/eval/ground_truth.md`):**
+
+| Page | guia_id | Expected rows (cantidad, unidad after normalization) |
+|---|---|---|
+| 0148 | T112-0065418 | (0.037,TN), (0.014,TN), (0.102,TN) |
+| 0156 | T112-0065426 | (0.008,TN), (0.136,TN), (0.191,TN), (0.041,TN) |
+| 0160 | T009-0739440 | (1.616,TN), (0.238,TN), (1.643,TN), (0.121,TN) |
+| 0141 | — | exactly 1 confident row: (2.489,TN); no confident spurious |
+| 0164 | — | exactly 1 confident row: (0.213,TN); no confident spurious |
+
+The gate MUST verify: row count matches expected; each `cantidad` matches GT exactly (3dp
+rounding); each `unidad` is `"TN"`. No confident spurious rows. The gate helper
+`_assert_gt_complete_no_confident_spurious` MUST consume GT slots with CONFIDENT lines first
+(order-independent budget) so a review-flagged duplicate of a GT quantity does not pre-empt
+the confident read and cause a false-positive assertion failure.
+
+Pages 0141 and 0164 are F1 regression-locks: they are 1-line guías where the pre-PR#4
+popularity-contest anchor (largest cluster) silently dropped the single real material row when
+a noisy footer out-signaled the small table. PR#4 topmost-structural anchor fixes this.
+
+#### Scenario EXT-S031a — page 0156 (4 rows, 4/4 exact)
+
+Given the real guía page 0156 rendered from `CTR_PDF_PATH`
+When `RapidOCRAdapter.extract_printed_table(image)` is called
+Then exactly 4 rows are returned with `cantidad` values [0.008,0.136,0.191,0.041] (TN each)
+
+#### Scenario EXT-S031b — page 0148 (3 rows, all exact)
+
+Given the real guía page 0148
+Then exactly 3 rows: (0.037,TN), (0.014,TN), (0.102,TN)
+
+#### Scenario EXT-S031c — page 0160 (4 rows, ACERO DIMENSIONADO, all exact)
+
+Given the real guía page 0160
+Then exactly 4 rows: (1.616,TN), (0.238,TN), (1.643,TN), (0.121,TN)
+
+#### Scenario EXT-S031d — pages 0141 and 0164 (1-line guía F1 regression-lock)
+
+Given page 0141 or 0164 (single-row guías)
+Then exactly 1 confident row is returned for each
+And no confident spurious rows appear
+And the GT quantity value matches exactly
+
+---
+
+### EXT-032 — [ADDED] Domain invariants preserved through OCR path
+
+1. **Units never converted**: `RapidOCRAdapter` MUST NOT multiply, divide, or adjust any
+   numeric quantity. Only `TNE → TN` label normalization is permitted. KG, TN, RD, Rollo
+   values MUST sum independently through reconciliation.
+2. **Reconciliation as validation gate**: an OCR misread producing a quantity differing from
+   the declared value MUST result in `status=MISMATCH` and `requires_review=True`. MUST NOT
+   auto-correct.
+3. **Grouping key unchanged**: key remains `(registro, material_canonical, unidad)`. `fecha`
+   is NEVER part of the key. `RapidOCRAdapter` output MUST NOT carry `fecha`.
+4. **Domain purity**: no file under `backend/src/reconciliation/domain/` MUST import or
+   reference `rapidocr`, `onnxruntime`, `RapidOCRAdapter`, or `box_row_parser`.
+5. **Input PDF read-only**: OCR processing MUST NOT modify the source PDF.
+
+#### Scenario EXT-S032a — OCR misread flagged; never auto-corrected
+
+Given `RapidOCRAdapter` reads `cantidad=0.190` but declared is `0.191`
+When reconciliation runs
+Then `status=MISMATCH` and `requires_review=True` on the affected row
+
+#### Scenario EXT-S032b — mixed-unit table: KG and TN sum independently
+
+Given a page with rows (descripción_A, 500, KG) and (descripción_A, 0.5, TN)
+Then the KG and TN quantities are summed in separate groups — never converted to each other
+
+#### Scenario EXT-S032c — domain/ files unchanged after SDD#1 applied
+
+Given the `deterministic-ocr-backend` change fully applied
+When `git diff main -- backend/src/reconciliation/domain/` is inspected
+Then zero domain files are modified, added, or removed
+
+---
+
+### EXT-033 — [ADDED] RapidOCR dependencies and Docker air-gap
+
+1. **Optional dependency group**: project MUST expose a `[project.optional-dependencies]`
+   group named `ocr` containing at minimum `rapidocr`, `onnxruntime`, `Pillow>=10.0`,
+   `numpy>=1.26`. The Dockerfile builder layer MUST install this group (`--extra ocr`).
+2. **Paddle absence retained**: the existing CONT-S02 assertion — `import paddle` and
+   `import paddleocr` are NOT present in the runtime image — MUST remain satisfied.
+3. **RapidOCR runtime assertion**: a startup CONT smoke test MUST verify `import rapidocr`
+   succeeds in the deployed image.
+4. **Model bundling (air-gap)**: PP-OCRv5-server ONNX model weights (~165 MB) MUST be
+   baked into the deployed image at build time so the first OCR call succeeds with NO network
+   access. Strategy: build-time warm-up `RUN python -c "from rapidocr import RapidOCR; RapidOCR()"`.
+5. **uv.lock updated**: committed lockfile MUST pin `rapidocr` and `onnxruntime` versions.
+
+#### Scenario EXT-S033a — RapidOCR import passes; paddle import fails in deployed image
+
+Given a container built from the SDD#1 Dockerfile
+When `python -c "import rapidocr"` runs inside the container
+Then the import succeeds
+And `import paddle` raises `ImportError` (paddle absence retained)
+
+#### Scenario EXT-S033b — OCR call succeeds in a network-isolated container
+
+Given a network-isolated container with weights baked at build time
+When `RapidOCRAdapter.extract_printed_table(image)` is called
+Then the call succeeds with no ConnectionError
+
+#### Scenario EXT-S033c — rapidocr does not pull paddle as a transitive dep
+
+Given the `ocr` optional-dependency group installed via `uv sync --extra ocr`
+When transitive deps are listed
+Then neither `paddlepaddle`, `paddlepaddle-gpu`, nor `paddleocr` appear
+
+---
+
+## Non-goal Boundary — SDD#1 scope guard
+
+### EXT-NG-001 — #50 dropped-page sentinel is NOT part of SDD#1
+
+Issue #50 (silent drop of identity-less GUIA pages at `pipeline.py:976-982`) MUST NOT be
+addressed in SDD#1 beyond the implicit improvement that enabling OCR reduces the number of
+pages with `len(lines)==0`.
+
+SDD#1 MUST NOT add any new API field, new domain model, new HTTP endpoint, or new UI element
+to surface dropped pages. The explicit surfacing of dropped/identity-less guía pages is
+deferred to **SDD#2**.
+
+---
+
+## Acceptance Scenarios Summary — SDD#1 additions
+
+| Requirement | Scenario IDs | TDD tier |
+|---|---|---|
+| EXT-027 (factory/config) | S027a–S027e | adapter unit + config tests |
+| EXT-028 (RapidOCRAdapter contract) | S028a–S028b | adapter unit tests |
+| EXT-029 (box-row parser) | S029a–S029i | pure unit tests |
+| EXT-030 (orientation auto-fix) | S030a–S030c | adapter unit tests (injected mock engine) |
+| EXT-031 (GT real-data gate) | S031a–S031d | @pytest.mark.slow, CTR_PDF_PATH |
+| EXT-032 (domain invariants) | S032a–S032c | unit tests + git diff assertion |
+| EXT-033 (deps/Docker/air-gap) | S033a–S033c | containerized-verify (Makefile/Compose) |
+
+---
+
 ## Out of scope for this domain
 
 - Summation of extracted quantities (handled by the reconciliation domain).

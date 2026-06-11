@@ -457,3 +457,78 @@ Two sequential SDDs:
 
 Execution: SDD interactive · hybrid artifact store · ask-on-risk delivery · stacked-to-main
 chains. Frontend-visual apply → opus model.
+
+---
+
+## §2026-06-10 — SDD#1 deterministic-ocr-backend COMPLETE (PR#1–4 merged)
+
+### SDD#1 archived — deterministic OCR re-enabled
+
+All four PRs merged to `main` (#51 PR#1 / #52 PR#2 / #53 PR#3 / #54 PR#4).
+Dual-blind judgment-day PASS×2 (Opus 4.8 + Fable 5; JD round 1 FAIL×2 on F1 popularity-contest
+silent-drop, fixed, round 2 PASS×2). Real-data gate 13/13 GREEN.
+
+**Deploy defaults (docker-compose.yml)**:
+- `RECONCILIATION__OCR__ENABLED=true`
+- `RECONCILIATION__OCR__ENGINE=rapidocr`
+
+**Engine**: RapidOCR ONNX PP-OCRv5-server (`pip install rapidocr onnxruntime`). No paddlepaddle
+dependency — fits the paddle-free runtime image. Model weights baked at Docker build time
+(build-time warm-up `RUN python -c "from rapidocr import RapidOCR; RapidOCR()"`).
+
+### PR#4 geometric column anchoring — approach and rationale
+
+The real GRE physical column order is `DETALLE | UNIDAD | CANTIDAD` (unit in the middle, not
+to the right of qty). PR#4 corrected the preferred-column condition from `unit.cx > qty.cx`
+(wrong) to `desc.cx < unit.cx < qty.cx` (unit between desc and qty — the real layout). Clean
+in-table rows now emit `requires_review=False` (trusted reads restored). The relaxed fallback
+is retained for rows where the middle-column condition is not met (stays `requires_review=True`).
+
+**Table-region anchor: topmost structural cluster, NOT largest (critical JD F1 finding).**
+The original implementation used the largest cluster of paired qty+unit cells as the table
+anchor. On 1-line guías (pages 0141/0164), the reception-stamp / footer contains more
+text than the single-row material table; the largest-cluster heuristic therefore anchored on
+the FOOTER, suppressed the one real material row as "above-table", and silently dropped it.
+The JD Fable 5 judge caught this in the F1 round. Fix: anchor on the TOPMOST structural cluster
+(the cluster with the smallest `cy` centroid that contains at least one paired qty+unit cell),
+not the largest. The topmost structural cluster is always the material table in the GRE layout
+(header + rows appear before the footer/stamp). Commit `1df09a3`.
+
+**F1 regression-lock**: pages 0141 and 0164 (1-line guías) added to the real-data gate as
+characterization tests. Each asserts exactly 1 confident material row and no confident spurious
+rows. Gate is 13/13 GREEN (original 148/156/160 + new 0141/0164 + page-156 exactly-4-rows).
+
+### PR#4 deferred follow-ups (low priority, documented SA-2)
+
+These are known residuals — not bugs in the current implementation, but edge cases to address later:
+
+1. **Above-table spurious-anchor residual**: a paired qty+unit line that appears ABOVE the
+   material table (e.g. a header row that happens to contain a quantity token) could satisfy
+   `_has_paired_qty_unit` and be selected as the topmost structural cluster, erroneously
+   excluding the real table below it. Zero corpus evidence of this pattern in the current
+   dataset. Fix-later options: anchor on DESC-paired rows (more selective), or log all clusters
+   and keep the broadest bounding box. Tracking as OCR-F-1 in `docs/HANDOFF.md`.
+
+2. **F2 intra-table split-table**: if the material table is physically split across two
+   vertical regions on a page (e.g. a column break), the topmost-cluster anchor captures only
+   the first region. Pre-existing limitation. Empirically implausible in the 165-page corpus
+   (GRE tables are short — ≤4 rows). Deferred.
+
+3. **Gate is quantity-only**: the real-data gate (`test_rapidocr_gate.py`) validates extracted
+   `(cantidad, unidad)` tuples. It does not validate `description_canonical` identity against
+   the declared side — that validation is delegated to canonical matching (Tier-2) and
+   reconciliation. Accepted scope boundary per EXT-NG-001.
+
+### p156 trusted-read measurement (reference for future review)
+
+After PR#4 on page 156 (4 GT rows), the gate observes:
+- 1 confident GT read (`requires_review=False`)
+- 2 rows `requires_review=True` from the EXT-004 0.85 conf gate on genuinely garbled
+  descriptors (qty 0.008 conf~0.804, qty 0.191 conf~0.780)
+- 1 unit-ownership residual (`requires_review=True`): qty 0.041 — a stray text fragment
+  wins unit ownership ~1px nearer than the BARRA desc → relaxed unit-fallback path
+
+This is NOT a regression: every non-confident row is `requires_review=True` (trust contract
+intact, never confident-wrong). GT completeness is unchanged (all 4 quantities present).
+Weakening the EXT-004 confidence gate to force-confident the garbled descriptors would be
+wrong — it would auto-trust genuine OCR garble. Accepted and documented.

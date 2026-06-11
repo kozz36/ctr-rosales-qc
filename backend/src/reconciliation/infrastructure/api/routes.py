@@ -1333,27 +1333,41 @@ async def _run_discarded_recovery_batch(
     status["failed"] = 0
     status["done"] = False
 
-    async def _one(page: int) -> None:
-        try:
-            result = await reprocess_service.apply_page_recovery(page=page)
-            recovered = bool(getattr(result, "recovered", False))
-        except Exception as exc:  # noqa: BLE001 — per-page isolation
-            logger.warning(
-                "_run_discarded_recovery_batch: apply_page_recovery raised for page=%d "
-                "in run %r: %s",
-                page,
-                run_id,
-                exc,
-            )
-            recovered = False
-        # SYNCHRONOUS counter update — no await between read and write → race-free.
-        if recovered:
-            status["recovered"] = status["recovered"] + 1
-        else:
-            status["failed"] = status["failed"] + 1
+    # MEDIUM (JD / REV-R30 item 3 + S08) — bound recovery concurrency to max 3
+    # simultaneous calls. apply_page_recovery only caps Tier-3 vision internally;
+    # the Tier-2 OCR path (300-DPI render + OCR) is uncapped, so an A4 no-cap
+    # selection (up to 343 pages) would otherwise spawn dozens of parallel renders.
+    # Mirror ReprocessService's configured cap when available; default 3.
+    max_concurrency = int(getattr(reprocess_service, "_max_concurrency", 3) or 3)
+    semaphore = asyncio.Semaphore(max_concurrency)
 
-    await asyncio.gather(*[_one(p) for p in pages])
-    status["done"] = True
+    async def _one(page: int) -> None:
+        async with semaphore:
+            try:
+                result = await reprocess_service.apply_page_recovery(page=page)
+                recovered = bool(getattr(result, "recovered", False))
+            except Exception as exc:  # noqa: BLE001 — per-page isolation
+                logger.warning(
+                    "_run_discarded_recovery_batch: apply_page_recovery raised for page=%d "
+                    "in run %r: %s",
+                    page,
+                    run_id,
+                    exc,
+                )
+                recovered = False
+            # SYNCHRONOUS counter update — no await between read and write → race-free.
+            if recovered:
+                status["recovered"] = status["recovered"] + 1
+            else:
+                status["failed"] = status["failed"] + 1
+
+    # LOW (JD) — status["done"]=True under try/finally so a CancelledError (deadline
+    # guard / client disconnect) can never leave the batch permanently in-flight
+    # (a stuck done=False blocks every future batch with a 409).
+    try:
+        await asyncio.gather(*[_one(p) for p in pages])
+    finally:
+        status["done"] = True
 
 
 @router.post(
@@ -1444,7 +1458,12 @@ async def recover_discarded_batch(
     reprocess_service = _require_reprocess_service(entry, run_id)
 
     body = await request.json()
-    pages: list[int] = [int(p) for p in body.get("pages", [])]
+    raw_pages: list[int] = [int(p) for p in body.get("pages", [])]
+
+    # JD CRITICAL — de-duplicate pages (order-preserving) BEFORE scheduling.
+    # A duplicated page (e.g. {"pages":[88,88]}) is a deterministic double-count
+    # path with zero concurrency: it would invoke apply_page_recovery(88) twice.
+    pages: list[int] = list(dict.fromkeys(raw_pages))
 
     if not pages:
         raise HTTPException(status_code=400, detail="'pages' must be a non-empty list.")

@@ -307,7 +307,9 @@ class PageRecoveryResult:
         guia_id:    The synthetic guía id (f"recovered_{page}") on success; None on failure.
         reason:     Failure reason when recovered=False (None on success).
                     Values: ``"empty"`` (all tiers returned 0 lines) |
-                            ``"not_found"`` (page not in discarded list).
+                            ``"not_found"`` (page not in discarded list) |
+                            ``"already_recovered"`` (a concurrent call already
+                            recovered this page — idempotent no-op, JD CRITICAL).
         rows:       Updated ReconciliationRow list from ReviewService (empty on failure).
     """
 
@@ -440,9 +442,12 @@ class ReprocessService:
                 len(raw_lines),
             )
         else:
+            # Single render shared across Tier 2 (OCR) and Tier 3 (vision) so the
+            # page is rasterised at 300 DPI at most ONCE per recovery (LOW JD —
+            # the original re-rendered for vision, doubling the costly fitz render).
+            rendered: bytes = b""
             # Step 3: Tier 2 — OCR re-run.
             if self._extractor is not None:
-                rendered: bytes = b""
                 try:
                     loop = asyncio.get_running_loop()
                     rendered = await loop.run_in_executor(
@@ -476,19 +481,23 @@ class ReprocessService:
             # Step 4: Tier 3 — vision fallback (if still empty).
             if not raw_lines and self._vision is not None:
                 async with self._get_semaphore():
-                    rendered_for_vision: bytes = b""
-                    try:
-                        loop = asyncio.get_running_loop()
-                        rendered_for_vision = await loop.run_in_executor(
-                            None,
-                            lambda: self._doc_source.render_page(page, dpi=self._RENDER_DPI),
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "apply_page_recovery: render_page(%d) for vision failed: %s",
-                            page,
-                            exc,
-                        )
+                    # Reuse the Tier-2 render (same page, same 300 DPI) instead of
+                    # re-rasterising. Only render here when Tier 2 didn't run
+                    # (extractor None) or its render failed (rendered still empty).
+                    rendered_for_vision: bytes = rendered
+                    if not rendered_for_vision:
+                        try:
+                            loop = asyncio.get_running_loop()
+                            rendered_for_vision = await loop.run_in_executor(
+                                None,
+                                lambda: self._doc_source.render_page(page, dpi=self._RENDER_DPI),
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "apply_page_recovery: render_page(%d) for vision failed: %s",
+                                page,
+                                exc,
+                            )
                     if rendered_for_vision:
                         rendered_for_vision = _downscale_image(
                             rendered_for_vision, self._downscale_max_edge
@@ -538,6 +547,26 @@ class ReprocessService:
         # Step 7: build GuiaDeRemision.
         guia_id = f"recovered_{page}"
         async with self._get_commit_lock():
+            # JD CRITICAL — re-check the discarded list UNDER the commit lock to
+            # close the TOCTOU window. Two concurrent calls both pass the Step-1
+            # lookup and both suspend in the OCR executor; the first to win the
+            # lock commits and drops the entry. The loser observes the entry gone
+            # here and returns a truthful no-op (recovered=False) instead of
+            # falsely claiming a second recovery. The ReviewService hook also
+            # guards idempotently, so even a divergent caller never double-appends.
+            still_discarded = any(
+                dp.page == page for dp in self._review_service.discarded_pages
+            )
+            if not still_discarded:
+                logger.info(
+                    "apply_page_recovery: page=%d already recovered by a concurrent "
+                    "call — no-op (recovered=False, already_recovered)",
+                    page,
+                )
+                return PageRecoveryResult(
+                    recovered=False, page=page, reason="already_recovered"
+                )
+
             guia = GuiaDeRemision(
                 guia_id=guia_id,
                 registro=entry.registro,   # inherited directly — no dialog/parameter

@@ -604,6 +604,27 @@ class ReviewService:
                 "must always be flagged for review (reconciliation validation gate)."
             )
 
+        # JD CRITICAL (dual-blind, reproduced) — lock-local idempotency/existence
+        # guard. This method runs under ReprocessService's commit lock, the correct
+        # point to close the TOCTOU window: two concurrent apply_page_recovery(page)
+        # calls both pass the discarded-list lookup, both suspend in the OCR
+        # executor, then both arrive here sequentially. Without this guard each
+        # would append a duplicate guía (qty 2×) AND write a duplicate sidecar event
+        # → replay re-creates the corruption on every restart.
+        #
+        # Two no-op signals (structured result, NOT an exception — parity with
+        # add_recovered_guia's no-op contract at :514-522):
+        #   1. A with-lines guía with this guia_id already exists (guia_id keyed).
+        #   2. The page is no longer in discarded_pages (the second caller arrives
+        #      after the first already committed and dropped the entry).
+        already_present = any(
+            g.guia_id == guia.guia_id and len(g.lines) > 0 for g in self._guias
+        )
+        page_gone = not any(dp.page == page for dp in self._discarded_pages)
+        if already_present or page_gone:
+            # Idempotent no-op: never double-append, never double-write the event.
+            return list(self._rows)
+
         # Append guía (no placeholder to replace — discarded pages never had a guía slot).
         new_guias = list(self._guias)
         new_guias.append(guia)
@@ -821,6 +842,13 @@ class ReviewService:
                         "'page' in target for guia_id=%r; skipping.",
                         guia_id,
                     )
+                    continue
+                # JD CRITICAL (defensive) — duplicate events already on disk (written
+                # before the commit-lock guard existed) must NOT re-create the
+                # double-count on every restart. Skip if this guia_id is already
+                # restored. recover_discarded_page guards too, but skipping here
+                # avoids the redundant re-reconcile. Matches the no-op contract.
+                if any(g.guia_id == guia_id and len(g.lines) > 0 for g in service.guias):
                     continue
                 try:
                     guia = GuiaDeRemision.model_validate(raw_guia)

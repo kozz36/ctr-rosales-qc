@@ -29,6 +29,7 @@ from typing import Any
 
 from reconciliation.domain.errors import ReconciliationError
 from reconciliation.domain.models import (
+    DiscardedPage,
     ErroredGuia,
     GuiaDeRemision,
     ReconciliationRow,
@@ -118,7 +119,7 @@ class ReviewService:
         rows: list[ReconciliationRow],
         ctx: RunContext,
         errored_guias: list[ErroredGuia] | None = None,
-        discarded_pages: list["DiscardedPage"] | None = None,
+        discarded_pages: list[DiscardedPage] | None = None,
     ) -> None:
         self._declared: list[Registro] = list(declared)
         self._guias: list[GuiaDeRemision] = list(guias)
@@ -128,7 +129,6 @@ class ReviewService:
         self._audit_trail: list[EditEvent] = []
         self._errored_guias: list[ErroredGuia] = list(errored_guias) if errored_guias else []
         # EXT-034/035: GUIA pages dropped by rev-6 QR-evidence gate (additive side-channel).
-        from reconciliation.domain.models import DiscardedPage  # noqa: PLC0415
         self._discarded_pages: list[DiscardedPage] = list(discarded_pages) if discarded_pages else []
 
     # ------------------------------------------------------------------
@@ -154,7 +154,7 @@ class ReviewService:
         return list(self._errored_guias)
 
     @property
-    def discarded_pages(self) -> list:
+    def discarded_pages(self) -> list[DiscardedPage]:
         """GUIA pages dropped by the rev-6 QR-evidence gate (EXT-034).
 
         Additive side-channel — read-only until recover_discarded_page is called (PR-2).
@@ -613,7 +613,7 @@ class ReviewService:
         rows: list[ReconciliationRow],
         ctx: RunContext,
         errored_guias: list[ErroredGuia] | None = None,
-        discarded_pages: list | None = None,
+        discarded_pages: list[DiscardedPage] | None = None,
     ) -> "ReviewService":
         """Reconstruct a ReviewService by replaying edits from the sidecar.
 

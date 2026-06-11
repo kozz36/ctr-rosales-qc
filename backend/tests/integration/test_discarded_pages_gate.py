@@ -25,7 +25,6 @@ Marker: @pytest.mark.slow (QR decode ~1.2 s/page × ~469 GUIA pages ≈ 10-15 mi
 from __future__ import annotations
 
 import os
-from datetime import date
 from pathlib import Path
 
 import pytest
@@ -142,10 +141,13 @@ class TestDiscardedPagesRealDataGate:
             )
             # Override vision with null adapter to avoid any latent LLM env-var side effects
             pipeline._vision = _NullVision()  # type: ignore[attr-defined]
-        except Exception as exc:  # noqa: BLE001
+        except (ImportError, ModuleNotFoundError) as exc:
+            # ONLY a genuinely-missing optional adapter dependency (e.g. pyzbar/zxing-cpp
+            # for QrBarcodeExtractionAdapter) is a legitimate skip. Wiring regressions
+            # (TypeError/AttributeError/etc.) must FAIL the gate, not silently skip.
             pytest.skip(
                 f"build_pipeline failed ({exc}) — QrBarcodeExtractionAdapter or "
-                "other required adapter unavailable. Cannot run discard gate."
+                "other required adapter dependency not installed. Cannot run discard gate."
             )
 
         return pipeline.run(ctx)

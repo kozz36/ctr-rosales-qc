@@ -435,10 +435,15 @@ the Descartadas tab. The exact field name and nesting (e.g., `discarded_guia_pag
    `MaterialLine` objects to the frontend as they are not needed for the operator decision).
 2. The response field MUST default to `[]` (empty list) for runs that have no discarded
    entries — no breaking change for existing consumers.
-3. The API DTO MUST include a `reason` or `type` field that distinguishes discarded entries
-   (no QR evidence, possible guía) from errored guías (valid identity, zero OCR lines).
-   This is required so the frontend can route entries to the correct tab (Descartadas vs
-   Pendientes) without client-side inference.
+3. **[SUPERSEDED by design D1 — structural discrimination]** The original constraint required
+   a per-entry `reason`/`type` discriminator field on a shared DTO. Design D1 deliberately
+   superseded this with **structural discrimination**: discarded entries and errored guías are
+   surfaced as **separate top-level lists** on the table response (`discarded_pages` vs
+   `errored_guias`), each with its own DTO (`DiscardedPageResponse` vs `ErroredGuiaResponse`).
+   The list a DTO lives in IS the discriminator, so no `reason`/`type` field is needed for tab
+   routing — the frontend routes `discarded_pages` → Descartadas and `errored_guias` →
+   Pendientes by structure. The intent (no client-side inference to route entries to the correct
+   tab) is fully preserved; only the mechanism changed (separate lists, not a tagged union).
 4. The `identity_source` field on any DTO associated with a recovered page MUST use the new
    additive Literal value (EXT-037 constraint 3 + 4). The schema MUST be updated in lockstep.
 
@@ -458,13 +463,18 @@ Then the discarded entry in the response includes:
   - `registro = "232"`
   - an indicator that cached OCR lines exist (non-empty cache) — exact field is design decision
 
-#### Scenario REV-R33-S03: discarded entry reason distinguishes from errored guía
+#### Scenario REV-R33-S03: discarded entries are structurally distinguished from errored guías
+
+**[SUPERSEDED by design D1 — structural discrimination]** The original scenario asserted a
+per-entry `reason` Literal (`"no_identity"` vs `"zero_lines"`). Under design D1 the discriminator
+is structural (separate top-level lists), so the scenario is restated as:
 
 Given a run with 1 discarded entry (no QR evidence) AND 1 errored guía (valid QR, zero OCR lines)
 When the API response is inspected
-Then the discarded entry has `reason = "no_identity"` (or equivalent Literal value)
-And the errored guía has `reason = "zero_lines"` (or equivalent Literal value)
-And neither entry appears in the wrong tab's data bucket
+Then the discarded entry appears ONLY in the `discarded_pages` list (as a `DiscardedPageResponse`)
+And the errored guía appears ONLY in the `errored_guias` list (as an `ErroredGuiaResponse`)
+And neither entry appears in the wrong tab's data bucket (structural discrimination — no
+  `reason`/`type` field required)
 
 ---
 

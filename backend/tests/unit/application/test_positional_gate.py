@@ -628,6 +628,12 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
             [p_a, p_b, p_c], classifications, decode_map=decode_map
         )
 
+        # EXT-S034d lock: an ocr_fallback page (URL QR evidence + material) is ASSEMBLED
+        # into its own block — it must NEVER be double-surfaced as a DiscardedPage.
+        assert _discarded == [], (
+            "ocr_fallback (URL QR evidence) page must be assembled, not discarded"
+        )
+
         # Three distinct blocks: A (QR), B (ocr_fallback), C (QR).
         assert len(blocks) == 3, (
             f"Expected 3 blocks (B not dropped); got {len(blocks)}: "
@@ -861,6 +867,11 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
             [p_a], classifications, decode_map=decode_map
         )
 
+        # EXT-S034d lock: run-start ocr_fallback page is assembled, not double-surfaced.
+        assert _discarded == [], (
+            "run-start ocr_fallback (URL QR evidence) page must be assembled, not discarded"
+        )
+
         assert len(blocks) == 1, (
             "An ocr_fallback material page WITH URL QR evidence at run-start must "
             f"open its own block; got {len(blocks)}"
@@ -897,6 +908,12 @@ class TestC1OcrFallbackMaterialPageStartsOwnBlock:
         pipeline = _make_pipeline()
         blocks, _discarded = pipeline._stage_assemble_blocks(
             [p_a, p_b], classifications, decode_map=decode_map
+        )
+
+        # EXT-S034d lock: the ocr_fallback page (p1) is assembled into its own block —
+        # it must NEVER also appear in discarded (no double-surfacing).
+        assert _discarded == [], (
+            "ocr_fallback (URL QR evidence) page must be assembled, not discarded"
         )
 
         assert len(blocks) == 2, (

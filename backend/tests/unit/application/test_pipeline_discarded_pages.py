@@ -231,42 +231,30 @@ class TestValidQrNotDiscarded:
 
 
 # ---------------------------------------------------------------------------
-# 1.1.4 — OCR-fallback path (hashqr_url non-None) must NOT be discarded
+# 1.1.4 — No-QR-evidence discriminant: identity=None AND no hashqr_url → DISCARDED.
+#
+# This is the NEGATIVE arm of the EXT-S034d discriminant at the pipeline level:
+# a material-bearing GUIA page with NO QR evidence at all is dropped AND surfaced
+# as a DiscardedPage (never silently lost, never assembled).
+#
+# The POSITIVE ocr_fallback arm (identity=None BUT hashqr_url present → assembled
+# into its own block, NOT discarded) is exercised at the _stage_assemble_blocks
+# boundary in test_positional_gate.py (which now asserts `discarded == []` on those
+# positive paths).  It cannot be driven from this pipeline-level test because the
+# _StatefulIdentity fake injects at the GuiaIdentity level, not DecodeOutcome, so it
+# cannot supply a DecodeOutcome.hashqr_url without the real IdentityExtractionPort.
 # ---------------------------------------------------------------------------
 
 
-class TestOcrFallbackNotDiscarded:
-    def test_ocr_fallback_evidence_not_discarded(self, tmp_path: Path) -> None:
-        """A page with identity=None but page_hashqr_url non-None AND non-empty OCR lines
-        must use the ocr_fallback path and NOT appear in discarded_pages.
+class TestNoQrEvidenceDiscriminantDiscarded:
+    def test_no_hashqr_material_page_is_discarded_not_assembled(self, tmp_path: Path) -> None:
+        """A material page with identity=None AND no hashqr_url must be DISCARDED
+        (negative arm of the EXT-S034d discriminant), not assembled into a block.
 
-        Spec: EXT-034 / EXT-S034d. Regression lock.
-
-        The pipeline builds a hashqr_url QR when the compact identity QR fails but the
-        URL-variant QR (`hashqr=` in the SUNAT URL) is decoded.  We simulate this by
-        supplying an identity whose hashqr_url is set but whose decode returns None —
-        but actually the pipeline derives hashqr_url from the DecodeOutcome.hashqr_url.
-        We build a GuiaIdentity with no serie/numero but a hashqr_url to represent the
-        URL-only case via the identity adapter returning an identity that has a hashqr_url
-        but the compact decode failed.
-
-        NOTE: the actual ocr_fallback path requires:
-          - identity is None (compact QR failed)
-          - page_hashqr_url is not None (URL QR decoded)
-          - len(raw.lines) > 0
-
-        To simulate this in the pipeline test we need the identity adapter to NOT return
-        an identity (returns None) but the page must somehow carry a hashqr_url.  The
-        hashqr_url comes from the DecodeOutcome which wraps the identity; the _identity
-        adapter is wired at the GuiaIdentity level, not DecodeOutcome.
-
-        Since the internal DecodeOutcome.hashqr_url path is only reachable via the real
-        IdentityExtractionPort adapter (test_block_grouping.py covers this), here we
-        verify the simpler invariant: that when identity_seq returns None and there is no
-        hashqr_url, the page IS discarded (validating the discriminant).  The positive
-        ocr_fallback path is covered by test_block_grouping.py tests.
+        Spec: EXT-034 / EXT-S034d (negative arm). The positive arm (hashqr_url present
+        → assembled, discarded == []) is locked in test_positional_gate.py.
         """
-        # Simplest form: identity=None, no hashqr_url → page IS discarded
+        # identity=None, no hashqr_url → page IS discarded (and NOT assembled).
         result = _run_pipeline(
             pages=[_GUIA_PAGE_NO_QR],
             identity_seq=[None],
@@ -274,9 +262,13 @@ class TestOcrFallbackNotDiscarded:
             page_to_registro={0: "232"},
             tmp_path=tmp_path,
         )
-        # Page with no QR evidence at all → must be discarded
+        # Page with no QR evidence at all → must be discarded.
         assert len(result.discarded_pages) == 1, (
-            "No-QR page must be discarded"
+            "No-QR-evidence material page must be discarded (negative discriminant arm)"
+        )
+        # And it must NOT have been assembled into any guía block.
+        assert not any(0 in g.source_pages for g in result.guias), (
+            "No-QR-evidence page must NOT be assembled into a guía block"
         )
 
 

@@ -11,15 +11,7 @@ import uuid
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
-
-from reconciliation.domain.models import (
-    GuiaDeRemision,
-    MaterialLine,
-    PageClassification,
-    ReconciliationRow,
-    Registro,
-)
+from reconciliation.domain.models import MaterialLine
 
 
 # ---------------------------------------------------------------------------
@@ -120,3 +112,43 @@ class TestBuildReviewServiceHydratesDiscardedPages:
         assert review_service.discarded_pages == [], (
             "Old cache (no discarded_pages key) must default to []"
         )
+
+    # 1.1.10 — hydration with NON-EMPTY cached lines (Tier-1 recovery dependency)
+    def test_build_review_service_hydrates_discarded_with_cached_lines(
+        self, tmp_path: Path
+    ) -> None:
+        """A discarded entry persisted WITH cached OCR lines must hydrate so the
+        MaterialLine survives round-trip with full Decimal fidelity.
+
+        Spec: EXT-035. PR-2 Tier-1 recovery reuses these cached lines, so the
+        persist→hydrate path MUST NOT drop or coerce them.
+        """
+        from reconciliation.domain.models import DiscardedPage  # type: ignore[attr-defined]
+        from reconciliation.infrastructure.container import build_review_service
+
+        line = _make_line(desc="BARRA 1/2", qty="0.191")
+        cache = _make_cache(
+            discarded_pages=[
+                {
+                    "page": 88,
+                    "registro": "232",
+                    "lines": [line.model_dump(mode="json")],
+                }
+            ]
+        )
+        ctx = _write_cache_and_sidecar(tmp_path, cache)
+        review_service = build_review_service(ctx)
+
+        dp = review_service.discarded_pages
+        assert len(dp) == 1
+        entry = dp[0]
+        assert isinstance(entry, DiscardedPage)
+        assert entry.page == 88
+        assert entry.registro == "232"
+        # The cached MaterialLine must survive hydration with Decimal fidelity.
+        assert len(entry.lines) == 1
+        hydrated = entry.lines[0]
+        assert isinstance(hydrated, MaterialLine)
+        assert hydrated.cantidad == Decimal("0.191")
+        assert hydrated.unidad == "TN"
+        assert hydrated.description_raw == "BARRA 1/2"

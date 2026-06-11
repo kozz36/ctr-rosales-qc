@@ -386,6 +386,58 @@ class TestGetTable:
         body = resp.json()
         assert body["unresolved_guias"] == []
 
+    def test_table_includes_discarded_pages_with_has_cached_lines(
+        self, client: TestClient
+    ) -> None:
+        """GET /table surfaces ``discarded_pages`` with ``has_cached_lines`` derived
+        from the presence of cached OCR lines (design §9 / EXT-034 / REV-R33).
+
+        - An entry WITH cached lines → has_cached_lines == True.
+        - An entry WITHOUT cached lines → has_cached_lines == False.
+        Raw MaterialLine objects MUST NOT be exposed to the frontend.
+        """
+        from reconciliation.domain.models import DiscardedPage  # noqa: PLC0415
+
+        run_id = str(uuid.uuid4())
+        with_lines = DiscardedPage(
+            page=88,
+            registro="232",
+            lines=[
+                MaterialLine(
+                    description_raw="BARRA 1/2",
+                    description_canonical="barra 1/2",
+                    unidad="TN",
+                    cantidad=Decimal("0.191"),
+                )
+            ],
+        )
+        without_lines = DiscardedPage(page=152, registro=None, lines=[])
+
+        svc = MagicMock()
+        svc.rows = []
+        svc.guias = []
+        svc.errored_guias = []
+        svc.discarded_pages = [with_lines, without_lines]
+        svc.get_audit_trail.return_value = []
+
+        _seed_run(client, run_id, review_service=svc)
+        resp = client.get(f"/api/v1/runs/{run_id}/table")
+        assert resp.status_code == 200
+        body = resp.json()
+
+        assert "discarded_pages" in body
+        entries = body["discarded_pages"]
+        assert len(entries) == 2
+
+        by_page = {e["page"]: e for e in entries}
+        # Entry with cached OCR lines → has_cached_lines True; raw lines NOT exposed.
+        assert by_page[88]["registro"] == "232"
+        assert by_page[88]["has_cached_lines"] is True
+        assert "lines" not in by_page[88]
+        # Entry without cached lines → has_cached_lines False; registro None preserved.
+        assert by_page[152]["registro"] is None
+        assert by_page[152]["has_cached_lines"] is False
+
 
 # ---------------------------------------------------------------------------
 # PATCH /runs/{run_id}/rows/{row_id}

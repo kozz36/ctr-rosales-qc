@@ -190,6 +190,30 @@ def qr_adapter():
     return QrBarcodeExtractionAdapter(render_dpi=150, upscale=2)
 
 
+@pytest.fixture
+def isolate_run_history():
+    """Neutralise the run-history lifespan scan/sweep for tests that build a
+    real TestClient(create_app()).
+
+    Without this, the PR-1 lifespan scans the REAL ``backend/runs/`` output dir
+    and the 48 h ``sweep_failed`` would rmtree real error-manifest dirs once they
+    exist. We patch ``scan``→[] and ``sweep_failed``→[] so the TestClient lifespan
+    never touches the real output dir (same isolation pattern as
+    ``test_lifespan_scan.py``). Yields so the patches stay active inside the
+    ``with TestClient(...)`` block.
+    """
+    from unittest.mock import patch  # noqa: PLC0415
+
+    with patch(
+        "reconciliation.infrastructure.run_history_store.JsonManifestRunHistoryAdapter.scan",
+        return_value=[],
+    ), patch(
+        "reconciliation.infrastructure.run_history_store.JsonManifestRunHistoryAdapter.sweep_failed",
+        return_value=[],
+    ):
+        yield
+
+
 def _make_pipeline(
     pdf_src: Any,
     digital_extractor: Any,
@@ -688,7 +712,8 @@ class TestLineEditE2E:
         )
 
     def test_line_edit_via_api_route_changes_summed_qty(
-        self, pdf_src, digital_extractor, page_to_registro, qr_adapter, tmp_path
+        self, pdf_src, digital_extractor, page_to_registro, qr_adapter, tmp_path,
+        isolate_run_history,
     ) -> None:
         """PATCH /runs/{id}/guias/{guia_id}/lines returns updated rows with changed summed_qty."""
         from fastapi.testclient import TestClient
@@ -756,7 +781,7 @@ class TestLineEditE2E:
 class TestThumbnailE2E:
     """GET /runs/{id}/pages/{page}/thumbnail returns 200 + image/png."""
 
-    def test_thumbnail_endpoint_returns_png(self, tmp_path) -> None:
+    def test_thumbnail_endpoint_returns_png(self, tmp_path, isolate_run_history) -> None:
         """Create a run with a synthetic page PNG and assert the endpoint returns it."""
         import uuid
 
@@ -806,7 +831,7 @@ class TestThumbnailE2E:
             f"Expected image/png content-type; got {content_type!r}"
         )
 
-    def test_thumbnail_returns_404_for_missing_page(self, tmp_path) -> None:
+    def test_thumbnail_returns_404_for_missing_page(self, tmp_path, isolate_run_history) -> None:
         """Thumbnail endpoint returns 404 when the page file does not exist."""
         import uuid
 

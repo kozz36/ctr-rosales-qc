@@ -213,7 +213,14 @@ class TestSeqAllocation:
         assert data_d2["seq"] == 1, "first run on a new day must have seq=1"
 
     def test_seq_allocation_thread_safe(self, tmp_path: Path) -> None:
-        """10 concurrent threads writing same-day manifests get unique seq 1–10 (D3)."""
+        """N concurrent same-day completions get unique seq 1–N (D3/RH-004).
+
+        Deterministic: a threading.Barrier releases all writers at the exact
+        same instant so they all race the scan→write critical section. Without
+        the seq fix (scan under lock, write OUTSIDE), this maximises the TOCTOU
+        window and collides reliably; with the lock held across scan AND write
+        it is deterministically GREEN.
+        """
         from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
             JsonManifestRunHistoryAdapter,
         )
@@ -226,10 +233,14 @@ class TestSeqAllocation:
             (tmp_path / rid).mkdir()
 
         errors: list[Exception] = []
+        # Barrier-synchronise: all writers block until every thread is ready,
+        # then enter the allocate→write path together (maximal contention).
+        start_barrier = threading.Barrier(n)
 
         def write_one(rid: str) -> None:
             try:
                 m = _make_manifest(rid, started_at=f"{date_prefix}T00:00:00+00:00")
+                start_barrier.wait()
                 adapter.write_manifest(m, tmp_path)
             except Exception as e:  # noqa: BLE001
                 errors.append(e)

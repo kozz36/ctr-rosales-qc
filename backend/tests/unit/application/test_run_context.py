@@ -59,11 +59,17 @@ class TestExtractionCache:
         loaded = ctx.read_extraction_cache()
         assert loaded == data
 
-    def test_write_once_immutable(self, tmp_path: Path) -> None:
+    def test_extraction_cache_atomic_overwrite(self, tmp_path: Path) -> None:
+        """New contract: the cache is NOT write-once; a second write SUCCEEDS
+        and fully replaces the content (retry semantics, SDD#3 PR-2). The
+        atomic temp-file + rename guarantee is preserved (no .tmp residue)."""
         ctx = RunContext(pdf_path=tmp_path / "doc.pdf", output_base=tmp_path / "runs")
         ctx.write_extraction_cache({"first": True})
-        with pytest.raises(RuntimeError, match="immutable"):
-            ctx.write_extraction_cache({"second": True})
+        # Second write must succeed and replace the content entirely.
+        ctx.write_extraction_cache({"second": True})
+        assert ctx.read_extraction_cache() == {"second": True}
+        # Atomicity preserved: no temp file left behind.
+        assert list(ctx.run_dir.glob("*.tmp")) == []
 
     def test_read_missing_cache_raises(self, tmp_path: Path) -> None:
         ctx = RunContext(pdf_path=tmp_path / "doc.pdf", output_base=tmp_path / "runs")

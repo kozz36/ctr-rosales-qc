@@ -136,11 +136,18 @@ def _make_review_service(
 @pytest.fixture()
 def app_client(tmp_path: Path) -> TestClient:
     """TestClient backed by a real FastAPI app with in-memory registry."""
+    from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+        JsonManifestRunHistoryAdapter,
+    )
+
     app = create_app()
     config = AppConfig(output_dir=tmp_path / "runs")
     config.output_dir.mkdir(parents=True, exist_ok=True)
     app.state.config = config
     app.state.run_registry = {}
+    # D1: this fixture bypasses the lifespan; seed the single run-history adapter
+    # that _get_run_history resolves (normally created in main.lifespan).
+    app.state.run_history = JsonManifestRunHistoryAdapter()
     return TestClient(app, raise_server_exceptions=True)
 
 
@@ -296,24 +303,26 @@ class TestHappyPath:
             f"Expected 10 xlsx columns; got {len(header_values)}: {header_values}"
         )
 
-    def test_extraction_cache_immutable_on_second_write(self, tmp_path: Path) -> None:
-        """Abort/resume: cache is write-once; second write raises RuntimeError.
+    def test_extraction_cache_atomic_overwrite(self, tmp_path: Path) -> None:
+        """Retry semantics: the cache is NOT write-once; a second write SUCCEEDS
+        and fully replaces the content (SDD#3 PR-2). Atomicity (temp-file +
+        rename) is preserved, so no partial/.tmp residue is left behind.
 
-        This verifies the RunContext abort/resume guarantee without running
-        a full pipeline. The invariant is enforced at RunContext level.
+        This verifies the RunContext overwrite contract without running a full
+        pipeline. The invariant is enforced at the RunContext level.
         """
         from reconciliation.application.run_context import RunContext  # noqa: PLC0415
 
         ctx = RunContext(pdf_path=tmp_path / "doc.pdf", output_base=tmp_path / "runs")
         ctx.write_extraction_cache({"run_id": ctx.run_id, "data": "first_write"})
-        first_content = ctx.extraction_cache.read_text(encoding="utf-8")
 
-        # Second write must raise - the cache is immutable after first write
-        with pytest.raises(RuntimeError, match="immutable"):
-            ctx.write_extraction_cache({"data": "second_write"})
+        # Second write must SUCCEED and replace the content entirely.
+        ctx.write_extraction_cache({"data": "second_write"})
 
-        # File content unchanged
-        assert ctx.extraction_cache.read_text(encoding="utf-8") == first_content
+        loaded = ctx.read_extraction_cache()
+        assert loaded == {"data": "second_write"}
+        # Atomicity preserved: no temp file left behind.
+        assert list(ctx.run_dir.glob("*.tmp")) == []
 
 
 # ---------------------------------------------------------------------------

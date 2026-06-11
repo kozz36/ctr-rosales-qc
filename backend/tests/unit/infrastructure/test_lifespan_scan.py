@@ -239,3 +239,89 @@ class TestGetRunsEndpoint:
         assert len(data) == 3
         # Last entry must be the legacy one (null started_at)
         assert data[-1]["run_id"] == run_legacy, f"expected legacy run last, got {data[-1]['run_id']}"
+
+
+# ---------------------------------------------------------------------------
+# RH-006-S01 — REAL lifespan e2e: restart durability (no mock theatre)
+# ---------------------------------------------------------------------------
+
+
+class TestLifespanRealE2E:
+    """The lifespan startup MUST hydrate app.state.run_registry from a real
+    output dir via create_app()'s actual lifespan — NOT a re-implemented merge.
+
+    This is the restart-durability lock (RH-006-S01): point config at a tmp
+    output dir holding (a) a manifest run, (b) a legacy cache-only dir, and
+    (c) a corrupt manifest; drive the REAL lifespan through TestClient; assert
+    the registry is populated, degraded flags are correct, the corrupt dir is
+    skipped, and every hydrated entry carries hydrated=False.
+    """
+
+    def test_real_lifespan_hydrates_registry_from_disk(
+        self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+    ) -> None:
+        from fastapi.testclient import TestClient  # noqa: PLC0415
+
+        from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
+        from reconciliation.infrastructure.api.main import create_app  # noqa: PLC0415
+        from reconciliation.infrastructure.run_history_store import (  # noqa: PLC0415
+            JsonManifestRunHistoryAdapter,
+        )
+
+        output_dir = tmp_path / "runs"
+        output_dir.mkdir()
+
+        # (a) valid manifest run
+        r_manifest = _fresh_run_id()
+        (output_dir / r_manifest).mkdir()
+        JsonManifestRunHistoryAdapter().write_manifest(
+            RunManifest(
+                schema_version=1, run_id=r_manifest, status="review",
+                started_at="2026-06-11T00:00:00+00:00", completed_at=None,
+                seq=1, registro_min=None, registro_max=None,
+                row_count=0, match_count=0, mismatch_count=0,
+                warnings=[], vision_calls_made=0,
+            ),
+            output_dir,
+        )
+
+        # (b) legacy cache-only dir → degraded review
+        r_legacy = _fresh_run_id()
+        (output_dir / r_legacy).mkdir()
+        (output_dir / r_legacy / "extraction_cache.json").write_text("{}", encoding="utf-8")
+
+        # (c) corrupt manifest → skipped by scan
+        r_corrupt = _fresh_run_id()
+        (output_dir / r_corrupt).mkdir()
+        (output_dir / r_corrupt / "run_manifest.json").write_text(
+            "{not valid json", encoding="utf-8"
+        )
+
+        # Point the REAL lifespan at the tmp output dir; no yaml file so only
+        # env + defaults apply (RECONCILIATION_CONFIG → nonexistent path).
+        monkeypatch.setenv("RECONCILIATION_CONFIG", str(tmp_path / "no-such-config.yaml"))
+        monkeypatch.setenv("RECONCILIATION__OUTPUT_DIR", str(output_dir))
+
+        app = create_app()
+        with TestClient(app) as client:
+            registry = client.app.state.run_registry  # type: ignore[attr-defined]
+
+            # Corrupt dir skipped → only 2 entries hydrated.
+            assert set(registry.keys()) == {r_manifest, r_legacy}, (
+                f"unexpected registry keys: {sorted(registry.keys())}"
+            )
+            assert r_corrupt not in registry
+
+            # Manifest entry: full, degraded=False.
+            assert registry[r_manifest]["degraded"] is False
+            assert registry[r_manifest]["status"] == "review"
+
+            # Legacy cache-only entry: degraded=True, status review.
+            assert registry[r_legacy]["degraded"] is True
+            assert registry[r_legacy]["status"] == "review"
+
+            # Restart-hydration invariant: nothing is live yet.
+            assert all(e["hydrated"] is False for e in registry.values())
+
+            # The single shared adapter is on app.state (D1).
+            assert client.app.state.run_history is not None  # type: ignore[attr-defined]

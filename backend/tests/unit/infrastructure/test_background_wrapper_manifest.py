@@ -77,6 +77,10 @@ class TestBackgroundWrapperManifestHooks:
         # All heavy deps are lazy-imported inside _run_pipeline_background.
         # Patch at the module where they are defined (not on routes which never has them
         # as module-level attrs).
+        #
+        # D1 (F5): the run-history adapter is now INJECTED into the wrapper (the
+        # single app.state.run_history instance), not constructed inline — so we
+        # pass the mock directly as the run_history argument.
         _adapter = mock_adapter if mock_adapter is not None else MagicMock()
 
         with patch(
@@ -88,11 +92,8 @@ class TestBackgroundWrapperManifestHooks:
         ), patch(
             "reconciliation.infrastructure.container.build_reprocess_service",
             return_value=MagicMock(),
-        ), patch(
-            "reconciliation.infrastructure.run_history_store.JsonManifestRunHistoryAdapter",
-            return_value=_adapter,
         ):
-            _run_pipeline_background(run_id, pdf_path, config, registry)
+            _run_pipeline_background(run_id, pdf_path, config, registry, _adapter)
 
     def test_manifest_written_on_success(self, tmp_path: Path) -> None:
         """On success, adapter.write_manifest is called once (RH-001-S01)."""

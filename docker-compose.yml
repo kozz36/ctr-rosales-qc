@@ -52,6 +52,11 @@ services:
       #   OLLAMA_MODEL=qwen3.5:9b                      (local-vision fallback)
       RECONCILIATION__VISION__OLLAMA__MODEL: "${OLLAMA_MODEL:-qwen3.5:397b-cloud}"
       RECONCILIATION__VISION__OLLAMA__BASE_URL: "${OLLAMA_BASE_URL:-http://localhost:11434/v1}"
+      # deadline_s: 60 (NOT the 20s code default). Cloud Ollama (qwen3.5:397b-cloud /
+      # kimi-k2.5:cloud) is throttled under sequential reprocess; at 20s, 108/126 guía
+      # date-reads timed out (#57) → dates fell to the R9b SUNAT floor instead of a real
+      # read, degrading fecha-divergence detection. 60s gives the cloud call room.
+      RECONCILIATION__VISION__DEADLINE_S: "60"
       # max_tokens: 640 sits in the 512-768 range — survives the <think> phase
       RECONCILIATION__VISION__MAX_TOKENS: "640"
       # disable_thinking: default ON — /no_think improves OCR/vision capture quality

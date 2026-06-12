@@ -75,7 +75,7 @@ class RunHistoryPort(Protocol):
         manifest: RunManifest,
         output_dir: Path,
         force_seq: int | None = None,
-    ) -> None:
+    ) -> int | None:
         """Persist a completed run manifest atomically.
 
         On IOError / OSError: log and return without propagating — manifest
@@ -87,6 +87,10 @@ class RunHistoryPort(Protocol):
             force_seq:  L-3: when set (same-day retry completion), reuse the
                         run's ORIGINAL per-day seq instead of allocating a new
                         one, so the display identity (#N) stays stable (D3).
+
+        Returns:
+            The allocated per-day ``seq`` on success (for same-session registry
+            merge), or ``None`` when the non-fatal write failed.
         """
         ...
 

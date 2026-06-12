@@ -455,7 +455,11 @@ def _build_run_manifest(
     from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
 
     declared_items = getattr(result, "declared", []) or []
-    registros = [getattr(item, "registro", None) for item in declared_items]
+    # A1: the domain model field is `numero` (Registro.numero), NOT `registro`.
+    # Direct attribute access — the outer non-fatal try/except in the wrapper
+    # already guards prod; a defensive getattr default here silently masked the
+    # bug that made registro_min/max None in every manifest.
+    registros = [item.numero for item in declared_items]
     registros = [r for r in registros if r is not None]
 
     registro_min: str | None = None
@@ -576,8 +580,21 @@ def _run_pipeline_background(
             manifest = _build_run_manifest(result, registry[run_id], started_at, run_id)
             # L-3: a same-day retry carries its original seq forward (stable #N).
             preserved_seq = registry[run_id].get("preserved_seq")
-            run_history.write_manifest(
+            allocated_seq = run_history.write_manifest(
                 manifest, config.output_dir, force_seq=preserved_seq
+            )
+            # A2: merge the manifest-derived display fields into the in-memory
+            # registry so a same-session GET /runs shows #N and the registro
+            # range without waiting for a restart-time disk scan. The allocated
+            # seq comes from write_manifest (None only on a non-fatal write fail).
+            if allocated_seq is not None:
+                registry[run_id]["seq"] = allocated_seq
+            registry[run_id].update(
+                {
+                    "registro_min": manifest.registro_min,
+                    "registro_max": manifest.registro_max,
+                    "completed_at": manifest.completed_at,
+                }
             )
         except Exception as _mex:  # noqa: BLE001
             logger.warning("run_history: manifest write error for %s (non-fatal): %s", run_id, _mex)

@@ -30,7 +30,8 @@ Run:
   docker compose run --rm backend \\
     python -m pytest tests/e2e/test_container_verification.py -v -s --tb=short
 
-  # Outside container (direct — backend must already be running on :8000):
+  # Outside container (direct — backend must already be running on :8010, or set
+  # CTR_BACKEND_URL):
   cd backend && uv run pytest tests/e2e/test_container_verification.py -v -s -m e2e
 
 Prerequisites (make verify):
@@ -331,18 +332,30 @@ class TestR8MatchGateCONTS12:
         # T073-0680257 floors on this profile, so the row is legitimately flagged.
         if row["requires_review"] is True:
             min_conf = row.get("min_confidence")
+            guias = row.get("guias") or []
+            # year inference alone is NOT a review cause (it is routine under the
+            # vision profile), so it is deliberately excluded — counting it would
+            # let a spurious flag pass. Aggregate the genuine causes, including
+            # per-guía flags and a missing guía date (fecha is None).
             justified = (
                 row.get("has_delivery_floor")
                 or row.get("has_fecha_divergence")
                 or row.get("has_reception_ceiling")
                 or row.get("has_delivery_after_protocolo")
-                or row.get("any_year_inferred")
                 or (min_conf is not None and float(min_conf) < 0.85)
+                or any(g.get("fecha") in (None, "") for g in guias)
+                or any(
+                    g.get("delivery_floor_applied")
+                    or g.get("fecha_divergence")
+                    or g.get("reception_ceiling_applied")
+                    or g.get("delivery_after_protocolo")
+                    for g in guias
+                )
             )
             assert justified, (
                 "registro 232 MATCH has requires_review=True with NO documented "
                 "side-channel cause (delivery-floor / divergence / ceiling / "
-                f"low-confidence). Spurious review flag: {row}"
+                f"missing-date / low-confidence). Spurious review flag: {row}"
             )
 
     def test_total_row_count_nonzero(self, pipeline_result_via_api: dict) -> None:

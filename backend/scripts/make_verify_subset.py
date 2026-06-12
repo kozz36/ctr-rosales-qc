@@ -42,12 +42,46 @@ def main() -> int:
         return 1
 
     doc = fitz.open(src)
-    n = min(pages, len(doc))
+    n = _section_safe_cut(doc, pages)
     subset = fitz.open()
     subset.insert_pdf(doc, from_page=0, to_page=n - 1)
     subset.save(out)
     print(f"Wrote {n}-page subset → {out} (source had {len(doc)} pages)")
     return 0
+
+
+def _section_safe_cut(doc: "fitz.Document", budget: int) -> int:
+    """Largest page count <= *budget* that ends on a Protocolo boundary.
+
+    A registro's guías must stay together (splitting drops guías and breaks the
+    summed quantity), so the cut must land just before a Protocolo page — never
+    mid-section. Detects boundaries instead of trusting a magic constant, so a
+    smaller CTR_VERIFY_SUBSET_PAGES override can never silently split a section.
+    """
+    proto = [
+        i + 1
+        for i in range(len(doc))
+        if "PROTOCOLO DE RECEPCI" in doc[i].get_text().upper()
+    ]
+    # A complete section ends just before the NEXT Protocolo, so boundaries are the
+    # pages immediately preceding each Protocolo after the first.
+    section_cuts = [p - 1 for p in proto[1:]]
+    safe = [c for c in section_cuts if c <= budget]
+    if safe:
+        return max(safe)
+    if section_cuts:
+        n = min(section_cuts)
+        print(
+            f"WARNING: budget {budget} < first whole section ({n} pages); "
+            f"using {n} to keep a complete section.",
+            file=sys.stderr,
+        )
+        return n
+    print(
+        "WARNING: no Protocolo pages detected; falling back to the raw page budget.",
+        file=sys.stderr,
+    )
+    return min(budget, len(doc))
 
 
 if __name__ == "__main__":

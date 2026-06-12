@@ -76,7 +76,10 @@ _PDF_PATH_ENV = os.environ.get("CTR_PDF_PATH", "")
 
 # Polling settings: the full pipeline on the real 493-page PDF takes several minutes.
 _POLL_INTERVAL_S = 10          # seconds between status polls
-_TIMEOUT_S = int(os.environ.get("CTR_VERIFY_TIMEOUT", str(15 * 60)))  # 15 min default
+# Default 120 min: the full 493-page real PDF runs ~469 guía OCR pages on CPU
+# (~12 s/page) plus vision date-reads + SUNAT, measured at ~90 min end-to-end. The
+# prior 15-min default always false-timed-out before the pipeline could finish.
+_TIMEOUT_S = int(os.environ.get("CTR_VERIFY_TIMEOUT", str(120 * 60)))
 
 # Strict mode: set by `make verify` (the in-container acceptance gate). When ON, a
 # missing precondition (backend unreachable, PDF absent) is a GATE FAILURE, not a

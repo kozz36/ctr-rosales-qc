@@ -50,7 +50,11 @@ services:
       # standard Ollama port (11434) and the cloud model. Override via .env or shell:
       #   OLLAMA_BASE_URL=http://localhost:11435/v1   (this host binds 11435)
       #   OLLAMA_MODEL=qwen3.5:9b                      (local-vision fallback)
-      RECONCILIATION__VISION__OLLAMA__MODEL: "${OLLAMA_MODEL:-qwen3.5:397b-cloud}"
+      # Default kimi-k2.5 (83.1% on the #40 vision eval > qwen3.5:397b 76.9%). The
+      # `:cloud` suffix is the LOCAL-PROXY form (localhost:11434 resolves it via the host
+      # daemon's own ollama.com auth — no key needed). For DIRECT cloud, override .env:
+      # OLLAMA_BASE_URL=https://ollama.com/v1 + OLLAMA_MODEL=kimi-k2.5 (no suffix) + OLLAMA_API_KEY.
+      RECONCILIATION__VISION__OLLAMA__MODEL: "${OLLAMA_MODEL:-kimi-k2.5:cloud}"
       RECONCILIATION__VISION__OLLAMA__BASE_URL: "${OLLAMA_BASE_URL:-http://localhost:11434/v1}"
       # Ollama API key — env-only secret (never committed), passed through from .env.
       # EMPTY for the local proxy (localhost:11434, no auth → factory falls back to the

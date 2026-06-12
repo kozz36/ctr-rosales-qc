@@ -62,8 +62,15 @@ modification, Conda environment, or manual installation step.
 
 ### CONT-003 — Vision is configurable to cloud via config only; domain core untouched
 
-Switching the vision provider to the cloud model (`qwen3.5:397b-cloud` via Ollama cloud
-`base_url`) MUST require only a configuration change — no code modification.
+Switching the vision provider to a cloud model via Ollama MUST require only a configuration
+change — no code modification.
+
+The default cloud vision model is `kimi-k2.5` (83.1% on the #40 eval; outperforms
+`qwen3.5:397b-cloud` at 76.9%). `qwen3.5:397b-cloud` remains a valid alternative.
+When using the local Ollama proxy (default, `base_url=http://localhost:11434/v1`), the model
+is specified with the `:cloud` suffix (e.g. `kimi-k2.5:cloud`). For direct Ollama Cloud
+(`base_url=https://ollama.com/v1`), the bare name is used (e.g. `kimi-k2.5`) alongside
+`OLLAMA_API_KEY`.
 
 The domain core (`backend/src/reconciliation/domain/`) MUST NOT be modified by this
 change. The `VisionLLMPort` interface MUST remain the sole point of coupling between
@@ -72,7 +79,7 @@ the domain and any vision implementation.
 #### Scenario CONT-S04 — Cloud vision activated by config, not code
 
 - GIVEN `vision.provider=openai`, `vision.base_url=<ollama_cloud_url>`,
-  `vision.model=qwen3.5:397b-cloud` set in container config
+  `vision.model=kimi-k2.5:cloud` (default) or `vision.model=qwen3.5:397b-cloud` (alternative) set in container config
 - WHEN the pipeline runs a vision stage
 - THEN the `OpenAICompatibleVisionAdapter` is selected automatically
 - AND no domain-core file is modified
@@ -219,6 +226,112 @@ deviation from the air-gap default, not as the new default.
 - WHEN the pipeline runs
 - THEN `sunat.enabled` defaults to `false` (or the equivalent configured air-gap default)
 - AND no cloud vision endpoint is contacted unless explicitly overridden
+
+---
+
+### CONT-009 — Acceptance gate is executable, strict, and has a fast variant
+
+The CONT-007 R8/R9 gate MUST be backed by a real, collectable in-container test file
+(`backend/tests/e2e/test_container_verification.py`) invoked as `make verify`. The gate
+is API-faithful: it submits the real PDF via `POST /api/v1/runs`, polls `GET
+/api/v1/runs/{run_id}` until `status="review"`, then asserts on `GET
+/api/v1/runs/{run_id}/table` — no in-process pipeline call, no mock.
+
+Under `make verify`, the gate MUST run in strict mode (`CTR_VERIFY_STRICT=1`): a missing
+precondition (backend unreachable after the configured wait window, PDF absent, pipeline
+ending in `status="error"`) MUST cause the gate to FAIL, never silently skip. A vacuous
+green (skip-all due to absent preconditions) is the exact mock-theatre failure class this
+project has been burned by and is explicitly prohibited.
+
+The gate MUST confirm it is communicating with the ctr backend by requiring `GET
+/api/v1/runs` to return HTTP 200 with a JSON list before uploading the PDF. A foreign
+service squatting on the host port that does not satisfy this contract MUST be rejected with
+a clear gate failure.
+
+The backend host port MUST be configurable via the `CTR_BACKEND_PORT` environment variable
+(default `8010`) so the host-networking container coexists with sibling services that bind
+port 8000. The container-internal binding (uvicorn, nginx proxy) stays on port 8000;
+`CTR_BACKEND_PORT` controls only the host-side exposure and the `CTR_BACKEND_URL` injected
+into the test process.
+
+A fast variant `make verify-fast` MUST run the identical R8 + R9 assertions against a
+section-safe page subset of the real PDF (Protocolo boundaries auto-detected so no registro
+and its guías are split, keeping summed quantities intact), completing in minutes instead of
+the ~90-minute full-document run. The subset is built on the host via
+`backend/scripts/make_verify_subset.py` and mounted into the container via a Compose
+override.
+
+#### Scenario CONT-S16 — Strict mode fails on a missing precondition rather than skipping
+
+- GIVEN `CTR_VERIFY_STRICT=1` (set by `make verify`)
+- AND the backend is unreachable at the configured host port after the wait window
+- WHEN the acceptance gate runs
+- THEN `pytest` exits non-zero (gate FAILS with a descriptive message)
+- AND the run is NOT marked green / skipped silently
+
+#### Scenario CONT-S17 — verify-fast passes the same R8 + R9 assertions on a 3-section subset
+
+- GIVEN the subset PDF built by `make_verify_subset.py` contains the first 3 complete
+  Protocolo sections (registro 232 and its guías intact, ending on a Protocolo boundary)
+- AND the container runs with `CTR_VERIFY_STRICT=1` against the subset PDF
+- WHEN `make verify-fast` completes
+- THEN all R8 MATCH assertions for registro 232 pass (status=MATCH, summed_qty=4.124 TN)
+- AND all R9 fecha-divergence assertions pass
+- AND the run completes in minutes (not ~90 min)
+
+#### Scenario CONT-S18 — Backend port is configurable and the gate rejects a foreign host-port service
+
+- GIVEN `CTR_BACKEND_PORT=8020` overrides the default
+- AND a foreign HTTP service responds on port 8020 but does NOT return a JSON list from
+  `GET /api/v1/runs`
+- WHEN the acceptance gate attempts to verify the backend
+- THEN the gate rejects the foreign service and FAILS with a "backend not reachable" message
+- AND `make verify` with `CTR_BACKEND_PORT=8020` routes all traffic (upload + poll) to
+  port 8020, not the default 8010
+
+---
+
+### CONT-010 — RapidOCR ONNX models bundled at build time (air-gap guarantee)
+
+All three RapidOCR PP-OCRv5 ONNX models MUST be downloaded and cached into the image at
+Docker build time:
+
+- `ch_PP-OCRv5_det_server.onnx` (~84 MB) — Det
+- `ch_PP-OCRv5_rec_server.onnx` (~81 MB) — Rec
+- `ch_ppocr_mobile_v2.0_cls_mobile.onnx` (~0.6 MB) — Cls (PP-OCRv4 mobile; default
+  config.yaml behaviour keeps Cls at v4/mobile even when Det/Rec are v5/server)
+
+Bundling MUST be achieved via a warm-up inference on a synthetic text image (not just engine
+construction): RapidOCR lazy-loads Cls and Rec only when Det detects text boxes. A
+random-noise image produces zero Det boxes and leaves Cls and Rec unloaded, breaking the
+air-gap guarantee. A synthetic image with legible strokes (rendered via `cv2.putText`) MUST
+be used so Det finds boxes and all three models lazy-load.
+
+After the warm-up, a disk-existence guard MUST verify that each of the three model files is
+present and non-empty. The Docker build MUST FAIL LOUDLY (non-zero exit) if any model file
+is absent.
+
+A second disk-existence guard MUST run in the runtime stage (`ocr_assert.py`) to confirm
+that `COPY --from=builder` carried all three models into the final image.
+
+At runtime, OCR inference MUST require zero network for model loading, proven by the ability
+to run `docker run --network none` without any model download.
+
+#### Scenario CONT-S19 — Build fails if any of the 3 ONNX model files is absent after warm-up
+
+- GIVEN the builder warm-up inference completes
+- AND one or more of the three required ONNX model files is missing or empty in
+  `site-packages/rapidocr/models/`
+- WHEN the disk-existence guard (`ocr_warmup.py`) runs
+- THEN the script exits non-zero and the Docker build FAILS with a descriptive error
+- AND the runtime image is NOT produced
+
+#### Scenario CONT-S20 — OCR inference under --network none succeeds with no download
+
+- GIVEN the fully-built container image (all three ONNX models bundled)
+- WHEN `docker run --network none` launches a RapidOCR PP-OCRv5-server inference
+- THEN the inference completes successfully without any outbound network call
+- AND no model download is attempted at runtime
 
 ---
 

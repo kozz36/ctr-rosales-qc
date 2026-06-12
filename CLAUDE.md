@@ -147,9 +147,14 @@ Hard anti-pattern checklist the implementation sub-agent AND the reviewer enforc
 
 ## Status & next steps
 
-**Branch `main` — all PRs merged as of 2026-06-06. Next: SDD#1 deterministic-OCR backend.**
+**Branch `main` — all PRs merged as of 2026-06-12 (PR #70). SDD#1/#2/#3 DONE; delivery
+blockers #56 (air-gap OCR) + #60 (in-container acceptance gate) CLOSED. App is delivery-ready.**
+**Read `docs/HANDOFF.md` first — it has the live state.** Next = remaining non-blocking backlog
+(#57 DEADLINE_S, #58 magnitude guard, #59 canonicalization Tier-1, #44 cross-model consensus, etc.).
+Acceptance gate: `make verify` (full ~90 min) / `make verify-fast` (3-section subset ~15 min);
+backend host port is `CTR_BACKEND_PORT` (default 8010).
 
-See `docs/HANDOFF.md` §SDD-plan for the full approved plan. Summary:
+The historical SDD plan below is kept as a record (SDD#1/#2/#3 are all merged now):
 
 **SDD#1 (start next session)**: re-enable deterministic OCR in the deployed paddle-free image.
 Engine: **RapidOCR ONNX PP-OCRv5-server** (`pip install rapidocr onnxruntime`). Needs: auto

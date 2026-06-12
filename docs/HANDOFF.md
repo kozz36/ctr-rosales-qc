@@ -4,8 +4,24 @@
 > original machine** and does NOT travel with the repo. This document (plus the other
 > files in `docs/`) is the versioned source of truth for continuing the work anywhere.
 
-Last session: **2026-06-11**. Current branch: `main`. All PRs merged.
-**SDD#3 (run-history-persistence) — COMPLETE & MERGED (PR #66/#67/#68/#69). Cross-restart run history live. Next: remaining backlog.**
+Last session: **2026-06-12**. Current branch: `main`. All PRs merged.
+**Delivery blockers #56 + #60 — CLOSED & MERGED (PR #70). App is delivery-ready. Next: remaining backlog (#57–#62, all non-blocking).**
+
+> **Delivery closeout (2026-06-12, PR #70)**: closed the two real delivery blockers (audit-ranked).
+> **#56** air-gap OCR: the build warm-up/assertion ran inference on *random noise* → Det found no
+> text → `cls_mobile`+rec models never lazy-loaded → never bundled → ~165 MB runtime download. Fixed
+> with synthetic-**text** warm-up inference + dual disk-existence guards (build fails loudly if any of
+> the 3 ONNX models is missing). Proven under `docker run --network none` (9 boxes, 0 downloads).
+> **#60** the documented `make verify` acceptance gate referenced a non-existent test → dead. Built
+> `backend/tests/e2e/test_container_verification.py` (API-faithful upload→poll→table, R8 232=4.124
+> MATCH + R9 divergence invariants). Runtime closeout surfaced 4 issues a unit-green run would hide:
+> (1) **vacuous-green** skip → `CTR_VERIFY_STRICT=1` strict mode (fail, never skip; caught a live 404);
+> (2) **host-port :8000 collision** with a sibling project → `CTR_BACKEND_PORT` (default 8010) in
+> both compose files + install.sh, container-internal stays 8000 for the nginx proxy; (3) **W2
+> confirmed**: registro 232 `requires_review=True` is the *legitimate* R9b SUNAT delivery-floor, not a
+> bug → assertion is now profile-aware (rejects only a spurious flag); (4) broken `/health` healthcheck
+> → socket-connect probe. Bonus: `make verify-fast` runs the SAME gate on a section-safe ~50-page
+> 3-Protocolo subset → **8/8 green in 15 min** (vs ~90 min full). ctr-review (Fable) ×2 APPROVE.
 
 > **SDD#1 outcome**: deterministic OCR (RapidOCR PP-OCRv5-server, paddle-free) re-enabled as the
 > primary quantity extractor. Dual-blind judgment-day PASS×2 (Opus 4.8 + Fable 5) on all 4 PRs.
@@ -74,7 +90,12 @@ PR #66  feat/run-history-persistence (PR-1)       MERGED  SDD#3 PR#1 — persist
 PR #67  feat/run-history-lifecycle (PR-2)         MERGED  SDD#3 PR#2 — lifecycle: lazy hydration, DELETE, retry, 48h sweep (JD×2)
 PR #68  fix/run-history-manifest-fields           MERGED  SDD#3 fix — SA-5: manifest registro field mismatch
 PR #69  feat/run-history-ui (PR-3)                MERGED  SDD#3 PR#3 — frontend: hamburger, /historial, cold-load, localStorage; fix infinite poll
+PR #70  fix/delivery-blockers-56-60               MERGED  Delivery: #56 air-gap OCR bundling + #60 in-container acceptance gate (make verify/verify-fast)
 ```
+
+- **Acceptance gate**: `make verify` (full 493-page, ~90 min) or `make verify-fast` (3-section
+  ~50-page subset, ~15 min) → R8 MATCH + R9 divergence over the real API. Strict mode fails on any
+  missing precondition. Backend host port is `CTR_BACKEND_PORT` (default 8010, off :8000).
 
 - **Test counts**: ~1568+ backend targeted (+~120 run-history tests; real-data gate intact) + 376 frontend
   vitest passing. Monolithic `pytest -q` still hangs on paddle import — use targeted paths only.
@@ -161,7 +182,8 @@ Archived to `openspec/changes/archive/run-history-persistence/`. Spec promoted:
 | Issue | Severity | Description |
 |-------|----------|-------------|
 | ~~**#50**~~ | ~~High~~ | **CLOSED** (SDD#2). Zero-silent-drop: 469 = 126 + 343 proven on real PDF. |
-| **#56** | Medium | Air-gap: RapidOCR model re-download on cold start in deployed image. |
+| ~~**#56**~~ | ~~Medium~~ | **CLOSED** (PR #70). Air-gap: 3 ONNX models bundled at build (synthetic-text warm-up + disk guards); `--network none` proven. |
+| ~~**#60**~~ | ~~Med~~ | **CLOSED** (PR #70). `make verify` acceptance gate rebuilt (was dead); strict mode + verify-fast subset. |
 | **#57** | Low | `DEADLINE_S` baked-in constant; expose as runtime env var. |
 | **#58** | Low | Magnitude guard against implausible OCR qty values (digit noise). |
 | **#59** | Low | Canonicalization Tier-1 edge cases (dual-spec normalization). |

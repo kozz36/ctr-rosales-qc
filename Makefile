@@ -72,6 +72,6 @@ verify:
 	docker compose up -d backend
 	@echo "Waiting for backend to be healthy..."
 	@sleep 5
-	docker compose run --rm backend \
+	docker compose run --rm -e CTR_VERIFY_STRICT=1 backend \
 	  python -m pytest tests/e2e/test_container_verification.py -v -s --tb=short
 	docker compose down

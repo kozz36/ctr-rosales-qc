@@ -48,6 +48,7 @@ import os
 import time
 from decimal import Decimal
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -76,17 +77,42 @@ _PDF_PATH_ENV = os.environ.get("CTR_PDF_PATH", "")
 _POLL_INTERVAL_S = 10          # seconds between status polls
 _TIMEOUT_S = int(os.environ.get("CTR_VERIFY_TIMEOUT", str(15 * 60)))  # 15 min default
 
+# Strict mode: set by `make verify` (the in-container acceptance gate). When ON, a
+# missing precondition (backend unreachable, PDF absent) is a GATE FAILURE, not a
+# skip — otherwise `make verify` would exit GREEN having verified nothing (vacuous
+# green; the exact mock-theatre failure class this project has been burned by). When
+# OFF (ad-hoc local runs alongside the unit suite), skip so a missing backend/PDF
+# does not break unrelated test runs.
+_STRICT = os.environ.get("CTR_VERIFY_STRICT", "") not in ("", "0", "false", "False")
+# How long to wait for the backend to become reachable before declaring it down.
+# Covers the cold-start race: `make verify` sleeps only 5s but the compose
+# healthcheck start_period is 15s.
+_BACKEND_WAIT_S = int(os.environ.get("CTR_VERIFY_BACKEND_WAIT", "60"))
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
+def _skip_or_fail(reason: str) -> NoReturn:
+    """Fail in strict mode (the in-container gate), skip otherwise.
+
+    In strict mode (`CTR_VERIFY_STRICT=1`, set by `make verify`) a missing
+    precondition is a real gate failure — making it visible instead of letting
+    `make verify` exit green having verified nothing. Out of strict mode it skips.
+    """
+    if _STRICT:
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 def _get_pdf_path() -> Path:
     """Return the PDF path.
 
     Priority: CTR_PDF_PATH env > container mount > host path.
-    Skips the test if none are found.
+    In strict mode, FAILS if none are found (the gate cannot run without the real
+    PDF); otherwise skips.
     """
     if _PDF_PATH_ENV:
         p = Path(_PDF_PATH_ENV)
@@ -96,22 +122,31 @@ def _get_pdf_path() -> Path:
         p = Path(candidate)
         if p.exists():
             return p
-    pytest.skip(
+    _skip_or_fail(
         f"Real PDF not found. Checked: {_PDF_PATH_ENV!r}, "
         f"{_PDF_PATH_CONTAINER!r}, {_PDF_PATH_HOST!r}. "
         "Set CTR_PDF_PATH or run via make verify (docker compose)."
     )
 
 
-def _backend_reachable(base_url: str) -> bool:
-    """Return True if the backend is reachable at GET /api/v1/runs (any HTTP response)."""
-    try:
-        import httpx  # noqa: PLC0415 — lazy import; never at module top
+def _wait_for_backend(base_url: str, timeout_s: float = _BACKEND_WAIT_S) -> bool:
+    """Poll GET /api/v1/runs until the backend answers (<500) or timeout.
 
-        r = httpx.get(f"{base_url}{_API_PREFIX}/runs", timeout=10.0)
-        return r.status_code < 500
-    except Exception:
-        return False
+    Retries to absorb the cold-start race (`make verify` sleeps 5s, healthcheck
+    start_period is 15s). Returns True on first reachable response, else False.
+    """
+    import httpx  # noqa: PLC0415 — lazy import; never at module top
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            r = httpx.get(f"{base_url}{_API_PREFIX}/runs", timeout=10.0)
+            if r.status_code < 500:
+                return True
+        except Exception:
+            pass
+        time.sleep(2.0)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -126,15 +161,16 @@ def pipeline_result_via_api():
     This fixture is module-scoped so the expensive full pipeline run happens
     only once for both the R8 and R9 gate test classes.
 
-    SA-2: if the backend is unreachable, the PDF is missing, or the pipeline
-    ends in error, the test fails with a descriptive message (not skipped) so
-    the gate failure is visible.
+    SA-2: in strict mode (`make verify`), if the backend is unreachable, the PDF
+    is missing, or the pipeline ends in error, the test FAILS with a descriptive
+    message (never silently skips) so the gate failure is visible. Out of strict
+    mode it skips, so a missing backend/PDF does not block the unit suite.
     """
     import httpx  # noqa: PLC0415
 
-    if not _backend_reachable(_BACKEND_BASE_URL):
-        pytest.skip(
-            f"Backend not reachable at {_BACKEND_BASE_URL}. "
+    if not _wait_for_backend(_BACKEND_BASE_URL):
+        _skip_or_fail(
+            f"Backend not reachable at {_BACKEND_BASE_URL} after {_BACKEND_WAIT_S}s. "
             "Run 'docker compose up -d backend' before make verify, "
             "or set CTR_BACKEND_URL to the correct base URL."
         )

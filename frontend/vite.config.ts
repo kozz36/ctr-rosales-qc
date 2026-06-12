@@ -18,6 +18,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'jsdom',
+    // Pin a non-UTC timezone so UTC-vs-local date assertions stay discriminating
+    // on UTC CI runners (e.g. the formatFecha day-shift regression test).
+    env: { TZ: 'America/Lima' },
     setupFiles: [],
     include: ['src/**/*.test.ts', 'src/**/*.spec.ts'],
     alias: {

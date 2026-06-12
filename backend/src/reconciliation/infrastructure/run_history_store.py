@@ -116,7 +116,7 @@ class JsonManifestRunHistoryAdapter:
         manifest: "RunManifest",  # type: ignore[name-defined]
         output_dir: Path,
         force_seq: int | None = None,
-    ) -> None:
+    ) -> int | None:
         """Persist a completed run manifest with write-time seq allocation.
 
         Atomic overwrite — NOT write-once (retry semantics, D2/D5).
@@ -129,6 +129,11 @@ class JsonManifestRunHistoryAdapter:
                         run's ORIGINAL per-day seq instead of allocating a new
                         one — the display identity (#N) must be stable per D3.
                         Allocation is skipped entirely in this case.
+
+        Returns:
+            The allocated per-day ``seq`` on success, so the caller can merge it
+            (and the manifest's display fields) into the in-memory registry for a
+            same-session GET /runs.  ``None`` when the write failed (non-fatal).
         """
         from reconciliation.application.run_history import RunManifest  # noqa: PLC0415
 
@@ -154,11 +159,13 @@ class JsonManifestRunHistoryAdapter:
                 "run_history: manifest written run_id=%s seq=%d status=%s",
                 manifest.run_id, seq, manifest.status,
             )
+            return seq
         except OSError as exc:
             logger.warning(
                 "run_history: manifest write failed for run_id=%s (non-fatal): %s",
                 manifest.run_id, exc,
             )
+            return None
 
     # ------------------------------------------------------------------
     # write_failure_manifest (RH-001-S03)

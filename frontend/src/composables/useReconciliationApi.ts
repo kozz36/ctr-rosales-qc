@@ -12,7 +12,7 @@
 
 import { computed, type Ref } from 'vue'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
-import { getRunStatus, getTable, editRow, editGuiaLine, reassignGuia, exportRun } from '@/api/client'
+import { getRunStatus, getTable, editRow, editGuiaLine, listRuns, reassignGuia, exportRun } from '@/api/client'
 import type {
   ExportFormat,
   GuiaLineEditRequest,
@@ -31,6 +31,7 @@ export const queryKeys = {
   runStatus: (runId: string) => ['run', runId, 'status'] as const,
   table: (runId: string) => ['run', runId, 'table'] as const,
   audit: (runId: string) => ['run', runId, 'audit'] as const,
+  runs: () => ['runs'] as const,
 } as const
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,31 @@ export function useRunStatus(runId: Ref<string | null>, options: UseRunStatusOpt
       return pollInterval
     },
     // Stale immediately so each poll fires a fresh fetch
+    staleTime: 0,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// useRunsList — GET /runs history listing (SDD#3 D6, RH-003/RH-010)
+// ---------------------------------------------------------------------------
+
+export interface UseRunsListOptions {
+  /** Poll interval in ms so the list reacts to add/delete/retry. Default: 5000. */
+  pollInterval?: number
+}
+
+/**
+ * Run-history listing for /historial. Polls GET /runs so entries added,
+ * deleted, or retried elsewhere stay current (RH-010); mutations on the page
+ * additionally call `refetch()` for immediate feedback.
+ */
+export function useRunsList(options: UseRunsListOptions = {}) {
+  const { pollInterval = 5000 } = options
+
+  return useQuery({
+    queryKey: queryKeys.runs(),
+    queryFn: () => listRuns(),
+    refetchInterval: pollInterval,
     staleTime: 0,
   })
 }

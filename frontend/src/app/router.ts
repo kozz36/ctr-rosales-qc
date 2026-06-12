@@ -25,6 +25,13 @@ const router = createRouter({
       meta: { title: 'Revisión' },
       props: true,
     },
+    {
+      // SDD#3 (RH-010): run-history list — past runs, retry, delete.
+      path: '/historial',
+      name: 'historial',
+      component: () => import('@/features/run/RunHistoryPage.vue'),
+      meta: { title: 'Historial' },
+    },
   ],
 })
 

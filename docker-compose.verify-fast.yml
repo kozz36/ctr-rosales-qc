@@ -1,0 +1,18 @@
+# Override for `make verify-fast` — fast acceptance gate.
+#
+# Mounts the front-subset PDF (built by backend/scripts/make_verify_subset.py) at a
+# SEPARATE target and points CTR_PDF_PATH at it, so the in-container gate runs the
+# SAME R8 + R9 assertions on ~50 pages (3 Protocolo sections incl. registro 232)
+# instead of all 493 — minutes instead of ~90 min on CPU.
+#
+# A separate mount target (not /data/input.pdf) avoids any bind-mount collision with
+# the full-PDF mount in docker-compose.yml; the test's _get_pdf_path() honours
+# CTR_PDF_PATH first, so the subset wins.
+services:
+  backend:
+    volumes:
+      - "/data/Projects/ctr-rosales-qc/.verify-subset.pdf:/data/input-subset.pdf:ro"
+    environment:
+      CTR_PDF_PATH: "/data/input-subset.pdf"
+      # 30-min ceiling — generous for a 3-section run; full run uses the 120-min default.
+      CTR_VERIFY_TIMEOUT: "1800"

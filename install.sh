@@ -14,8 +14,11 @@
 set -euo pipefail
 
 COMPOSE_FILE="docker-compose.app.yml"
+# Host-published backend port (default 8010, OFF :8000 to coexist with sibling
+# host-port services). Must match CTR_BACKEND_PORT in docker-compose.app.yml.
+CTR_BACKEND_PORT="${CTR_BACKEND_PORT:-8010}"
 FRONTEND_URL="http://localhost:5173"
-BACKEND_URL="http://localhost:8000"
+BACKEND_URL="http://localhost:${CTR_BACKEND_PORT}"
 SUNAT_HOST="https://e-factura.sunat.gob.pe"
 
 cd "$(dirname "$0")"
@@ -63,7 +66,7 @@ c_green "  ✓ Docker y Docker Compose disponibles."
 
 # ── 2. Chequeos no bloqueantes ───────────────────────────────────────────────
 c_bold "2) Chequeos del entorno…"
-for port in 5173 8000; do
+for port in 5173 "$CTR_BACKEND_PORT"; do
   if (command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ":$port ") ||
      (command -v lsof >/dev/null 2>&1 && lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1); then
     c_yellow "  ⚠ El puerto $port ya está en uso. Si la app no abre, liberalo o detené el proceso que lo ocupa."

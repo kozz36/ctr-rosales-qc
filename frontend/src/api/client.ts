@@ -30,7 +30,9 @@ import type {
   RowEditRequest,
   RowEditResponse,
   RunCreateResponse,
+  RunRetryResponse,
   RunStatusResponse,
+  RunSummaryResponse,
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,34 @@ export async function createRun(file: File): Promise<RunCreateResponse> {
     // Upload can be large (up to 100 MB); give it 5 minutes
     timeout: 300_000,
   })
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// GET /runs  — run-history listing (SDD#3, RH-003)
+// ---------------------------------------------------------------------------
+
+export async function listRuns(): Promise<RunSummaryResponse[]> {
+  const { data } = await http.get<RunSummaryResponse[]>('/runs')
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /runs/{run_id}  — remove a run (SDD#3, RH-009)
+// 204 success · 400 non-UUID · 404 unknown · 409 run is pending/processing
+// ---------------------------------------------------------------------------
+
+export async function deleteRun(runId: string): Promise<void> {
+  await http.delete(`/runs/${runId}`)
+}
+
+// ---------------------------------------------------------------------------
+// POST /runs/{run_id}/retry  — re-fire a failed run, SAME run_id (RH-007-S02)
+// 202 accepted · 409 run not in error status OR another run is processing
+// ---------------------------------------------------------------------------
+
+export async function retryRun(runId: string): Promise<RunRetryResponse> {
+  const { data } = await http.post<RunRetryResponse>(`/runs/${runId}/retry`)
   return data
 }
 

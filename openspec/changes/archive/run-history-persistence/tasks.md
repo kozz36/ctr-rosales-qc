@@ -341,6 +341,8 @@ If PR-2 tests push past ~400 lines, split:
   - `run_manifest.json` contains no `pdf_filename` field (CWE-22).
   - `GET /runs` excludes manifest-missing-key scenario without crashing.
   No push / PR until JD passes. (SA-3)
+  **EVIDENCE**: JD FAIL (#3201: suite-RED + tests-can-rmtree-real-runs latent hazard) →
+  fixes applied → JD PASS×2. PR #66 merged.
 
 ---
 
@@ -361,129 +363,156 @@ If PR-2 tests push past ~400 lines, split:
 
 ### Phase 2.0 — Pre-work: confirm hydration seam
 
-- [ ] **2.0.1** READ `backend/src/reconciliation/infrastructure/api/routes.py` — search for
+- [x] **2.0.1** READ `backend/src/reconciliation/infrastructure/api/routes.py` — search for
   `_require_run` (or the current dependency that validates run readiness and returns the
   registry entry). Identify: (a) its exact function signature; (b) all endpoint decorators
   that use it; (c) whether it already calls `build_review_service` or just looks up the registry.
   Record the exact pattern to mirror for `_get_hydrated_entry`. Read-only pre-flight.
+  **EVIDENCE**: PR #67 merged (feat/run-history-lifecycle). `_get_hydrated_entry` dep implemented,
+  replacing `_require_run` on all review-service endpoints. JD FAIL×2→fix→PASS×2 (#3208).
 
-- [ ] **2.0.2** READ `backend/src/reconciliation/infrastructure/container.py` — confirm
+- [x] **2.0.2** READ `backend/src/reconciliation/infrastructure/container.py` — confirm
   `build_review_service(ctx)` and `build_reprocess_service(config, ctx, review_service)` signatures.
   These are called by `_get_hydrated_entry` for lazy hydration. Read-only pre-flight.
+  **EVIDENCE**: confirmed during PR-2 pre-flight; implemented in PR #67.
 
 ### Phase 2.1 — RED: Write failing tests for PR-2
 
-- [ ] **2.1.1** Create `backend/tests/unit/infrastructure/test_lazy_hydration.py`.
+- [x] **2.1.1** Create `backend/tests/unit/infrastructure/test_lazy_hydration.py`.
   Write failing test `test_get_runs_id_no_hydration_served_from_manifest`:
   Registry entry `hydrated=False`, manifest fields populated, no `review_service` key.
   `GET /runs/{id}` should return summary fields (run_id, status, seq, etc.) without
   calling `build_review_service`. Assert response 200 and `review_service` still None in registry.
   FAILS today: `GET /runs/{id}` (status poll) may trigger hydration or 404. Spec: D4.
+  **EVIDENCE**: PR #67 merged; all PR-2 RED tests written and passed GREEN.
 
-- [ ] **2.1.2** Add failing test `test_get_table_triggers_lazy_hydration`:
+- [x] **2.1.2** Add failing test `test_get_table_triggers_lazy_hydration`:
   Registry entry `hydrated=False`. `GET /runs/{id}/table` called.
   Assert `build_review_service` called exactly once; registry entry gains `review_service`;
   `hydrated` is True after. Spec: D4, RH-005, RH-011-S01.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.3** Add failing test `test_get_table_second_call_no_rehyd`:
+- [x] **2.1.3** Add failing test `test_get_table_second_call_no_rehyd`:
   Registry entry already `hydrated=True` with `review_service`. `GET /runs/{id}/table` called twice.
   Assert `build_review_service` NOT called on second call (cached). Spec: D4.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.4** Create `backend/tests/unit/infrastructure/test_delete_run.py`.
+- [x] **2.1.4** Create `backend/tests/unit/infrastructure/test_delete_run.py`.
   Write failing test `test_delete_removes_dir_and_registry`:
   Create a tmp run dir. Insert registry entry (status="review"). `DELETE /runs/{run_id}`.
   Assert dir deleted from disk. Assert entry removed from registry. Assert 204 response.
   Spec: RH-009-S01.
+  **EVIDENCE**: PR #67 merged; JD FAIL×2 (cold-load 409 + sweep-deletes-mid-retry) → fix → PASS×2 (#3208).
 
-- [ ] **2.1.5** Add failing test `test_delete_scoped_to_own_dir`:
+- [x] **2.1.5** Add failing test `test_delete_scoped_to_own_dir`:
   Create two run dirs (A and B). `DELETE /runs/A`.
   Assert dir B still exists. Spec: RH-009-S02.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.6** Add failing test `test_delete_non_uuid_returns_400`:
+- [x] **2.1.6** Add failing test `test_delete_non_uuid_returns_400`:
   `DELETE /runs/../../../etc/passwd`. Assert 400 before any filesystem call.
   Spec: RH-009-S03.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.7** Add failing test `test_delete_unknown_run_returns_404`:
+- [x] **2.1.7** Add failing test `test_delete_unknown_run_returns_404`:
   `DELETE /runs/{unknown_uuid}`. Registry has no such entry. Assert 404. Spec: D5.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.8** Add failing test `test_delete_processing_run_returns_409`:
+- [x] **2.1.8** Add failing test `test_delete_processing_run_returns_409`:
   Registry entry `status="processing"`. `DELETE /runs/{run_id}`. Assert 409.
   Spec: D5 (409 if pending/processing). Design: D5.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.9** Create `backend/tests/unit/infrastructure/test_retry_run.py`.
+- [x] **2.1.9** Create `backend/tests/unit/infrastructure/test_retry_run.py`.
   Write failing test `test_retry_reuses_same_run_id`:
   Failed run dir has `{run_id}.pdf`. `POST /runs/{run_id}/retry`. Assert pipeline re-fired
   with the SAME `run_id`. Assert a new manifest will be written (adapter called) when it completes.
   Spec: RH-007-S02, D5.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.10** Add failing test `test_retry_409_unless_error_status`:
+- [x] **2.1.10** Add failing test `test_retry_409_unless_error_status`:
   `POST /runs/{run_id}/retry` where run has `status="review"` (completed). Assert 409.
   Spec: D5 (retry only valid on error status).
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.11** Add failing test `test_retry_resets_dir_keeps_pdf_and_sunat`:
+- [x] **2.1.11** Add failing test `test_retry_resets_dir_keeps_pdf_and_sunat`:
   Failed run dir has `{run_id}.pdf`, `extraction_cache.json`, `review.json`, `sunat/` subdir.
   `POST /runs/{run_id}/retry`. Assert `extraction_cache.json` deleted. Assert `review.json`
   deleted. Assert `{run_id}.pdf` still present. Assert `sunat/` still present.
   Spec: D5 (reset dir, keep PDF and sunat/).
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.12** Add failing test `test_retry_409_while_processing`:
+- [x] **2.1.12** Add failing test `test_retry_409_while_processing`:
   Registry entry `status="processing"`. `POST /runs/{run_id}/retry`. Assert 409.
   Spec: RH-007-S04.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.13** Create `backend/tests/unit/infrastructure/test_48h_sweep.py`.
+- [x] **2.1.13** Create `backend/tests/unit/infrastructure/test_48h_sweep.py`.
   Write failing test `test_sweep_deletes_old_failed_run`:
   Failed run dir, `started_at` = 49h ago. Call `adapter.sweep_failed(output_dir, cutoff)`.
   Assert dir deleted. Assert registry entry removed. Spec: RH-008-S01.
+  **EVIDENCE**: PR #67 merged; JD PASS×2 (#3208).
 
-- [ ] **2.1.14** Add failing test `test_sweep_never_deletes_completed_run`:
+- [x] **2.1.14** Add failing test `test_sweep_never_deletes_completed_run`:
   `status="review"`, old timestamp. Call `sweep_failed`. Assert dir intact. Spec: RH-008-S02.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.15** Add failing test `test_sweep_keeps_recent_failed_run`:
+- [x] **2.1.15** Add failing test `test_sweep_keeps_recent_failed_run`:
   Failed run, `started_at` = 23h ago. Call `sweep_failed`. Assert dir intact. Spec: RH-008-S03.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.16** Add failing test `test_sweep_ignores_non_run_dirs`:
+- [x] **2.1.16** Add failing test `test_sweep_ignores_non_run_dirs`:
   Failed run (>48h) + unrelated dir in output_dir. Call `sweep_failed`.
   Assert only the failed run dir is removed. Spec: RH-008-S04.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.1.17** Add failing test `test_get_runs_triggers_sweep`:
+- [x] **2.1.17** Add failing test `test_get_runs_triggers_sweep`:
   Failed run dir >48h in registry + on disk. `GET /runs` called.
   Assert sweep ran: dir deleted and entry absent from response. Spec: RH-008, D4.
+  **EVIDENCE**: PR #67 merged.
 
 ### Phase 2.2 — GREEN: Implement PR-2
 
-- [ ] **2.2.1** Add `_get_hydrated_entry(run_id, registry, config)` FastAPI dependency to `routes.py`:
+- [x] **2.2.1** Add `_get_hydrated_entry(run_id, registry, config)` FastAPI dependency to `routes.py`:
   Looks up registry entry; if `hydrated=False`, calls `build_review_service(entry["ctx"])` +
   `build_reprocess_service(...)`, caches into entry, sets `hydrated=True`. Raises 404 if not found.
   Replaces `_require_run` (or the current guard) on all review-service endpoints
   (`/table`, `/reassign`, `/edit-line`, `/export`, `/reprocess`, etc.). Spec: D4, RH-005.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.2.2** Add `DELETE /runs/{run_id}` endpoint to `routes.py`:
+- [x] **2.2.2** Add `DELETE /runs/{run_id}` endpoint to `routes.py`:
   UUID-validate `run_id` (regex `^[0-9a-f]{8}-[0-9a-f]{4}-...`, 400 if invalid).
   404 if not in registry. 409 if `status` in `{"pending","processing"}`.
   Call `adapter.delete_run(run_id, config.output_dir)` (rmtree own dir only).
   Pop registry entry. Return 204. Spec: RH-009, D5.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.2.3** Add `POST /runs/{run_id}/retry` endpoint to `routes.py`:
+- [x] **2.2.3** Add `POST /runs/{run_id}/retry` endpoint to `routes.py`:
   UUID-validate `run_id`. 404 if not found. 409 if `status != "error"`.
   Reset dir: delete `extraction_cache.json`, `review.json`, `pages/` if present.
   Keep `{run_id}.pdf` and `sunat/` (immutable fetch cache).
   Re-fire `_run_pipeline_background(run_id, pdf_path, config, registry)` as BackgroundTask.
   Set registry `status="processing"`. Return 202. Spec: RH-007-S02, D5.
+  **EVIDENCE**: PR #67 merged; JD PASS×2 after fixes (#3208).
 
-- [ ] **2.2.4** Wire 48h sweep into `GET /runs` in `routes.py`:
+- [x] **2.2.4** Wire 48h sweep into `GET /runs` in `routes.py`:
   Before assembling response, call `adapter.sweep_failed(config.output_dir, cutoff=utcnow()-48h)`.
   Spec: RH-008, D4.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.2.5** Ensure `GET /runs/{id}` (status poll endpoint) returns manifest-field summary
+- [x] **2.2.5** Ensure `GET /runs/{id}` (status poll endpoint) returns manifest-field summary
   WITHOUT triggering hydration (served from the registry entry directly). If that endpoint
   currently calls `_require_run` which triggers hydration, change it to a non-hydrating lookup.
   Spec: D4 (cold-load: GET /runs/{id} polling needs no hydration).
+  **EVIDENCE**: PR #67 merged; JD FAIL caught cold-load 409 (mock-theatre with hand-seeded ctx);
+  fix verified by both blind judges before PASS×2.
 
-- [ ] **2.2.6** Update `backend/src/reconciliation/infrastructure/api/main.py` CORS allow_methods:
+- [x] **2.2.6** Update `backend/src/reconciliation/infrastructure/api/main.py` CORS allow_methods:
   Add `"DELETE"` to `allow_methods` (currently only GET/POST/PATCH/OPTIONS). Required for
   `DELETE /runs/{id}`. Verify CORS policy is not widened beyond delete.
+  **EVIDENCE**: PR #67 merged.
 
-- [ ] **2.2.7** Run PR-2 test suite:
+- [x] **2.2.7** Run PR-2 test suite:
   ```
   cd backend && uv run pytest \
     tests/unit/infrastructure/test_lazy_hydration.py \
@@ -493,15 +522,17 @@ If PR-2 tests push past ~400 lines, split:
     -v
   ```
   All 2.1.x tests (17 tests) MUST be GREEN.
+  **EVIDENCE**: all GREEN; PR #67 merged.
 
-- [ ] **2.2.8** Verify invariants:
+- [x] **2.2.8** Verify invariants:
   ```
   git diff HEAD -- backend/src/reconciliation/application/pipeline.py
   git diff HEAD -- backend/src/reconciliation/domain/
   ```
   Both MUST be empty. Confirm DELETE scope: `rmtree` call never uses client input directly.
+  **EVIDENCE**: JD×2 confirmed pipeline.py zero-diff + rmtree scoping on PR-2 diff.
 
-- [ ] **2.2.9** Run regression sweep:
+- [x] **2.2.9** Run regression sweep:
   ```
   cd backend && uv run pytest \
     tests/unit/application/ \
@@ -510,19 +541,23 @@ If PR-2 tests push past ~400 lines, split:
     -v
   ```
   All must remain GREEN.
+  **EVIDENCE**: PR #67 merged with full regression sweep.
 
-- [ ] **2.2.10** Work-unit commit A: `feat(run-history): lazy hydration dep (_get_hydrated_entry); GET /runs/{id} cold-load path (no hydration)`
+- [x] **2.2.10** Work-unit commit A: `feat(run-history): lazy hydration dep (_get_hydrated_entry); GET /runs/{id} cold-load path (no hydration)`
   Covers: 2.2.1 + 2.2.5.
+  **EVIDENCE**: PR #67.
 
-- [ ] **2.2.11** Work-unit commit B: `feat(run-history): DELETE /runs/{id} (409 guard, UUID-validate, rmtree own-dir); CORS allow DELETE`
+- [x] **2.2.11** Work-unit commit B: `feat(run-history): DELETE /runs/{id} (409 guard, UUID-validate, rmtree own-dir); CORS allow DELETE`
   Covers: 2.2.2 + 2.2.6.
+  **EVIDENCE**: PR #67.
 
-- [ ] **2.2.12** Work-unit commit C: `feat(run-history): POST /runs/{id}/retry (dir reset keep PDF+sunat/, same run_id, re-fire pipeline); 48h sweep at GET /runs`
+- [x] **2.2.12** Work-unit commit C: `feat(run-history): POST /runs/{id}/retry (dir reset keep PDF+sunat/, same run_id, re-fire pipeline); 48h sweep at GET /runs`
   Covers: 2.2.3 + 2.2.4. No push (SA-3).
+  **EVIDENCE**: PR #67.
 
 ### Phase 2.3 — Real-data gate (PR-2)
 
-- [ ] **2.3.1** Create `backend/tests/integration/test_run_history_restart_gate.py`.
+- [x] **2.3.1** Create `backend/tests/integration/test_run_history_restart_gate.py`.
   Write test `test_restart_round_trip_manifest_survives`:
   (1) Run pipeline via test fixture → manifest written for run_id.
   (2) Clear the in-memory registry (simulate restart): re-call `adapter.scan(output_dir)`.
@@ -531,17 +566,19 @@ If PR-2 tests push past ~400 lines, split:
   (4) Simulate lazy hydration: call `build_review_service(ctx)` via the hydration dep.
   (5) Assert the review table is non-empty and matches the original run's row count.
   Spec: RH-006-S01, RH-006-S02.
+  **EVIDENCE**: PR #67 merged; SA-5 restart scenario verified (#3215 + sa5-runhist-* screenshots).
 
-- [ ] **2.3.2** Write test `test_retry_dir_reset_semantics`:
+- [x] **2.3.2** Write test `test_retry_dir_reset_semantics`:
   (1) Locate a real legacy failed run dir (pdf-only, no cache). Copy to a tmp dir.
   (2) Simulate a retry: delete `extraction_cache.json` (assert it was absent → noop safe).
   (3) Confirm `{run_id}.pdf` still present. Confirm `sunat/` still present if it exists.
   (4) Assert dir state is correct for re-fire. Spec: D5 (retry dir reset).
   Run: `cd backend && uv run pytest tests/integration/test_run_history_restart_gate.py -v`.
+  **EVIDENCE**: PR #67 merged.
 
 ### Phase 2.4 — Judgment Day (PR-2)
 
-- [ ] **2.4.1** Run dual-blind judgment day on PR-2 diff before push.
+- [x] **2.4.1** Run dual-blind judgment day on PR-2 diff before push.
   JD must verify:
   - `DELETE` UUID-validation is present and fires BEFORE any `rmtree` call.
   - `rmtree` is called with `config.output_dir / run_id` — never with client-supplied path.
@@ -551,6 +588,8 @@ If PR-2 tests push past ~400 lines, split:
   - 48h sweep touches only `status=="error"` entries — verified line by line.
   - `pipeline.py` zero diff. `domain/` zero diff.
   No push / PR until JD passes. (SA-3)
+  **EVIDENCE**: JD FAIL×2 (#3208: cold-load 409 CRITICAL + sweep-deletes-mid-retry CRITICAL,
+  both reproduced by both blind judges) → fixes applied → JD PASS×2. PR #67 merged.
 
 ---
 
@@ -716,7 +755,7 @@ If PR-2 tests push past ~400 lines, split:
 
 ### Phase 3.3 — SA-5 Runtime Validation (PR-3 — MANDATORY)
 
-- [ ] **3.3.1** Validate against the RUNNING app via Playwright MCP (SA-5 — mandatory gate;
+- [x] **3.3.1** Validate against the RUNNING app via Playwright MCP (SA-5 — mandatory gate;
   green vitest alone does NOT prove runtime behavior per CLAUDE.md §Fix/Feature Discipline #2):
   (a) Upload PDF → wait for pipeline → open hamburger menu → click [Historial] → assert run
       listed with correct label (fecha + registro range + #seq) and status badge.
@@ -727,10 +766,13 @@ If PR-2 tests push past ~400 lines, split:
       assert ReviewPage loads with full reconciliation table.
   (f) Refresh browser on ReviewPage → assert run_id restored from localStorage → table visible.
   STOP if any step fails — do not mark PR-3 done until all 6 sub-checks pass.
+  **EVIDENCE**: SA-5 PASS all 6 sub-checks (#3215 + sa5-runhist-* screenshots). SA-5 caught
+  two runtime bugs before merge: manifest registro field mismatch (fix PR #68) +
+  refetchInterval-ignores-error-state infinite polling (fix PR #69 / commit e1172e4).
 
 ### Phase 3.4 — Review (PR-3)
 
-- [ ] **3.4.1** Run single-pass `ctr-reviewer` review on PR-3 diff (frontend PR; ctr-reviewer
+- [x] **3.4.1** Run single-pass `ctr-reviewer` review on PR-3 diff (frontend PR; ctr-reviewer
   sufficient per CLAUDE.md §Fix/Feature Discipline #4 — dual-blind JD for parser/pipeline PRs).
   Reviewer must verify:
   - [Eliminar] confirm dialog prevents accidental deletion.
@@ -739,6 +781,7 @@ If PR-2 tests push past ~400 lines, split:
   - localStorage key cleared on `reset()` (no stale run after [Nuevo batch]).
   - Degraded runs show `—` for null fields; no "undefined" strings in UI.
   No push / PR until review passes. (SA-3)
+  **EVIDENCE**: ctr-reviewer APPROVE (#3214); fixes applied (#3216); PR #66/#68/#69 merged.
 
 ---
 
@@ -746,16 +789,20 @@ If PR-2 tests push past ~400 lines, split:
 
 ### SDD Verification + Archive
 
-- [ ] **F.1** Run `sdd-verify run-history-persistence`:
+- [x] **F.1** Run `sdd-verify run-history-persistence`:
   Verify all 11 spec requirements (RH-001..RH-011) are satisfied.
   Check: manifests written on success+failure; legacy dirs degrade; listing sorted; seq stable;
   past run re-activatable; restart durable; retry fires; 48h sweep; delete scoped; hamburger;
   cold-load works. Report all CRITICAL / WARNING / SUGGESTION.
+  **EVIDENCE**: sdd-verify READY TO ARCHIVE (engram #3218): 0 CRITICAL, 2 doc-state WARNINGs
+  (stale tasks.md checkboxes + promote spec) — resolved by this archive pass.
 
-- [ ] **F.2** Run `sdd-archive run-history-persistence`:
+- [x] **F.2** Run `sdd-archive run-history-persistence`:
   Persist archive report to `openspec/changes/archive/run-history-persistence/`.
   Update `docs/HANDOFF.md` status section.
   Conventional commit: `docs(sdd): archive run-history-persistence (SDD#3 complete)`.
+  **EVIDENCE**: this archive pass — tasks.md reconciled, spec promoted, folder archived,
+  docs updated, archive report saved to engram.
 
 ---
 

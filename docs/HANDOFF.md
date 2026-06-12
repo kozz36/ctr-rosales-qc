@@ -5,7 +5,7 @@
 > files in `docs/`) is the versioned source of truth for continuing the work anywhere.
 
 Last session: **2026-06-11**. Current branch: `main`. All PRs merged.
-**SDD#2 (discarded-pages-recovery) — COMPLETE & MERGED (PR #61/#63/#64/#65). Issue #50 closed. Next: SDD#3 candidates.**
+**SDD#3 (run-history-persistence) — COMPLETE & MERGED (PR #66/#67/#68/#69). Cross-restart run history live. Next: remaining backlog.**
 
 > **SDD#1 outcome**: deterministic OCR (RapidOCR PP-OCRv5-server, paddle-free) re-enabled as the
 > primary quantity extractor. Dual-blind judgment-day PASS×2 (Opus 4.8 + Fable 5) on all 4 PRs.
@@ -25,6 +25,21 @@ Last session: **2026-06-11**. Current branch: `main`. All PRs merged.
 > RED-proofs; Fable apply on frontend slices produced chain's only zero-defect reviews.
 > Vision demoted to date-reads only (126 calls, 0 quantity reads). Full-PDF e2e: 343 discarded /
 > 11 contiguous runs. SDD#2 archived to `openspec/changes/archive/discarded-pages-recovery/`.
+
+> **SDD#3 outcome**: cross-restart run history live. Per-run manifest written at pipeline completion
+> (success + failure, non-fatal, atomic). Startup scan indexes all existing run dirs (manifest-full
+> or degraded legacy). `GET /runs` sorted newest-first + lazy 48h failed-sweep. Lazy hydration dep
+> (`_get_hydrated_entry`) replaces `_require_run` — restores full editing on past runs without
+> eager hydration at startup. `DELETE /runs/{id}` (UUID-validate, 409 guard, rmtree own-dir).
+> `POST /runs/{id}/retry` (dir reset keep PDF+sunat/, same run_id, re-fire pipeline). Frontend:
+> hamburger menu [Nuevo]/[Batch actual]/[Historial] + `/historial` route (`RunHistoryPage`) +
+> `ReviewPage` cold-load fix (`runStore.runId` set from route param on mount) + `localStorage`
+> persistence for runId. SA-5 caught two runtime bugs before merge: manifest registro field
+> mismatch (fix PR #68) + refetchInterval-ignores-error-state infinite polling (fix PR #69).
+> JD pattern (8th & 9th): PR-1 caught suite-RED + tests-can-rmtree-real-runs; PR-2 caught
+> cold-load 409 CRITICAL + sweep-deletes-mid-retry CRITICAL, both live-reproduced by both blind
+> judges. SDD#3 archived to `openspec/changes/archive/run-history-persistence/`.
+> Run-history spec promoted: `openspec/specs/run-history/spec.md`.
 
 ---
 
@@ -55,9 +70,13 @@ PR #61  feat/discarded-pages-surface (PR-1)       MERGED  SDD#2 PR#1 — Discard
 PR #63  feat/discarded-pages-recovery (PR-2)      MERGED  SDD#2 PR#2 — OCR-first recovery + endpoints (JD×2)
 PR #64  feat/discarded-pages-tab (PR-3a)          MERGED  SDD#2 PR#3a — Descartadas tab, groups, selection, single recover
 PR #65  feat/discarded-pages-bulk (PR-3b)         MERGED  SDD#2 PR#3b — bulk recovery, ETA dialog, poll, re-attach
+PR #66  feat/run-history-persistence (PR-1)       MERGED  SDD#3 PR#1 — persistence core: port, adapter, manifest, scan, GET /runs (JD×2)
+PR #67  feat/run-history-lifecycle (PR-2)         MERGED  SDD#3 PR#2 — lifecycle: lazy hydration, DELETE, retry, 48h sweep (JD×2)
+PR #68  fix/run-history-manifest-fields           MERGED  SDD#3 fix — SA-5: manifest registro field mismatch
+PR #69  feat/run-history-ui (PR-3)                MERGED  SDD#3 PR#3 — frontend: hamburger, /historial, cold-load, localStorage; fix infinite poll
 ```
 
-- **Test counts**: ~1448+ backend targeted (real-data gate: 343-discarded + 11 contiguous runs on CTR_PDF_PATH) + 351 frontend
+- **Test counts**: ~1568+ backend targeted (+~120 run-history tests; real-data gate intact) + 376 frontend
   vitest passing. Monolithic `pytest -q` still hangs on paddle import — use targeted paths only.
 - **Backend**: `uvicorn reconciliation.infrastructure.api.main:app --reload` from `backend/`.
 - **Frontend**: `npm install && npm run dev` from `frontend/`.
@@ -104,16 +123,27 @@ ETA confirm dialog; bulk fire + poll-until-done; completion summary.
 **Archived**: `openspec/changes/archive/discarded-pages-recovery/`.
 **Deferred from SDD#2**: history/persistence hamburger menu (now SDD#3 candidate).
 
-### SDD#3 — Next candidates (not started)
+### SDD#3 — run-history-persistence — COMPLETE & MERGED (PR #66/#67/#68/#69)
 
-Ranked by severity/user impact:
+**Delivered**: cross-restart run history live. Per-run manifest (`run_manifest.json`) written at
+`_run_pipeline_background` composition boundary (non-fatal, atomic, `pipeline.py` zero-diff).
+Startup scan indexes all run dirs (manifest-full or degraded legacy). `GET /runs` sorted
+newest-first + lazy 48h failed-sweep. `DELETE /runs/{id}` (UUID-validate, 409 guard, rmtree
+own-dir). `POST /runs/{id}/retry` (dir reset keep PDF+sunat/, same run_id, re-fire pipeline).
+Lazy hydration dep (`_get_hydrated_entry`) replaces `_require_run` — full editing on past runs
+without eager startup hydration. Frontend: hamburger menu [Nuevo]/[Batch actual]/[Historial] +
+`/historial` route + `ReviewPage` cold-load (runStore.runId from route param) + localStorage
+persistence. SA-5 caught manifest registro field mismatch + refetchInterval infinite polling.
+Archived to `openspec/changes/archive/run-history-persistence/`. Spec promoted:
+`openspec/specs/run-history/spec.md`.
+
+### Remaining backlog (SDD#4 candidates)
 
 | Candidate | Notes |
 |-----------|-------|
-| History/persistence hamburger menu | Deferred from SDD#2; `run_registry` is in-memory → no cross-restart UI history |
-| **#56** Air-gap: RapidOCR runtime model download regression | Deploy concern — bake PP-OCRv5-server weights at build time (currently may re-download on cold start) |
+| **#56** Air-gap: RapidOCR model re-download | Deploy concern — bake PP-OCRv5-server weights at build time |
 | **#57** Deadline-guard `DEADLINE_S` env var | Expose as runtime env var (not baked-in constant) |
-| **#58** Magnitude guard | Guard against implausible quantity magnitudes (OCR digit noise producing 1000× errors) |
+| **#58** Magnitude guard | Guard against implausible quantity magnitudes (OCR digit noise) |
 | **#59** Canonicalization Tier-1 hardening | Dual-spec normalization edge cases |
 | **#60** `make verify` / containerized-verify gate | Automate Makefile gate in CI |
 | **#62** Recovery hardening | Edge cases: page rendering errors, corrupt cached lines |
@@ -121,6 +151,10 @@ Ranked by severity/user impact:
 | **#45** Stale status endpoint | `/table` is the fresh source; status endpoint is cosmetic |
 | **#41** Deadline-guard cancel | Cancel in-flight httpx on server context vs abandon |
 | **#43** Unit-map consolidation | Single domain source for `UNIT_LABEL_MAP` / `_SUNAT_UNIT_MAP` |
+
+**Housekeeping**:
+- `openspec/changes/guia-reprocess-staged-flow/` — stale change folder to archive (never shipped)
+- `docs/playwright/` — stray `.json`/`.mjs` SA-5 artifacts (gitignored; leave as-is or clean)
 
 ## 4. Open issues
 

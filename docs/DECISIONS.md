@@ -606,3 +606,96 @@ data corruption behind a green TDD suite.
 - **History/persistence hamburger menu**: `run_registry` is in-memory; cross-restart UI history
   requires a persistence layer. Deferred to SDD#3.
 - **Issues #56/#57/#58/#59/#60/#62**: backlog items not in SDD#2 scope; queued for SDD#3.
+
+---
+
+## §2026-06-11 — SDD#3 run-history-persistence COMPLETE (PR #66/#67/#68/#69)
+
+### SDD#3 archived — cross-restart run history live
+
+All four PRs merged to `main`. Per-run manifest written at pipeline completion (success +
+failure), startup scan, `GET /runs`, lazy hydration, `DELETE`, retry, 48h sweep, hamburger
+menu + `/historial` UI + cold-load + localStorage persistence. SDD#3 archived to
+`openspec/changes/archive/run-history-persistence/`. Spec promoted:
+`openspec/specs/run-history/spec.md`.
+
+### Option B per-run manifest rationale (lifecycle co-locality)
+
+Design choice: **Option B** — one `run_manifest.json` per run dir (lifecycle co-locality)
+over a central index file. Decisive factors:
+
+1. **No central index**: a central `runs_index.json` is a shared mutable resource; concurrent
+   writes from `_run_pipeline_background` threads require a global lock and create a
+   single-point-of-failure for startup scan (one corrupted entry can crash the whole index
+   read). Per-dir manifests fail in isolation — a corrupted entry is skipped without affecting
+   others.
+2. **Delete scoping**: `rmtree` on a run dir atomically removes the manifest with the data.
+   A central index requires a separate atomic-remove step; out-of-sync states (dir gone, index
+   entry present, or vice versa) are operational hazards.
+3. **pipeline.py zero-diff invariant**: the manifest write boundary is
+   `_run_pipeline_background` in `routes.py` (the composition root), not inside the pipeline
+   itself. This kept `application/pipeline.py` untouched across the entire SDD#3 — the
+   invariant held without architectural compromise.
+
+### JD pattern (8th & 9th consecutive) — PR-1 + PR-2 findings
+
+**PR-1 JD FAIL (#3201)**:
+- **suite-RED**: test fixtures asserted on a path that could resolve to a real legacy run dir
+  on the dev machine — `tests-can-rmtree-real-runs` latent hazard. Both judges flagged it.
+  Fix: all test fixture run dirs use isolated `tmp_path` scoped to pytest session.
+- After fix: **JD PASS×2**. PR #66 merged.
+
+**PR-2 JD FAIL (#3208) — two CRITICALs, both live-reproduced by both blind judges**:
+- **CRITICAL 1: cold-load 409** — `GET /runs/{id}` (the status-poll endpoint used by the
+  frontend while the pipeline is running) called `_get_hydrated_entry`, which triggered lazy
+  hydration on a run that had no `extraction_cache.json` yet (pipeline still in flight).
+  `build_review_service` tried to load a nonexistent cache → HTTP 409. The mock fixtures
+  hand-seeded a ctx with the cache path, masking the gap (classic mock theatre). Fix: split
+  the status-poll path to a non-hydrating registry lookup; `_get_hydrated_entry` only on
+  data-access endpoints (`/table`, `/reassign`, etc.).
+- **CRITICAL 2: sweep-deletes-mid-retry** — `GET /runs` triggered the 48h sweep, which
+  deleted any `status=="error"` run dir older than 48h. If a retry was in progress and the
+  sweep ran concurrently (e.g. a second browser tab called `GET /runs`), the sweep saw the
+  run still at `status=="error"` in the registry (not yet flipped to `"processing"`) and
+  deleted the run dir while the retry was copying the PDF path. Fix: the sweep skips any run
+  where `status` in `{"processing", "pending"}` at sweep time; the retry atomically flips
+  `status="processing"` in the registry BEFORE the background task reads the PDF path.
+- After fixes: **JD PASS×2**. PR #67 merged.
+
+This is the **8th and 9th consecutive PR** (counting from PR#46) where dual-blind JD caught
+silent data corruption or runtime hazards behind a green TDD suite.
+
+### SA-5 real-data catches (PR-3 runtime validation)
+
+SA-5 Playwright gate found two bugs before merge that vitest missed:
+
+1. **Manifest registro field mismatch** (fix PR #68): `RunHistoryPage.vue` accessed
+   `run.registro_min` / `run.registro_max` directly on the `RunSummaryResponse`. The backend
+   field is `registro_min: str | None`; the frontend had a defensive `getattr`-style optional
+   chain on a nullable that is always `null` for legacy/degraded entries — the label showed
+   `—` correctly. BUT: when the field was `null` because the manifest was written with
+   `registro_min = None` (the initial pipeline run before the fix), the displayed label was
+   `Reg — · #1` instead of `Reg 230–235 · #1`. Root cause: `RunManifest.registro_min` was
+   set from `result.declared` using `Registro.numero` (string), but the adapter wrote it as
+   the `int` attribute directly. Defensive `getattr` defaults masked the contract mismatch
+   — the mock fixture used the string form, so the unit test passed. Fix: explicit attribute
+   access behind a direct `str()` cast at the manifest-write boundary, not a fallback default.
+   **Lesson**: defensive `getattr` defaults mask contract mismatches — prefer direct attribute
+   access behind an explicit non-fatal boundary.
+
+2. **refetchInterval ignores error state — infinite polling** (fix PR #69, commit e1172e4):
+   `ReviewPage.vue`'s `statusQuery` used TanStack Query `refetchInterval` unconditionally.
+   When `GET /runs/{id}` returned 404 (run deleted, or navigated to a cold-load path that
+   returned 404 before the run was hydrated), the query entered an error state but
+   `refetchInterval` kept firing — infinite polling loop. Fix: `refetchInterval: (query) =>
+   query.state.status === 'error' ? false : 3000` — stops polling on any terminal error state.
+
+### Incident log — apply agent committed to main
+
+During SDD#3 apply (PR-2 batch), the apply sub-agent committed directly to `main` (the live
+branch) instead of a feature branch. Recovery: created `feat/run-history-lifecycle` branch
+from the rogue commit, `git reset --hard HEAD~N` on `main` to the pre-apply SHA, then
+cherry-picked or re-applied the commits on the feature branch. Nothing was pushed during the
+incident (SA-3 enforcement). **Lesson**: implementation sub-agents should mutate in isolated
+worktrees (worktree isolation flag), not the live tree. The orchestrator enforces SA-3 (no
+push), but branch discipline must be enforced at worktree creation time.

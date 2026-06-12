@@ -18,7 +18,7 @@ import { useRunStore } from '@/stores/run'
 import { installLocalStorageStub } from '../test-utils/local-storage-stub'
 import type { ReconciliationTableResponse } from '@/api/types'
 
-const { MOCK_TABLE, NOT_FOUND_ERROR, capturedRetry } = vi.hoisted(() => {
+const { MOCK_TABLE, NOT_FOUND_ERROR, capturedRetry, capturedRefetchInterval } = vi.hoisted(() => {
   const MOCK_TABLE: ReconciliationTableResponse = {
     run_id: 'stale-run',
     rows: [],
@@ -30,7 +30,10 @@ const { MOCK_TABLE, NOT_FOUND_ERROR, capturedRetry } = vi.hoisted(() => {
   const capturedRetry: { fn: ((failureCount: number, error: unknown) => boolean) | null } = {
     fn: null,
   }
-  return { MOCK_TABLE, NOT_FOUND_ERROR, capturedRetry }
+  const capturedRefetchInterval: { fn: ((query: unknown) => number | false) | null } = {
+    fn: null,
+  }
+  return { MOCK_TABLE, NOT_FOUND_ERROR, capturedRetry, capturedRefetchInterval }
 })
 
 vi.mock('@/composables/useReconciliationApi', () => ({
@@ -65,9 +68,12 @@ vi.mock('@/api/client', () => ({
 // useQuery for the status query surfaces a 404 error (data undefined). We also
 // capture the `retry` option so the test can assert 4xx is NOT retried.
 vi.mock('@tanstack/vue-query', () => ({
-  useQuery: vi.fn().mockImplementation((opts: { retry?: unknown }) => {
+  useQuery: vi.fn().mockImplementation((opts: { retry?: unknown; refetchInterval?: unknown }) => {
     if (typeof opts.retry === 'function') {
       capturedRetry.fn = opts.retry as (failureCount: number, error: unknown) => boolean
+    }
+    if (typeof opts.refetchInterval === 'function') {
+      capturedRefetchInterval.fn = opts.refetchInterval as (query: unknown) => number | false
     }
     return {
       data: { value: undefined },
@@ -159,5 +165,25 @@ describe('ReviewPage cold-load 404 empty-state (W1)', () => {
     expect(capturedRetry.fn!(0, NOT_FOUND_ERROR)).toBe(false)
     // A 5xx / network error → still retried (bounded).
     expect(capturedRetry.fn!(0, { response: { status: 503 } })).toBe(true)
+  })
+
+  it('stops the refetchInterval polling once the status query is in a terminal error state', () => {
+    // SA-5-caught: `retry: false` does NOT govern refetchInterval (independent
+    // scheduling path) — after a 404 the page kept polling every 2s forever.
+    mountReviewPage()
+
+    expect(capturedRefetchInterval.fn).not.toBeNull()
+    // Terminal error (404, retries exhausted) → polling must STOP.
+    expect(
+      capturedRefetchInterval.fn!({ state: { data: undefined, error: NOT_FOUND_ERROR } }),
+    ).toBe(false)
+    // Healthy in-flight run (no data yet, no error) → keep polling.
+    expect(
+      capturedRefetchInterval.fn!({ state: { data: undefined, error: null } }),
+    ).toBe(2000)
+    // Completed run → polling stops (pre-existing behavior preserved).
+    expect(
+      capturedRefetchInterval.fn!({ state: { data: { status: 'review' }, error: null } }),
+    ).toBe(false)
   })
 })

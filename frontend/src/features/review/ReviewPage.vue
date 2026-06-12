@@ -274,6 +274,10 @@ const { data: runStatus, error: statusError } = useQuery({
   refetchInterval: (query) => {
     const status = query.state.data?.status
     if (status === 'review' || status === 'error') return false
+    // SA-5-caught: `retry: false` does not govern refetchInterval (independent
+    // scheduling path). A terminal query error (e.g. 404 stale run) must also
+    // stop the 2s polling, or the page hits the backend forever.
+    if (query.state.error) return false
     return 2000
   },
   // W1: a stale run_id (run swept/deleted) returns 404; never retry 4xx — that

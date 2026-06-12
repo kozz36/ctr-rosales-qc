@@ -30,7 +30,14 @@ services:
     # to SUNAT. `ports:` is incompatible with host mode (uvicorn binds host :8000
     # directly). Verified: ollama + SUNAT both HTTP 200 from a --network host run.
     network_mode: host
+    # Bind uvicorn to ${CTR_BACKEND_PORT} (default 8010, OFF the conventional 8000)
+    # so this host-mode container coexists with other host-mode services that bind
+    # :8000 (e.g. a sibling project). Override via .env / shell: CTR_BACKEND_PORT=8000.
+    command: uvicorn reconciliation.infrastructure.api.main:app --host 0.0.0.0 --port ${CTR_BACKEND_PORT:-8010}
     environment:
+      # Backend URL for the in-container acceptance gate (make verify) — tracks the
+      # bound port above so the test hits THIS backend, not a foreign host-port service.
+      CTR_BACKEND_URL: "http://localhost:${CTR_BACKEND_PORT:-8010}"
       # OCR: RapidOCR PP-OCRv5-server — deterministic printed-table extraction (SDD#1)
       # Engine=rapidocr: ONNX, paddle-free, models bundled in image (air-gap-capable).
       # Replaces the prior OCR-disabled mode; SUNAT now acts as supplementary source.
@@ -70,7 +77,10 @@ services:
       # SUNAT cache: stable cross-run named volume (D4 CONT-S10)
       - sunat-cache:/data/sunat-cache
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      # TCP connect to the bound port (mirrors docker-compose.app.yml). The prior
+      # check hit /health — a route that does not exist (404 → urlopen raises →
+      # container never healthy). Socket-connect just asserts uvicorn is listening.
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost', ${CTR_BACKEND_PORT:-8010}), timeout=5); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -58,9 +58,10 @@ pytestmark = pytest.mark.e2e
 # Environment / paths
 # ---------------------------------------------------------------------------
 
-# Backend URL: in-container the backend binds host networking → localhost:8000.
-# Override via CTR_BACKEND_URL for out-of-container runs if needed.
-_BACKEND_BASE_URL = os.environ.get("CTR_BACKEND_URL", "http://localhost:8000")
+# Backend URL: under host networking the backend binds the configured port on the
+# host (default 8010; set by docker-compose.yml via CTR_BACKEND_PORT). Override via
+# CTR_BACKEND_URL for out-of-container runs or a non-default port.
+_BACKEND_BASE_URL = os.environ.get("CTR_BACKEND_URL", "http://localhost:8010")
 _API_PREFIX = "/api/v1"
 
 # PDF path inside the container (compose bind-mount; see docker-compose.yml).

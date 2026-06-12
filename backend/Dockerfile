@@ -33,23 +33,32 @@ COPY src/ ./src/
 # Install the project itself (editable install into the venv)
 RUN uv sync --frozen --no-dev --extra identity --extra llm --extra ocr
 
-# Build-time RapidOCR warm-up: construct the PP-OCRv5-server engine so the
-# ~165 MB ONNX models (det 84 MB + rec 81 MB) are downloaded into the venv-relative
-# site-packages/rapidocr/models/ path while the network is available.  This makes
-# the runtime image air-gap-capable — the COPY --from=builder below carries the
-# models into the final stage without needing a network connection at runtime.
-# The warm-up exits immediately after construction (no inference is run).
-RUN /app/.venv/bin/python - <<'EOF'
-from rapidocr import RapidOCR, OCRVersion, ModelType
-print("RapidOCR warm-up: downloading PP-OCRv5-server ONNX models...")
-RapidOCR(params={
-    "Det.ocr_version": OCRVersion.PPOCRV5,
-    "Det.model_type": ModelType.SERVER,
-    "Rec.ocr_version": OCRVersion.PPOCRV5,
-    "Rec.model_type": ModelType.SERVER,
-})
-print("RapidOCR warm-up: models cached in venv — air-gap ready.")
-EOF
+# Build-time RapidOCR warm-up: construct the PP-OCRv5-server engine AND run ONE
+# inference on a synthetic text image so ALL THREE lazy-loaded ONNX models
+# (det_server ~84 MB, rec_server ~81 MB, cls_mobile ~0.6 MB) are downloaded into
+# the venv-relative site-packages/rapidocr/models/ path while the network is
+# available.  This makes the runtime image air-gap-capable — the COPY --from=builder
+# below carries the models into the final stage.
+#
+# WHY inference is required (not just construction):
+#   RapidOCR lazy-loads Cls + Rec only when Det detects text boxes.
+#   Constructing the engine alone never triggers Cls/Rec downloads.
+#   Random noise → Det finds zero boxes → Cls/Rec never load → NOT downloaded.
+#   Synthetic text via cv2.putText → Det finds boxes → Cls + Rec lazy-load →
+#   all three models downloaded while network is available.
+#
+# NOTE: Cls stays PP-OCRv4/mobile even when Det/Rec are PP-OCRv5/server (default
+#   config.yaml behaviour) → the cls file is ch_ppocr_mobile_v2.0_cls_mobile.onnx,
+#   NOT the package-bundled ch_ppocr_mobile_v2.0_cls_infer.onnx (different name!).
+#   The disk-existence guard below is the proof that all three are present.
+#
+# NOTE on Docker legacy-builder heredoc exit-code bug:
+#   `RUN python - <<'EOF' ... sys.exit(1) ... EOF` silently swallows exit codes
+#   in the legacy builder (the heredoc stdin is consumed before the RUN layer
+#   starts, so Python exits 0 regardless).  Scripts are COPY-ed from the build
+#   context and executed directly so the real exit code propagates.
+COPY docker/ocr_warmup.py /tmp/ocr_warmup.py
+RUN /app/.venv/bin/python /tmp/ocr_warmup.py
 
 # ─── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
@@ -93,30 +102,8 @@ RUN /app/.venv/bin/python -c "import pyzbar.pyzbar; import zxingcpp; print('iden
 # (2) runs a real cv2 op, and (3) runs ONE real OCR inference on a tiny synthetic
 # image — so if the FULL opencv ever sneaks back into the closure (it WOULD need
 # libGL absent from this slim runtime), the build FAILS HERE instead of in prod.
-RUN /app/.venv/bin/python - <<'EOF'
-import numpy as np
-import cv2  # CRITICAL-B: exercise the native-lib load in the slim runtime
-print("cv2 import OK:", cv2.__file__, cv2.__version__)
-# Real cv2 op — fails fast if the native libs (libGL/libglib) are missing,
-# which would mean the FULL opencv leaked back past the uv override.
-img = (np.random.rand(64, 200, 3) * 255).astype("uint8")
-_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-print("cv2 cvtColor OK:", _gray.shape)
-
-import rapidocr
-from rapidocr import RapidOCR, OCRVersion, ModelType
-# Construct engine offline to confirm models are present in the venv cache
-engine = RapidOCR(params={
-    "Det.ocr_version": OCRVersion.PPOCRV5,
-    "Det.model_type": ModelType.SERVER,
-    "Rec.ocr_version": OCRVersion.PPOCRV5,
-    "Rec.model_type": ModelType.SERVER,
-})
-# Run ONE real inference (tiny synthetic page) — exercises the full cv2 + ONNX
-# path, so a native-lib gap surfaces at BUILD time, not at the first prod OCR.
-_ = engine(img)
-print("rapidocr + PP-OCRv5-server REAL inference OK — CONT-S03b PASS (cv2 native libs present)")
-EOF
+COPY docker/ocr_assert.py /tmp/ocr_assert.py
+RUN /app/.venv/bin/python /tmp/ocr_assert.py
 
 # paddle absence assertion — build FAILS if paddle is somehow present
 RUN /app/.venv/bin/python -c "import paddle; raise RuntimeError('paddle must not be present')" 2>&1 | \

@@ -7,7 +7,7 @@
 # Requires: backend/.venv activated (or uv run), node/npm for frontend.
 # Both processes share the terminal; Ctrl-C stops both.
 
-.PHONY: dev help build test-container smoke verify install app-up app-down app-logs
+.PHONY: dev help build test-container smoke verify verify-fast install app-up app-down app-logs
 
 help:
 	@echo "Available targets:"
@@ -20,6 +20,7 @@ help:
 	@echo "  test-container — run full backend unit test suite inside the container (CONT-S03)"
 	@echo "  smoke          — cloud-vision accuracy smoke: Registro 232 → qwen3.5:397b-cloud (CONT-S07/S08)"
 	@echo "  verify         — faithful in-container full run: R8 MATCH + R9 fecha-divergence gates (CONT-S12/S13)"
+	@echo "  verify-fast    — same R8+R9 gate on a 3-section ~50-page subset (minutes, not ~90 min)"
 
 # ─── v1.0.0 turnkey app (docker-compose.app.yml) ──────────────────────────────
 
@@ -75,3 +76,17 @@ verify:
 	docker compose run --rm -e CTR_VERIFY_STRICT=1 backend \
 	  python -m pytest tests/e2e/test_container_verification.py -v -s --tb=short
 	docker compose down
+
+## Fast acceptance gate — SAME R8+R9 assertions on a 3-section front-subset (~50
+## pages incl. registro 232) instead of all 493. Minutes vs ~90 min on CPU.
+## Builds the subset on the host (backend venv PyMuPDF), then mounts it into the
+## container via the verify-fast override. CONT-S12/S13 (reduced corpus).
+COMPOSE_FAST = docker compose -f docker-compose.yml -f docker-compose.verify-fast.yml
+verify-fast:
+	uv run --project backend python backend/scripts/make_verify_subset.py
+	$(COMPOSE_FAST) up -d backend
+	@echo "Waiting for backend to be healthy..."
+	@sleep 5
+	$(COMPOSE_FAST) run --rm -e CTR_VERIFY_STRICT=1 backend \
+	  python -m pytest tests/e2e/test_container_verification.py -v -s --tb=short
+	$(COMPOSE_FAST) down

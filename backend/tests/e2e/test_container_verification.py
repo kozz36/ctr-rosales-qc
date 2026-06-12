@@ -130,10 +130,14 @@ def _get_pdf_path() -> Path:
 
 
 def _wait_for_backend(base_url: str, timeout_s: float = _BACKEND_WAIT_S) -> bool:
-    """Poll GET /api/v1/runs until the backend answers (<500) or timeout.
+    """Poll GET /api/v1/runs until the REAL ctr backend answers 200, or timeout.
 
     Retries to absorb the cold-start race (`make verify` sleeps 5s, healthcheck
-    start_period is 15s). Returns True on first reachable response, else False.
+    start_period is 15s). The list endpoint returns 200 with a JSON array; we
+    require BOTH so a foreign service squatting on the host port (e.g. another
+    `network_mode: host` container returning its own 404/JSON) is rejected with a
+    clear "not reachable" gate failure instead of a cryptic POST 404 downstream.
+    Returns True only when the ctr runs-list contract is observed, else False.
     """
     import httpx  # noqa: PLC0415 — lazy import; never at module top
 
@@ -141,7 +145,7 @@ def _wait_for_backend(base_url: str, timeout_s: float = _BACKEND_WAIT_S) -> bool
     while time.monotonic() < deadline:
         try:
             r = httpx.get(f"{base_url}{_API_PREFIX}/runs", timeout=10.0)
-            if r.status_code < 500:
+            if r.status_code == 200 and isinstance(r.json(), list):
                 return True
         except Exception:
             pass

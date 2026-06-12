@@ -52,6 +52,12 @@ services:
       #   OLLAMA_MODEL=qwen3.5:9b                      (local-vision fallback)
       RECONCILIATION__VISION__OLLAMA__MODEL: "${OLLAMA_MODEL:-qwen3.5:397b-cloud}"
       RECONCILIATION__VISION__OLLAMA__BASE_URL: "${OLLAMA_BASE_URL:-http://localhost:11434/v1}"
+      # Ollama API key — env-only secret (never committed), passed through from .env.
+      # EMPTY for the local proxy (localhost:11434, no auth → factory falls back to the
+      # "ollama" placeholder). REQUIRED for direct Ollama Cloud (base_url=https://ollama.com/v1,
+      # model WITHOUT the -cloud suffix, e.g. qwen3.5:397b): the SDK sends it as
+      # `Authorization: Bearer <key>`. Retrieve with `secret-tool lookup service ollama-cloud account api`.
+      RECONCILIATION__VISION__OLLAMA__API_KEY: "${OLLAMA_API_KEY:-}"
       # deadline_s: 60 (NOT the 20s code default). Cloud Ollama (qwen3.5:397b-cloud /
       # kimi-k2.5:cloud) is throttled under sequential reprocess; at 20s, 108/126 guía
       # date-reads timed out (#57) → dates fell to the R9b SUNAT floor instead of a real

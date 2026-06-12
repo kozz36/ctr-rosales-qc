@@ -202,6 +202,7 @@
  */
 
 import { ref, computed, watch, nextTick } from 'vue'
+import { useRunStore } from '@/stores/run'
 import { useReconciliationStore } from '@/stores/reconciliation'
 import { useTable, useReassignGuia, useExportRun, queryKeys } from '@/composables/useReconciliationApi'
 import { getRunStatus } from '@/api/client'
@@ -220,8 +221,21 @@ const props = defineProps<{
   id: string
 }>()
 
+const runStore = useRunStore()
 const reconciliationStore = useReconciliationStore()
 const queryClient = useQueryClient()
+
+// ---------------------------------------------------------------------------
+// Cold-load mount hook (SDD#3 D6, RH-011-S01): the route param is the
+// authoritative run identity. After a server restart, a history click, or a
+// browser refresh the store may be null or stale — adopt the param so the
+// header nav and [Batch actual] work without a prior upload in this session.
+// Runs once per mount (route changes remount via :key="route.fullPath").
+// ---------------------------------------------------------------------------
+
+if (props.id && runStore.runId !== props.id) {
+  runStore.runId = props.id
+}
 
 // ---------------------------------------------------------------------------
 // Run status
@@ -242,6 +256,18 @@ const { data: runStatus } = useQuery({
 
 const isReady = computed(() => runStatus.value?.status === 'review')
 const isStatusError = computed(() => runStatus.value?.status === 'error')
+
+// RH-011-S03: mirror the polled status into the run store so the "Revisión"
+// nav link (gated on runStore.isReady in App.vue) appears on cold-load too.
+// setStatus is the store's documented mirror hook (used by RunProgress during
+// the upload flow); immediate:true covers the cached-data mount case.
+watch(
+  () => runStatus.value,
+  (status) => {
+    if (status) runStore.setStatus(status.status, status.error)
+  },
+  { immediate: true },
+)
 
 const STATUS_LABELS: Record<string, string> = {
   pending: 'Pendiente',

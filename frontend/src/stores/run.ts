@@ -13,9 +13,40 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { createRun } from '@/api/client'
 import type { RunStatus } from '@/api/types'
+
+// ---------------------------------------------------------------------------
+// localStorage persistence (SDD#3, RH-011-S02)
+// ---------------------------------------------------------------------------
+
+/**
+ * Storage key for the active run_id. Pre-work 3.0.3 confirmed no other
+ * consumer of localStorage exists in the frontend — no key conflict.
+ */
+const RUN_ID_STORAGE_KEY = 'run_id'
+
+/**
+ * Storage access is defensive: localStorage can be unavailable (private mode,
+ * jsdom gaps) and persistence is an enhancement — never fail the store.
+ */
+function readPersistedRunId(): string | null {
+  try {
+    return window.localStorage.getItem(RUN_ID_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function persistRunId(id: string | null): void {
+  try {
+    if (id) window.localStorage.setItem(RUN_ID_STORAGE_KEY, id)
+    else window.localStorage.removeItem(RUN_ID_STORAGE_KEY)
+  } catch {
+    // Storage unavailable — non-fatal; refresh just loses the active run.
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Store
@@ -26,8 +57,14 @@ export const useRunStore = defineStore('run', () => {
   // State
   // ---------------------------------------------------------------------------
 
-  /** UUID returned by POST /runs. Null means no active run. */
-  const runId = ref<string | null>(null)
+  /**
+   * UUID returned by POST /runs. Null means no active run.
+   * Initialized from localStorage so a browser refresh keeps the active run
+   * (RH-011-S02); every change is mirrored back synchronously.
+   */
+  const runId = ref<string | null>(readPersistedRunId())
+
+  watch(runId, (id) => persistRunId(id), { flush: 'sync' })
 
   /** Latest status mirrored from polling (set by RunProgress after query). */
   const status = ref<RunStatus | null>(null)

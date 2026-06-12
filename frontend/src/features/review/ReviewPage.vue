@@ -19,9 +19,25 @@
       </p>
     </div>
 
+    <!-- Run not found (W1): stale run_id (swept/deleted) → 404. Graceful
+         empty-state instead of an infinite spinner; localStorage already cleared. -->
+    <div v-if="isNotFound" class="review-page__not-found" role="status">
+      <span aria-hidden="true">🔍</span>
+      <strong>Ejecución no encontrada</strong>
+      <p>Esta ejecución pudo haber sido eliminada.</p>
+      <div class="review-page__not-found-actions">
+        <RouterLink :to="{ name: 'upload' }" class="review-page__not-found-link">
+          Ir al inicio
+        </RouterLink>
+        <RouterLink :to="{ name: 'historial' }" class="review-page__not-found-link">
+          Ver historial
+        </RouterLink>
+      </div>
+    </div>
+
     <!-- Run still processing — not yet ready for review -->
     <div
-      v-if="!isReady && !isStatusError"
+      v-if="!isReady && !isStatusError && !isNotFound"
       class="review-page__waiting"
       role="status"
       aria-live="polite"
@@ -243,7 +259,16 @@ if (props.id && runStore.runId !== props.id) {
 
 const runIdRef = computed(() => props.id)
 
-const { data: runStatus } = useQuery({
+/**
+ * W1: extract the HTTP status from an axios-shaped error (mirrors the
+ * `(err as { response?: { status? } }).response.status` pattern used across
+ * the review feature). Returns undefined for network/unshaped errors.
+ */
+function httpStatusOf(err: unknown): number | undefined {
+  return (err as { response?: { status?: number } })?.response?.status
+}
+
+const { data: runStatus, error: statusError } = useQuery({
   queryKey: computed(() => queryKeys.runStatus(props.id)),
   queryFn: () => getRunStatus(props.id),
   refetchInterval: (query) => {
@@ -251,11 +276,33 @@ const { data: runStatus } = useQuery({
     if (status === 'review' || status === 'error') return false
     return 2000
   },
+  // W1: a stale run_id (run swept/deleted) returns 404; never retry 4xx — that
+  // is a permanent condition and retrying it forever stuck the spinner.
+  retry: (_failureCount: number, err: unknown) => {
+    const status = httpStatusOf(err)
+    if (status !== undefined && status >= 400 && status < 500) return false
+    return _failureCount < 3
+  },
   staleTime: 0,
 })
 
 const isReady = computed(() => runStatus.value?.status === 'review')
 const isStatusError = computed(() => runStatus.value?.status === 'error')
+
+// W1: a 404 means the run no longer exists (swept/deleted) — distinct from a
+// pipeline 'error' status. Render a graceful empty-state and clear the stale
+// localStorage run_id so the next navigation starts clean.
+const isNotFound = computed(() => httpStatusOf(statusError.value) === 404)
+
+watch(
+  isNotFound,
+  (notFound) => {
+    if (notFound && runStore.runId === props.id) {
+      runStore.reset()
+    }
+  },
+  { immediate: true },
+)
 
 // RH-011-S03: mirror the polled status into the run store so the "Revisión"
 // nav link (gated on runStore.isReady in App.vue) appears on cold-load too.

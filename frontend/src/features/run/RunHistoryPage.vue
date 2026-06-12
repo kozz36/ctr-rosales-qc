@@ -187,9 +187,12 @@ function formatFecha(iso: string | null): string {
   if (!iso) return '—'
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return '—'
-  const dd = String(date.getDate()).padStart(2, '0')
-  const mm = String(date.getMonth() + 1).padStart(2, '0')
-  return `${dd}-${mm}-${date.getFullYear()}`
+  // S3: use UTC getters so the rendered day agrees with the backend's UTC
+  // per-day #seq. Local getters shifted the label to the previous day in
+  // negative-offset zones (e.g. America/Lima, UTC-5) near UTC midnight.
+  const dd = String(date.getUTCDate()).padStart(2, '0')
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0')
+  return `${dd}-${mm}-${date.getUTCFullYear()}`
 }
 
 function entryLabel(run: RunSummaryResponse): string {

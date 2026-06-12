@@ -72,6 +72,27 @@ const { pushSpy, refetchSpy, deleteRunMock, retryRunMock, MOCK_RUNS } = vi.hoist
       degraded: true,
       error: null,
     },
+    {
+      // S3: near-UTC-midnight entry. 02:00 UTC on 2026-06-10 is 21:00 on
+      // 2026-06-09 in America/Lima (UTC-5). The label MUST read the UTC day
+      // (10-06-2026) so it agrees with the backend's UTC per-day #seq; the
+      // prior local-getter formatter rendered the previous day (09-06-2026).
+      // Appended LAST so existing index-based assertions ([1], [2]) are stable.
+      run_id: 'tz-edge',
+      status: 'review',
+      started_at: '2026-06-10T02:00:00+00:00',
+      completed_at: '2026-06-10T02:05:00+00:00',
+      seq: 1,
+      registro_min: '300',
+      registro_max: '301',
+      row_count: 1,
+      match_count: 1,
+      mismatch_count: 0,
+      warnings_count: 0,
+      vision_calls_made: 0,
+      degraded: false,
+      error: null,
+    },
   ]
   return {
     pushSpy: vi.fn(),
@@ -125,7 +146,7 @@ describe('RunHistoryPage (RH-010 / RH-007 / RH-009)', () => {
   it('renders run list from GET /runs response with label + status badge (RH-010-S02)', () => {
     const wrapper = mountPage()
     const rows = wrapper.findAll('.run-history-page__row')
-    expect(rows).toHaveLength(3)
+    expect(rows).toHaveLength(4)
 
     // Manifest-backed entry: fecha + registro range + #seq label
     const first = rows[0].text()
@@ -134,9 +155,18 @@ describe('RunHistoryPage (RH-010 / RH-007 / RH-009)', () => {
     expect(first).toContain('#2')
 
     const badges = wrapper.findAll('.run-history-page__badge')
-    expect(badges).toHaveLength(3)
+    expect(badges).toHaveLength(4)
     expect(badges[0].attributes('data-status')).toBe('review')
     expect(badges[1].attributes('data-status')).toBe('error')
+  })
+
+  it('formatFecha uses the UTC day so the label agrees with the UTC per-day #seq (S3)', () => {
+    const wrapper = mountPage()
+    // tz-edge entry is appended last (index 3); started_at 02:00 UTC on the
+    // 10th is the 9th in America/Lima — the label must still read the UTC day.
+    const tzEdge = wrapper.findAll('.run-history-page__row')[3].text()
+    expect(tzEdge).toContain('10-06-2026')
+    expect(tzEdge).not.toContain('09-06-2026')
   })
 
   it('degraded legacy entry renders placeholders, never "undefined" (RH-003-S03)', () => {

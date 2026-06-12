@@ -7,23 +7,28 @@
           <span class="app-header__wordmark-sub">QC · Reconciliación</span>
         </span>
 
-        <nav v-if="runStore.runId" class="app-header__nav" aria-label="Navegación de sesión">
-          <RouterLink
-            :to="{ name: 'upload' }"
-            class="app-header__nav-link"
-            active-class="app-header__nav-link--active"
-          >
-            Nueva subida
-          </RouterLink>
-          <RouterLink
-            v-if="runStore.isReady"
-            :to="{ name: 'review', params: { id: runStore.runId } }"
-            class="app-header__nav-link"
-            active-class="app-header__nav-link--active"
-          >
-            Revisión
-          </RouterLink>
-        </nav>
+        <div class="app-header__right">
+          <nav v-if="runStore.runId" class="app-header__nav" aria-label="Navegación de sesión">
+            <RouterLink
+              :to="{ name: 'upload' }"
+              class="app-header__nav-link"
+              active-class="app-header__nav-link--active"
+            >
+              Nueva subida
+            </RouterLink>
+            <RouterLink
+              v-if="runStore.isReady"
+              :to="{ name: 'review', params: { id: runStore.runId } }"
+              class="app-header__nav-link"
+              active-class="app-header__nav-link--active"
+            >
+              Revisión
+            </RouterLink>
+          </nav>
+
+          <!-- Run-history hamburger (SDD#3, RH-010) — always visible -->
+          <RunHistoryMenu />
+        </div>
       </div>
     </header>
 
@@ -39,6 +44,7 @@
 
 <script setup lang="ts">
 import { useRunStore } from '@/stores/run'
+import RunHistoryMenu from '@/features/run/RunHistoryMenu.vue'
 
 const runStore = useRunStore()
 </script>
@@ -92,10 +98,16 @@ const runStore = useRunStore()
   margin-left: var(--space-2);
 }
 
+.app-header__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-left: auto;
+}
+
 .app-header__nav {
   display: flex;
   gap: var(--space-4);
-  margin-left: auto;
 }
 
 .app-header__nav-link {

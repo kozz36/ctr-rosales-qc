@@ -65,6 +65,46 @@ export interface RunStatusResponse {
   progress: RunProgressInfo | null
 }
 
+/**
+ * GET /runs — one entry of the run-history listing (SDD#3, RH-003).
+ *
+ * Mirrors backend RunSummaryResponse (schemas.py). Fields come from the
+ * per-run manifest; `degraded=true` marks legacy entries derived from disk
+ * (no manifest) whose nullable fields render as "—" in the UI.
+ */
+export interface RunSummaryResponse {
+  run_id: string
+  /** "review" | "error" (also "processing"/"pending" for in-flight entries). */
+  status: RunStatus
+  /** ISO-8601 UTC; null for legacy degraded entries. */
+  started_at: string | null
+  completed_at: string | null
+  /** Per-day sequence (#N); null for degraded legacy entries. */
+  seq: number | null
+  registro_min: string | null
+  registro_max: string | null
+  row_count: number
+  match_count: number
+  mismatch_count: number
+  /** len(warnings) — the listing never carries the full warnings list. */
+  warnings_count: number
+  vision_calls_made: number
+  /** True when the entry was derived from disk (no manifest). */
+  degraded: boolean
+  error: string | null
+}
+
+/**
+ * POST /runs/{run_id}/retry → 202 (SDD#3, RH-007-S02).
+ *
+ * Mirrors backend RunRetryResponse: SAME run_id semantics; status is always
+ * "processing" immediately after the retry fires.
+ */
+export interface RunRetryResponse {
+  run_id: string
+  status: RunStatus
+}
+
 // ---------------------------------------------------------------------------
 // Guía contribution (rev-2: inline in each ReconciliationRowResponse)
 // ---------------------------------------------------------------------------

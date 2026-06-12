@@ -567,91 +567,108 @@ If PR-2 tests push past ~400 lines, split:
 
 ### Phase 3.0 — Pre-work: read existing patterns
 
-- [ ] **3.0.1** READ `frontend/src/app/App.vue` — identify the exact header markup structure and
+- [x] **3.0.1** READ `frontend/src/app/App.vue` — identify the exact header markup structure and
   where a hamburger icon component should be mounted. Confirm the `runStore.runId` reference
   in the template (nav link visibility gate). Read-only pre-flight.
+  **ANSWER**: Header is `.app-header__inner` (wordmark + `<nav v-if="runStore.runId">` with
+  `margin-left: auto`). Nav gates: "Nueva subida" on `runStore.runId`, "Revisión" on
+  `runStore.isReady` (status === 'review'). Menu mounted inside a new `.app-header__right`
+  wrapper (nav + menu) carrying the `margin-left: auto` so the always-visible menu stays
+  right-aligned when the nav is hidden.
 
-- [ ] **3.0.2** READ `frontend/src/features/review/ReviewPage.vue` — identify the `setup()` or
+- [x] **3.0.2** READ `frontend/src/features/review/ReviewPage.vue` — identify the `setup()` or
   `onMounted` hook where `runStore.runId` is currently set (or not set from route param).
   Confirm the existing `tableQuery.isFetching` spinner behavior for cold-load UX coverage.
   Read-only pre-flight.
+  **ANSWER**: ReviewPage did NOT use runStore at all — it consumed `props.id` only (the gap).
+  `<script setup>` runs per mount (App's RouterView keys on `route.fullPath`, so history nav
+  remounts). Cold-load UX already covered: "Esperando que el pipeline complete..." block +
+  `tableQuery.isFetching` → ReviewGrid `isLoading`. NOTE: RH-011-S03 additionally requires
+  mirroring the polled status into the store (`runStore.setStatus`, the store's documented
+  mirror hook) or the "Revisión" link (gated on `isReady`) never appears on cold-load.
 
-- [ ] **3.0.3** READ `frontend/src/stores/run.ts` (or equivalent runStore) — confirm the current
+- [x] **3.0.3** READ `frontend/src/stores/run.ts` (or equivalent runStore) — confirm the current
   `runId` field, whether it is persisted in localStorage today, and the `reset()` method shape.
   Read-only pre-flight.
+  **ANSWER**: `runId = ref<string | null>(null)`, NOT persisted anywhere today. `reset()` nulls
+  runId/status/uploading/uploadProgress/error. localStorage key-conflict check: `rg localStorage
+  frontend/src` → ZERO existing usage — key `"run_id"` is free (Open Question 3: no prefix
+  needed). GOTCHA: jsdom 24.1 under Node 26 returns `undefined` from the `window.localStorage`
+  getter (sessionStorage works) — vitest suites install a Map-backed stub
+  (`__tests__/test-utils/local-storage-stub.ts`); real-browser persistence is SA-5's 3.3.1(f).
 
 ### Phase 3.1 — RED: Write failing vitest tests
 
-- [ ] **3.1.1** Create `frontend/src/__tests__/features/RunHistoryMenu.test.ts`.
+- [x] **3.1.1** Create `frontend/src/__tests__/features/RunHistoryMenu.test.ts`.
   Write failing test `renders three menu sections: Nuevo batch, Batch actual, Historial`.
   FAILS today: `RunHistoryMenu.vue` does not exist. Spec: RH-010.
 
-- [ ] **3.1.2** Add failing test `Nuevo batch resets store and navigates to upload page`:
+- [x] **3.1.2** Add failing test `Nuevo batch resets store and navigates to upload page`:
   Click [Nuevo batch]. Assert `runStore.reset()` called. Assert router pushed to `/`.
   Spec: RH-010-S01.
 
-- [ ] **3.1.3** Add failing test `Batch actual disabled when no run is active`:
+- [x] **3.1.3** Add failing test `Batch actual disabled when no run is active`:
   `runStore.runId` is null. Assert [Batch actual] is disabled or hidden. Spec: RH-010-S04.
 
-- [ ] **3.1.4** Add failing test `Batch actual navigates to current run when active`:
+- [x] **3.1.4** Add failing test `Batch actual navigates to current run when active`:
   `runStore.runId = "abc"`. Click [Batch actual]. Assert router pushed to `/runs/abc`.
   Spec: RH-010.
 
-- [ ] **3.1.5** Create `frontend/src/__tests__/features/RunHistoryPage.test.ts`.
+- [x] **3.1.5** Create `frontend/src/__tests__/features/RunHistoryPage.test.ts`.
   Write failing test `renders run list from GET /runs response`:
   Mock `listRuns()` returning 3 entries. Assert 3 rows rendered with label + status badge.
   FAILS today: `RunHistoryPage.vue` does not exist. Spec: RH-010-S02.
 
-- [ ] **3.1.6** Add failing test `clicking a history entry navigates to the run`:
+- [x] **3.1.6** Add failing test `clicking a history entry navigates to the run`:
   Click entry with `run_id="xyz"`. Assert router pushed to `/runs/xyz`. Spec: RH-010-S03.
 
-- [ ] **3.1.7** Add failing test `delete button shows confirm dialog before deletion`:
+- [x] **3.1.7** Add failing test `delete button shows confirm dialog before deletion`:
   Mock `deleteRun`. Click [Eliminar]. Assert confirm dialog appears. Assert `deleteRun` NOT called.
   Confirm → assert `deleteRun("xyz")` called. Spec: RH-009 frontend.
 
-- [ ] **3.1.8** Add failing test `retry button is only shown for error-status runs`:
+- [x] **3.1.8** Add failing test `retry button is only shown for error-status runs`:
   2 entries: `status="review"` and `status="error"`. Assert [Reintentar] visible only on error entry.
   Spec: RH-007-S01.
 
-- [ ] **3.1.9** Add failing test `retry button calls retryRun and invalidates runs query`:
+- [x] **3.1.9** Add failing test `retry button calls retryRun and invalidates runs query`:
   Click [Reintentar] on error run. Assert `retryRun("xyz")` called. Assert runs query invalidated.
   Spec: RH-007-S02.
 
-- [ ] **3.1.10** Create `frontend/src/__tests__/features/ReviewPage.coldload.test.ts`.
+- [x] **3.1.10** Create `frontend/src/__tests__/features/ReviewPage.coldload.test.ts`.
   Write failing test `sets runStore.runId from route param on mount`:
   Mount `ReviewPage` with `props.id = "abc123"`, `runStore.runId = null`.
   Assert `runStore.runId === "abc123"` after setup. Spec: RH-011-S01.
 
-- [ ] **3.1.11** Add failing test `Revisión nav link appears after cold-load sets runStore.runId`:
+- [x] **3.1.11** Add failing test `Revisión nav link appears after cold-load sets runStore.runId`:
   App.vue renders with no active runId. ReviewPage mounts with route param and sets runId.
   Assert nav link becomes visible. Spec: RH-011-S03.
 
-- [ ] **3.1.12** Add failing test `runStore.runId persists in localStorage after assignment`:
+- [x] **3.1.12** Add failing test `runStore.runId persists in localStorage after assignment`:
   `runStore.runId = "abc123"`. Check `localStorage.getItem("run_id") === "abc123"`.
   Spec: RH-011-S02.
 
 ### Phase 3.2 — GREEN: Implement PR-3
 
-- [ ] **3.2.1** Add to `frontend/src/api/types.ts`:
+- [x] **3.2.1** Add to `frontend/src/api/types.ts`:
   `RunSummaryResponse` interface (matching backend `RunSummaryResponse`):
   `run_id`, `status`, `started_at?`, `completed_at?`, `seq?`, `registro_min?`, `registro_max?`,
   `row_count`, `match_count`, `mismatch_count`, `warnings_count`, `vision_calls_made`,
   `degraded`, `error?`. Spec: RH-003.
 
-- [ ] **3.2.2** Add to `frontend/src/api/client.ts`:
+- [x] **3.2.2** Add to `frontend/src/api/client.ts`:
   `listRuns(): Promise<RunSummaryResponse[]>` → `GET /api/v1/runs`.
   `deleteRun(runId: string): Promise<void>` → `DELETE /api/v1/runs/{runId}`.
   `retryRun(runId: string): Promise<{run_id: string, status: string}>` → `POST /api/v1/runs/{runId}/retry`.
   Design: D6.
 
-- [ ] **3.2.3** Create `frontend/src/features/run/RunHistoryMenu.vue`:
+- [x] **3.2.3** Create `frontend/src/features/run/RunHistoryMenu.vue`:
   Props: none. Always visible in the App.vue header (not gated on runId).
   Three actions: [Nuevo batch] (`runStore.reset()` + router push `/`),
   [Batch actual] (→ `/runs/{runStore.runId}`; disabled when `runStore.runId` is null),
   [Historial] (→ `/historial`).
   es-PE strings. Design: D6.
 
-- [ ] **3.2.4** Create `frontend/src/features/run/RunHistoryPage.vue`:
+- [x] **3.2.4** Create `frontend/src/features/run/RunHistoryPage.vue`:
   Route: `/historial`. TanStack Query `useRunsList` hook calls `listRuns()`.
   Each row: `DD-MM-YYYY · Registros {min}–{max} · #{seq}` label + status badge (green/red/gray).
   [Reintentar] (only for `status="error"`, mutation → `retryRun`, invalidates query).
@@ -659,42 +676,42 @@ If PR-2 tests push past ~400 lines, split:
   On row click: router push `/runs/{run_id}`.
   Degraded entries: show `—` for unavailable fields. Design: D6.
 
-- [ ] **3.2.5** Modify `frontend/src/app/App.vue`:
+- [x] **3.2.5** Modify `frontend/src/app/App.vue`:
   Mount `<RunHistoryMenu>` in the header. Spec: RH-010.
 
-- [ ] **3.2.6** Modify `frontend/src/app/router.ts`:
+- [x] **3.2.6** Modify `frontend/src/app/router.ts`:
   Add route `{ path: '/historial', component: RunHistoryPage }`. Spec: RH-010.
 
-- [ ] **3.2.7** Modify `frontend/src/features/review/ReviewPage.vue`:
+- [x] **3.2.7** Modify `frontend/src/features/review/ReviewPage.vue`:
   In `setup()` (or onMounted if setup is not available): add
   `if (!runStore.runId && props.id) { runStore.runId = props.id }`.
   This enables cold-load: navigating directly to `/runs/{id}` after a restart sets the store.
   The existing `tableQuery.isFetching` spinner already covers the lazy backend hydration.
   Design: D6, Spec: RH-011.
 
-- [ ] **3.2.8** Modify `frontend/src/stores/run.ts`:
+- [x] **3.2.8** Modify `frontend/src/stores/run.ts`:
   Persist `runId` to `localStorage` on set (watch + init from localStorage on store creation).
   On `reset()`, clear localStorage key. Spec: RH-011-S02.
 
-- [ ] **3.2.9** Run PR-3 vitest suite:
+- [x] **3.2.9** Run PR-3 vitest suite:
   ```
   cd frontend && npm test -- RunHistoryMenu RunHistoryPage ReviewPage.coldload
   ```
   All 3.1.x tests (12 tests) MUST be GREEN.
 
-- [ ] **3.2.10** Full frontend regression:
+- [x] **3.2.10** Full frontend regression:
   ```
   cd frontend && npm test
   ```
   All prior tests must remain GREEN. `npx vue-tsc --noEmit` → 0 errors.
 
-- [ ] **3.2.11** Work-unit commit A: `feat(run-history): RunSummaryResponse types; listRuns/deleteRun/retryRun API client`
+- [x] **3.2.11** Work-unit commit A: `feat(run-history): RunSummaryResponse types; listRuns/deleteRun/retryRun API client`
   Covers: 3.2.1 + 3.2.2.
 
-- [ ] **3.2.12** Work-unit commit B: `feat(run-history): RunHistoryMenu (hamburger: Nuevo/Batch actual/Historial) + /historial route + RunHistoryPage`
+- [x] **3.2.12** Work-unit commit B: `feat(run-history): RunHistoryMenu (hamburger: Nuevo/Batch actual/Historial) + /historial route + RunHistoryPage`
   Covers: 3.2.3 + 3.2.4 + 3.2.5 + 3.2.6.
 
-- [ ] **3.2.13** Work-unit commit C: `fix(run-history): ReviewPage sets runStore.runId from route param on mount; persist runId to localStorage`
+- [x] **3.2.13** Work-unit commit C: `fix(run-history): ReviewPage sets runStore.runId from route param on mount; persist runId to localStorage`
   Covers: 3.2.7 + 3.2.8. No push (SA-3).
 
 ### Phase 3.3 — SA-5 Runtime Validation (PR-3 — MANDATORY)

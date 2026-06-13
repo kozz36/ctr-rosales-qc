@@ -218,3 +218,31 @@ class TestVisionKeyFileStoreRoundtrip:
         store = VisionKeyFileStore(secrets_dir=tmp_path / "secrets")
         store.write("roundtrip-test-key-xyz")
         assert store.read() == "roundtrip-test-key-xyz"
+
+
+class TestVisionKeyFileStoreClear:
+    """VisionKeyFileStore.clear() — the kill-switch off-ramp (DELETE endpoint).
+
+    Closes the JD re-judge LOW: clear() had no direct real-filesystem test (the
+    DELETE route mocked the store), so a future regression on the concrete adapter
+    would slip the net.
+    """
+
+    def test_clear_removes_the_key_file(self, tmp_path: Path) -> None:
+        from reconciliation.infrastructure.vision_key_file_store import VisionKeyFileStore  # noqa: PLC0415
+
+        store = VisionKeyFileStore(secrets_dir=tmp_path / "secrets")
+        store.write("to-be-cleared")
+        assert store.read() == "to-be-cleared"
+
+        store.clear()
+
+        assert store.read() is None  # gone → vision stays off after restart
+
+    def test_clear_is_idempotent_when_no_key(self, tmp_path: Path) -> None:
+        from reconciliation.infrastructure.vision_key_file_store import VisionKeyFileStore  # noqa: PLC0415
+
+        store = VisionKeyFileStore(secrets_dir=tmp_path / "secrets")
+        store.clear()  # no file present — must not raise
+        store.clear()
+        assert store.read() is None

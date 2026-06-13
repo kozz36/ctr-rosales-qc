@@ -7,8 +7,9 @@ Architecture:
 
 Security invariants:
   - Key value NEVER logged (only "vision key file present/absent").
-  - Atomic write: tmp file + os.replace (no partial-write exposure).
-  - chmod 0600 on the key file after write.
+  - Atomic write: tmp file created 0600 via os.open(O_EXCL) + os.replace
+    (the secret is never on disk at any mode other than 0600; no chmod-after-write
+    window). Secrets dir created mode 0700.
   - Key stripped of whitespace on read.
 
 Path default: /data/secrets/vision_api_key

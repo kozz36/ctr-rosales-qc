@@ -60,7 +60,10 @@ sunat:
   # SUNAT is enabled in the Windows native installer profile.
   # Required when vision is disabled (AppConfig date-source invariant).
   # Fetches guía metadata from SUNAT descargaqr for reception date reads.
-  # SUNAT reachability is required for first-run; subsequent runs use the cache.
+  # NOTE: RapidOCR quantities + the SPA are fully offline (air-gap, no model
+  # re-download). The ONLY network dependency is the SUNAT date source: the
+  # FIRST run of each guía needs e-factura.sunat.gob.pe reachable; results are
+  # cached so later runs of the same guía are offline. (See WINDOWS-INSTALLER §4 R6.)
   enabled: true
   timeout_s: 10.0
   cache: true

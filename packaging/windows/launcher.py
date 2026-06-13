@@ -290,18 +290,29 @@ def _poll_until_ready(port: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _run_quit_window(server_thread: threading.Thread) -> NoReturn:
+def _run_quit_window(server_thread: threading.Thread, server: object) -> NoReturn:
     """Show a small always-on-top window with a Quit button.
 
-    Closing the window or clicking Quit stops the server thread and exits.
-    Falls back gracefully if Tkinter is unavailable (edge case in some
-    stripped Python environments — should not happen with PyInstaller bundle).
+    Closing the window or clicking Quit asks uvicorn to drain in-flight requests
+    (server.should_exit = True) and then exits. Falls back gracefully if Tkinter
+    is unavailable (edge case in some stripped Python environments — should not
+    happen with the PyInstaller bundle).
     """
+
+    def _stop_server() -> None:
+        # Ask uvicorn to shut down cleanly (drains in-flight requests) instead
+        # of relying solely on the daemon-thread being killed at process exit.
+        try:
+            server.should_exit = True  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 — best-effort; process exit is the backstop
+            pass
+
     try:
         import tkinter as tk  # noqa: PLC0415
     except ImportError:
         logger.warning("tkinter not available — launcher will keep alive until Ctrl+C or process kill")
         server_thread.join()
+        _stop_server()
         sys.exit(0)
 
     root = tk.Tk()
@@ -323,6 +334,7 @@ def _run_quit_window(server_thread: threading.Thread) -> NoReturn:
 
     def _quit() -> None:
         logger.info("Quit requested by user.")
+        _stop_server()
         root.destroy()
 
     btn = tk.Button(root, text="Cerrar / Quit", command=_quit, padx=10)
@@ -430,7 +442,7 @@ def main() -> None:
     webbrowser.open(url)
 
     # --- 10. Keep alive with quit window ---
-    _run_quit_window(server_thread)
+    _run_quit_window(server_thread, server)
 
 
 if __name__ == "__main__":

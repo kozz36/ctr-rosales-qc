@@ -180,6 +180,13 @@ def create_app() -> FastAPI:
     # --- Routes ---
     app.include_router(router, prefix="/api/v1")
 
+    # --- Optional SPA serving (slice 1: Windows native installer) ---
+    # Activated only when RECONCILIATION_SPA_DIR env var is set and the dir
+    # exists.  No-op in Docker/dev (preserves today's API-only behaviour).
+    from reconciliation.infrastructure.api.spa import mount_spa  # noqa: PLC0415
+
+    mount_spa(app)
+
     return app
 
 

@@ -66,8 +66,14 @@ cv2_datas, cv2_binaries, cv2_hidden = collect_all("cv2")
 # --- rapidocr hidden imports ---
 rapidocr_datas_all, rapidocr_binaries, rapidocr_hidden = collect_all("rapidocr")
 
-# --- polars: data files (native extensions embedded, but metadata needed) ---
-polars_datas = collect_data_files("polars")
+# --- polars: collect_all so the compiled Rust extension (.pyd) + all submodules
+# are bundled. The single .pyd is not always found by the static tracer; a miss
+# crashes every xlsx/csv export at runtime with "DLL load failed" (ctr-review MEDIUM-1). ---
+polars_datas, polars_binaries, polars_hidden = collect_all("polars")
+
+# --- openpyxl: collect_all so the xlsx adapter's styles/utils submodules
+# (openpyxl.styles, openpyxl.utils) are all included (ctr-review MEDIUM-2). ---
+openpyxl_datas, openpyxl_binaries, openpyxl_hidden = collect_all("openpyxl")
 
 # --- pyzbar: libzbar DLL (Windows needs the external shared library) ---
 # The pyzbar wheel ships the DLL inside the package directory on Windows.
@@ -93,6 +99,7 @@ all_datas = (
     + fitz_datas
     + cv2_datas
     + polars_datas
+    + openpyxl_datas
     + pyzbar_datas
     # Frontend SPA: bundle at frontend/dist so launcher.py's resource_path("frontend/dist") works.
     + [(frontend_dist, "frontend/dist")]
@@ -105,6 +112,8 @@ all_binaries = (
     + fitz_binaries
     + cv2_binaries
     + rapidocr_binaries
+    + polars_binaries
+    + openpyxl_binaries
     + pyzbar_binaries
 )
 
@@ -178,6 +187,8 @@ all_hidden = (
     + fitz_hidden
     + cv2_hidden
     + rapidocr_hidden
+    + polars_hidden
+    + openpyxl_hidden
     + [
         # QR decoders
         "pyzbar",
@@ -187,6 +198,8 @@ all_hidden = (
         "polars",
         "openpyxl",
         "openpyxl.cell._writer",
+        "openpyxl.styles",
+        "openpyxl.utils",
         "numpy",
         "PIL",
         "PIL.Image",

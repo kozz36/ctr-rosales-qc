@@ -1,4 +1,4 @@
-"""CTR Rosales QC — Windows frozen launcher.
+r"""CTR Rosales QC — Windows frozen launcher.
 
 This is the PyInstaller entrypoint for the Windows native installer.
 It runs as a windowless executable (pythonw) and:
@@ -42,12 +42,17 @@ from typing import NoReturn
 # ---------------------------------------------------------------------------
 
 # We configure logging after we know LOCALAPPDATA in _setup_user_dirs().
-# Bootstrap with a console handler that silently drops if there is no console.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    stream=sys.stderr if not getattr(sys, "frozen", False) else open(os.devnull, "w"),
-)
+# Bootstrap: in frozen/windowed mode there is no console, so attach a NullHandler
+# (no leaked os.devnull file descriptor); in source mode log to stderr.
+if getattr(sys, "frozen", False):
+    logging.getLogger().addHandler(logging.NullHandler())
+    logging.getLogger().setLevel(logging.INFO)
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        stream=sys.stderr,
+    )
 logger = logging.getLogger("ctr.launcher")
 
 # ---------------------------------------------------------------------------
@@ -88,7 +93,7 @@ def resource_path(relative: str) -> Path:
 
 
 def _setup_user_dirs() -> tuple[Path, Path, Path]:
-    """Create and return (runs_dir, sunat_cache_dir, secrets_dir).
+    r"""Create and return (runs_dir, sunat_cache_dir, secrets_dir).
 
     All dirs live under %LOCALAPPDATA%\ctr-rosales-qc\.  Created if missing.
     Raises RuntimeError if %LOCALAPPDATA% is not set (should never happen on

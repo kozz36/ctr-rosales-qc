@@ -31,15 +31,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Prefixes that must NEVER be swallowed by the SPA catch-all fallback.
-# The comparison is done on the raw path string, so ``/api/`` covers
-# ``/api/v1/...`` etc.
-_API_PREFIXES: tuple[str, ...] = (
-    "/api/",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
-)
+# Paths that must NEVER be swallowed by the SPA catch-all fallback.
+# ``/api/`` is a true prefix (covers ``/api/v1/...``). The OpenAPI docs surfaces
+# are matched EXACTLY (plus their sub-paths) so a future SPA client route such as
+# ``/documentos`` is NOT misrouted to a 404 JSON (contract: only /docs, /redoc,
+# /openapi.json are protected — not every path starting with those strings).
+_API_PREFIXES: tuple[str, ...] = ("/api/", "/docs/", "/redoc/")
+_API_EXACT: frozenset[str] = frozenset({"/docs", "/redoc", "/openapi.json"})
 
 
 def mount_spa(app: object) -> None:  # app: FastAPI — avoid import cycle
@@ -122,12 +120,11 @@ def mount_spa(app: object) -> None:  # app: FastAPI — avoid import cycle
         # The ``full_path`` param does NOT include the leading slash that was
         # already consumed by path routing — we prepend it for the check.
         request_path = "/" + full_path
-        for prefix in _API_PREFIXES:
-            if request_path.startswith(prefix):
-                # Let FastAPI return its normal 404 JSON.
-                from fastapi import HTTPException  # noqa: PLC0415
+        if request_path in _API_EXACT or request_path.startswith(_API_PREFIXES):
+            # Let FastAPI return its normal 404 JSON.
+            from fastapi import HTTPException  # noqa: PLC0415
 
-                raise HTTPException(status_code=404)
+            raise HTTPException(status_code=404)
 
         # Serve a real file if it exists directly under spa_dir (e.g. robots.txt).
         candidate = spa_dir / full_path

@@ -146,6 +146,25 @@ class TestSpaHistoryFallback:
         assert resp.status_code == 200
         assert INDEX_MARKER in resp.text
 
+    def test_spa_route_prefixed_like_docs_not_intercepted(self, tmp_path: Path) -> None:
+        """A SPA route starting with '/doc' (e.g. /documentos) must reach the
+        fallback, NOT be misrouted to 404 by the docs guard (ctr-review LOW-1).
+
+        Only the exact paths /docs, /redoc, /openapi.json (+ their sub-paths)
+        are protected — not every path beginning with those strings.
+        """
+        spa_dir = _build_spa_dir(tmp_path)
+        with (
+            patch(_SCAN_PATCH, return_value=[]),
+            patch(_SWEEP_PATCH, return_value=[]),
+            _make_spa_client(spa_dir) as client,
+        ):
+            resp = client.get("/documentos")
+        assert resp.status_code == 200, (
+            f"/documentos is a SPA route, expected index.html fallback, got {resp.status_code}"
+        )
+        assert INDEX_MARKER in resp.text
+
 
 # ---------------------------------------------------------------------------
 # S3 — GET /assets/app.js → 200, asset content, JS content-type
@@ -272,8 +291,8 @@ class TestSpaDisabledWhenEnvUnset:
             _make_no_spa_client() as client,
         ):
             resp = client.get("/")
-        # Without SPA mount, / is not a defined route → 404 JSON (not index.html)
-        assert resp.status_code != 200 or INDEX_MARKER not in resp.text, (
+        # Without SPA mount, / must NOT return the SPA index.html (no fallback wired).
+        assert INDEX_MARKER not in resp.text, (
             "When RECONCILIATION_SPA_DIR is unset, / must NOT return SPA index.html"
         )
 

@@ -448,6 +448,32 @@ export interface AuditTrailResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Capabilities + vision-key settings (SDD#4, CAP-001 / VKS-001)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /capabilities → 200 (CAP-001).
+ *
+ * Run-independent feature flags derived from the active AppConfig. Contains
+ * ONLY booleans — never secrets, paths, or model names (CAP-001-S03).
+ */
+export interface CapabilitiesResponse {
+  vision_enabled: boolean
+  sunat_enabled: boolean
+}
+
+/**
+ * POST/DELETE /settings/vision-key → 200 (VKS-001).
+ *
+ * The backend validates (POST) or clears (DELETE) the vision API key and
+ * signals that an app restart is required to apply the change. The key itself
+ * is NEVER echoed in the response body (VKS-001-S04).
+ */
+export interface VisionKeyMutationResponse {
+  restart_required: boolean
+}
+
+// ---------------------------------------------------------------------------
 // API error envelope
 // ---------------------------------------------------------------------------
 

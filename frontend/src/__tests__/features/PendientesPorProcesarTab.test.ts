@@ -19,6 +19,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 import type { ErroredGuiaResponse } from '@/api/types'
 
 const { reprocessBatchMock, batchStatusMock } = vi.hoisted(() => ({
@@ -61,6 +62,10 @@ function bulkButtons(wrapper: ReturnType<typeof mountTab>) {
 
 describe('PendientesPorProcesarTab — bulk per-Registro reprocess (F1)', () => {
   beforeEach(() => {
+    // SDD#4 REV-R34: the bulk button is vision-gated. These tests exercise the
+    // reprocess FLOW, so enable vision; gating itself is covered by
+    // PendientesPorProcesarTab.visionGate.test.ts.
+    useCapabilitiesStore().visionEnabled = true
     vi.useFakeTimers()
     reprocessBatchMock.mockReset()
     batchStatusMock.mockReset()

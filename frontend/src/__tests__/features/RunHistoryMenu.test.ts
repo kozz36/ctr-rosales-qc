@@ -50,10 +50,12 @@ describe('RunHistoryMenu (RH-010)', () => {
 
     const items = wrapper.findAll('[role="menuitem"]')
     const labels = items.map((i) => i.text())
-    expect(labels).toHaveLength(3)
+    // SDD#4: a fourth "Ajustes" item was added (covered in RunHistoryMenu.ajustes.test.ts).
+    expect(labels).toHaveLength(4)
     expect(labels.some((t) => t.includes('Nuevo batch'))).toBe(true)
     expect(labels.some((t) => t.includes('Batch actual'))).toBe(true)
     expect(labels.some((t) => t.includes('Historial'))).toBe(true)
+    expect(labels.some((t) => /Ajustes|Configurar IA/i.test(t))).toBe(true)
   })
 
   it('Nuevo batch resets store and navigates to upload page (RH-010-S01)', async () => {

@@ -15,6 +15,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import type { GuiaContributionResponse, ReconciliationRowResponse } from '@/api/types'
+import { useCapabilitiesStore } from '@/stores/capabilities'
+
+// SDD#4 REV-R34: the Reprocesar menu item is vision-gated. This suite exercises
+// the action flow, so enable vision; gating is covered by
+// GuiaDrillDown.visionGate.test.ts.
+beforeEach(() => {
+  useCapabilitiesStore().visionEnabled = true
+})
 
 const mockMutate = vi.fn()
 const mockIsPending = { value: false }

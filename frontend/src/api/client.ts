@@ -13,6 +13,7 @@
 import axios, { type AxiosInstance } from 'axios'
 import type {
   AuditTrailResponse,
+  CapabilitiesResponse,
   DiscardedBatchResponse,
   DiscardedRecoverStatusResponse,
   ExportFormat,
@@ -33,6 +34,7 @@ import type {
   RunRetryResponse,
   RunStatusResponse,
   RunSummaryResponse,
+  VisionKeyMutationResponse,
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -303,6 +305,37 @@ export async function getDiscardedRecoverStatus(
   const { data } = await http.get<DiscardedRecoverStatusResponse>(
     `/runs/${runId}/discarded-pages/recover-status`,
   )
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// GET /capabilities — run-independent feature flags (SDD#4, CAP-001).
+// Fetched once at app mount to drive disabled-not-hidden gating (REV-R34).
+// ---------------------------------------------------------------------------
+
+export async function getCapabilities(): Promise<CapabilitiesResponse> {
+  const { data } = await http.get<CapabilitiesResponse>('/capabilities')
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// POST /settings/vision-key — validate-before-persist key submission (VKS-001).
+// 200 {restart_required:true} on a valid key; 400 invalid key; 503 provider
+// unreachable; 422 empty/over-long. The key is never echoed back (VKS-001-S04).
+// ---------------------------------------------------------------------------
+
+export async function saveVisionKey(key: string): Promise<VisionKeyMutationResponse> {
+  const { data } = await http.post<VisionKeyMutationResponse>('/settings/vision-key', { key })
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /settings/vision-key — clear the stored key (off-ramp). Idempotent:
+// 200 {restart_required:true} even when no key is present.
+// ---------------------------------------------------------------------------
+
+export async function deleteVisionKey(): Promise<VisionKeyMutationResponse> {
+  const { data } = await http.delete<VisionKeyMutationResponse>('/settings/vision-key')
   return data
 }
 

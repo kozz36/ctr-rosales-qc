@@ -14,6 +14,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
+import { useCapabilitiesStore } from '@/stores/capabilities'
+
+// SDD#4 REV-R34: the bulk button is vision-gated; enable vision so the confirm
+// dialog opens. Gating lives in PendientesPorProcesarTab.visionGate.test.ts.
+beforeEach(() => {
+  useCapabilitiesStore().visionEnabled = true
+})
 import type { ErroredGuiaResponse } from '@/api/types'
 
 const { reprocessBatchMock } = vi.hoisted(() => ({

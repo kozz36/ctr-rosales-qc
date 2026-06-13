@@ -161,8 +161,9 @@
                       type="button"
                       role="menuitem"
                       class="guia-drill-down__menu-item"
-                      :disabled="reprocessingIds.has(guia.guia_id) || undefined"
+                      :disabled="reprocessingIds.has(guia.guia_id) || !visionEnabled || undefined"
                       :aria-busy="reprocessingIds.has(guia.guia_id)"
+                      :title="visionEnabled ? undefined : VISION_DISABLED_TOOLTIP"
                       @click="onReprocess(guia)"
                     >
                       <span aria-hidden="true">↻</span>
@@ -299,13 +300,21 @@
  */
 
 import { ref, computed, nextTick } from 'vue'
+import { storeToRefs } from 'pinia'
 import type { GuiaContributionResponse, ReconciliationRowResponse } from '@/api/types'
 import { useGuiaLineEdit } from '@/composables/useReconciliationApi'
 import { reprocessGuia } from '@/api/client'
+import { useCapabilitiesStore } from '@/stores/capabilities'
+import { VISION_DISABLED_TOOLTIP } from './visionGate'
 import ConfidenceBadge from './ConfidenceBadge.vue'
 import YearInferredBadge from './YearInferredBadge.vue'
 import FechaDivergenceBadge from './FechaDivergenceBadge.vue'
 import SourcePages from './SourcePages.vue'
+
+// REV-R34/R35: store-driven gating of the Reprocesar action. visionEnabled is
+// false by default and while loading (fail-safe), so the control is disabled
+// until capabilities confirm vision is on.
+const { visionEnabled } = storeToRefs(useCapabilitiesStore())
 
 // The drill-down row spans the full parent table: 1 expand + 10 data columns = 11.
 // This MUST match the exact column count — an OVER-count colspan does NOT clip; under

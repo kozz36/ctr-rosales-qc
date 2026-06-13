@@ -17,6 +17,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import type { ErroredGuiaResponse } from '@/api/types'
+import { useCapabilitiesStore } from '@/stores/capabilities'
+
+// SDD#4 REV-R34: Reprocesar con IA is vision-gated; enable vision so this suite
+// exercises the settle contract. Gating lives in the *.visionGate.test.ts.
+beforeEach(() => {
+  useCapabilitiesStore().visionEnabled = true
+})
 
 function makeErrored(overrides: Partial<ErroredGuiaResponse> = {}): ErroredGuiaResponse {
   return {

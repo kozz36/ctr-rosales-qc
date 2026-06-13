@@ -21,7 +21,7 @@ export default defineConfig({
     // Pin a non-UTC timezone so UTC-vs-local date assertions stay discriminating
     // on UTC CI runners (e.g. the formatFecha day-shift regression test).
     env: { TZ: 'America/Lima' },
-    setupFiles: [],
+    setupFiles: ['src/__tests__/setup.ts'],
     include: ['src/**/*.test.ts', 'src/**/*.spec.ts'],
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

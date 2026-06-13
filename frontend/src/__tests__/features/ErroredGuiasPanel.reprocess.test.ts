@@ -18,6 +18,14 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import ErroredGuiasPanel from '@/features/review/ErroredGuiasPanel.vue'
 import type { ErroredGuiaResponse } from '@/api/types'
+import { useCapabilitiesStore } from '@/stores/capabilities'
+
+// SDD#4 REV-R34: the Reprocesar button is vision-gated. These tests exercise the
+// button's render/enabled/in-flight behaviour, so enable vision; the gating
+// itself is covered by ErroredGuiasPanel.visionGate.test.ts.
+beforeEach(() => {
+  useCapabilitiesStore().visionEnabled = true
+})
 
 function makeErrored(overrides: Partial<ErroredGuiaResponse> = {}): ErroredGuiaResponse {
   return {

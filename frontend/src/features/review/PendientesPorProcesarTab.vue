@@ -44,9 +44,11 @@
         <button
           v-if="group.registro !== NULL_REGISTRO_KEY"
           class="pendientes-tab__bulk-btn"
-          :disabled="isInFlight(group.registro) || undefined"
+          :disabled="isInFlight(group.registro) || !visionEnabled || undefined"
           :aria-busy="isInFlight(group.registro)"
-          :title="`Reprocesar con IA todas las guías con error del registro ${group.registro}`"
+          :title="visionEnabled
+            ? `Reprocesar con IA todas las guías con error del registro ${group.registro}`
+            : VISION_DISABLED_TOOLTIP"
           @click="openConfirm(group.registro, $event)"
         >
           {{ isInFlight(group.registro) ? 'Procesando…' : 'Procesar todos con IA' }}
@@ -165,9 +167,16 @@
  */
 
 import { ref, reactive, computed, onBeforeUnmount, nextTick } from 'vue'
+import { storeToRefs } from 'pinia'
 import type { ErroredGuiaResponse, ReconciliationRowResponse } from '@/api/types'
 import { reprocessRegistroBatch, getReprocessBatchStatus } from '@/api/client'
+import { useCapabilitiesStore } from '@/stores/capabilities'
+import { VISION_DISABLED_TOOLTIP } from './visionGate'
 import ErroredGuiasPanel from './ErroredGuiasPanel.vue'
+
+// REV-R34/R35: store-driven gating of the bulk "Procesar todos con IA" button.
+// Fail-safe disabled default until capabilities confirm vision is on.
+const { visionEnabled } = storeToRefs(useCapabilitiesStore())
 
 const props = defineProps<{
   /** Errored guías from the table response (REV-E04). */

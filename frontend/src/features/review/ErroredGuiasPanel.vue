@@ -78,9 +78,9 @@
           <button
             v-if="guia.retry_attempted"
             class="errored-panel__reprocess-btn"
-            :disabled="reprocessingIds.has(guia.guia_id) || undefined"
+            :disabled="reprocessingIds.has(guia.guia_id) || !visionEnabled || undefined"
             :aria-busy="reprocessingIds.has(guia.guia_id)"
-            title="Recuperar guía usando visión IA (Reprocesar con IA)"
+            :title="visionEnabled ? 'Recuperar guía usando visión IA (Reprocesar con IA)' : VISION_DISABLED_TOOLTIP"
             @click="handleReprocess(guia)"
           >
             {{ reprocessingIds.has(guia.guia_id) ? 'Reprocesando…' : 'Reprocesar con IA' }}
@@ -113,8 +113,15 @@
  */
 
 import { ref, reactive } from 'vue'
+import { storeToRefs } from 'pinia'
 import type { ErroredGuiaResponse } from '@/api/types'
 import { retryGuia, reprocessGuia } from '@/api/client'
+import { useCapabilitiesStore } from '@/stores/capabilities'
+import { VISION_DISABLED_TOOLTIP } from './visionGate'
+
+// REV-R34/R35: store-driven gating of "Reprocesar con IA" (vision-key off →
+// visible-but-disabled with explanatory tooltip). Fail-safe disabled default.
+const { visionEnabled } = storeToRefs(useCapabilitiesStore())
 
 const props = defineProps<{
   /** Errored guías from the table response (REV-E04). */

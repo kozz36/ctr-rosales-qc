@@ -720,6 +720,63 @@ class RunRetryResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Capabilities endpoint schemas (CAP-001)
+# ---------------------------------------------------------------------------
+
+
+class CapabilitiesResponse(BaseModel):
+    """Global capability flags (CAP-001).
+
+    Deliberately minimal — ONLY two boolean flags.
+    NEVER exposes api_key, path, model, or any secret (CAP-001-S03).
+    """
+
+    vision_enabled: bool = Field(description="True when vision LLM is enabled and configured.")
+    sunat_enabled: bool = Field(description="True when SUNAT fetch adapter is enabled.")
+
+
+# ---------------------------------------------------------------------------
+# Vision key save schemas (VKS-001/004)
+# ---------------------------------------------------------------------------
+
+
+class VisionKeySaveRequest(BaseModel):
+    """Request body for POST /settings/vision-key (VKS-004-S01).
+
+    key: The candidate Ollama Cloud API key to validate and persist.
+         Minimum length 1 — empty string is rejected by Pydantic validation.
+    """
+
+    key: str = Field(
+        min_length=1,
+        max_length=4096,
+        description="Candidate vision API key (write-only; never echoed).",
+    )
+
+
+class VisionKeySaveResponse(BaseModel):
+    """Response body for POST /settings/vision-key on success (VKS-001-S01).
+
+    restart_required: Always True — the key takes effect on next backend restart.
+    """
+
+    restart_required: bool = Field(
+        description="True when the server must be restarted for the key to take effect."
+    )
+
+
+class VisionKeyDeleteResponse(BaseModel):
+    """Response body for DELETE /settings/vision-key (VKS-006).
+
+    restart_required: Always True — vision stays off only after the next restart.
+    """
+
+    restart_required: bool = Field(
+        description="True when the server must be restarted for the key removal to take effect."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 

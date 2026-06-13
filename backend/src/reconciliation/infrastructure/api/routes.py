@@ -29,6 +29,7 @@ from reconciliation.domain.models import ReconciliationRow
 from reconciliation.infrastructure.api.schemas import (
     AuditEventResponse,
     AuditTrailResponse,
+    CapabilitiesResponse,
     DiscardedBatchResponse,
     DiscardedBatchStatusResponse,
     DiscardedPageResponse,
@@ -55,6 +56,9 @@ from reconciliation.infrastructure.api.schemas import (
     RunStatusResponse,
     RunSummaryResponse,
     UnresolvedGuiaResponse,
+    VisionKeyDeleteResponse,
+    VisionKeySaveRequest,
+    VisionKeySaveResponse,
     _row_id,
 )
 
@@ -96,9 +100,28 @@ def _get_run_history(request: Request) -> Any:
     return request.app.state.run_history  # noqa: ANN401
 
 
+def _get_key_store(request: Request) -> Any:
+    """Extract the VisionKeyStorePort adapter from FastAPI app state (D2).
+
+    Constructed once in lifespan (main.py); stored on app.state.key_store.
+    Mirrors the _get_run_history pattern.
+    """
+    return request.app.state.key_store  # noqa: ANN401
+
+
+def _get_key_probe(request: Request) -> Any:
+    """Extract the VisionKeyProbePort adapter from FastAPI app state (D3).
+
+    Constructed once in lifespan (main.py); stored on app.state.key_probe.
+    """
+    return request.app.state.key_probe  # noqa: ANN401
+
+
 RunRegistry = Annotated[dict[str, Any], Depends(_get_registry)]
 AppConfigDep = Annotated[Any, Depends(_get_config)]
 RunHistoryDep = Annotated[Any, Depends(_get_run_history)]
+KeyStoreDep = Annotated[Any, Depends(_get_key_store)]
+KeyProbeDep = Annotated[Any, Depends(_get_key_probe)]
 
 
 # ---------------------------------------------------------------------------
@@ -2144,3 +2167,107 @@ def get_discarded_recover_status(
         failed=int(status.get("failed", 0)),
         done=bool(status.get("done", False)),
     )
+
+
+# ---------------------------------------------------------------------------
+# Capabilities endpoint (CAP-001)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/capabilities",
+    response_model=CapabilitiesResponse,
+    summary="Return global capability flags (vision and SUNAT enabled state).",
+)
+def get_capabilities(config: AppConfigDep) -> CapabilitiesResponse:
+    """Return whether vision LLM and SUNAT fetch are currently enabled (CAP-001).
+
+    Run-independent — always available, even with no active runs.
+    NEVER includes secrets, paths, model names, or provider details (CAP-001-S03).
+
+    Uses AppConfigDep backed by app.state.config (read-once at lifespan startup).
+    """
+    return CapabilitiesResponse(
+        vision_enabled=config.vision.enabled,
+        sunat_enabled=config.sunat.enabled,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Vision key settings endpoint (VKS-001/004)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/settings/vision-key",
+    response_model=VisionKeySaveResponse,
+    summary="Validate and persist a vision API key (VKS-001).",
+)
+def save_vision_key(
+    body: VisionKeySaveRequest,
+    key_store: KeyStoreDep,
+    key_probe: KeyProbeDep,
+) -> VisionKeySaveResponse:
+    """Validate a candidate vision API key and persist it on success (VKS-001).
+
+    Flow:
+      1. Probe the candidate key against Ollama Cloud.
+      2. valid   → store.write(key) + 200 {restart_required: true}.
+      3. unauthorized → 400 (nothing persisted).
+      4. unreachable | error → 503 (nothing persisted).
+
+    Security invariants:
+      - Key NEVER echoed in the response body.
+      - Key NEVER logged at any log level.
+      - Nothing is persisted unless the probe confirms valid.
+    """
+    # Probe first — persist only on success.
+    result = key_probe.probe(body.key)
+
+    if result.ok:
+        key_store.write(body.key)
+        logger.info("vision key: validated and persisted (restart_required=True)")
+        return VisionKeySaveResponse(restart_required=True)
+
+    if result.reason == "unauthorized":
+        raise HTTPException(
+            status_code=400,
+            detail=result.message or "API key rejected (HTTP 401). Check the key and try again.",
+        )
+
+    # unreachable or error → 503
+    # LOW-9: do NOT echo probe message (may contain provider base_url).
+    # Use a generic, provider-agnostic message.
+    raise HTTPException(
+        status_code=503,
+        detail="Vision API service is unreachable or returned an unexpected error. "
+               "Check network connectivity and try again.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Vision key DELETE (off-ramp / kill-switch restore — VKS-006)
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/settings/vision-key",
+    response_model=VisionKeyDeleteResponse,
+    summary="Remove the stored vision API key (VKS-006).",
+)
+def delete_vision_key(
+    key_store: KeyStoreDep,
+) -> VisionKeyDeleteResponse:
+    """Clear the stored vision API key, restoring the kill-switch (VKS-006).
+
+    Idempotent — returns 200 even if no key is currently stored.
+    Vision stays off only AFTER the backend is restarted (restart_required=true).
+
+    Security invariants:
+      - Key value NEVER logged.
+      - Nothing is echoed in the response body.
+      - Operation is idempotent (no 404 on absent key).
+    """
+    key_store.clear()
+    logger.info("vision key: cleared (restart_required=True)")
+    return VisionKeyDeleteResponse(restart_required=True)

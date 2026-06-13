@@ -40,6 +40,43 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Initialise shared state at startup; clean up on shutdown."""
+    # --- Vision key store + probe (D2/D3): constructed BEFORE AppConfig.from_yaml ---
+    # The key file is read first so that os.environ can be patched BEFORE pydantic-
+    # settings reads it (env > yaml > defaults priority; a post-construction mutation
+    # has no effect on the already-built AppConfig).
+    from reconciliation.infrastructure.vision_key_file_store import (  # noqa: PLC0415
+        VisionKeyFileStore,
+    )
+    from reconciliation.adapters.vision.key_probe import (  # noqa: PLC0415
+        VisionKeyProbeAdapter,
+    )
+
+    key_store = VisionKeyFileStore()
+    key_probe = VisionKeyProbeAdapter()
+
+    vision_key = key_store.read()
+    if vision_key:
+        # Composition-Root env injection (D4): set env BEFORE AppConfig.from_yaml so
+        # pydantic-settings reads the injected values at construction time.
+        #
+        # Precedence rules (JD MEDIUM-4):
+        #   ENABLED    → force-set true (a present key file IS the operator's "enable").
+        #   API_KEY    → force-set (the file IS the key; no other source for this value).
+        #   PROVIDER   → setdefault (explicit operator/compose value wins; default=ollama).
+        #   BASE_URL   → setdefault (explicit dev-compose URL must not be retargeted).
+        #   MODEL      → setdefault (explicit override must not be discarded).
+        os.environ["RECONCILIATION__VISION__ENABLED"] = "true"
+        os.environ["RECONCILIATION__VISION__OLLAMA__API_KEY"] = vision_key
+        os.environ.setdefault("RECONCILIATION__VISION__PROVIDER", "ollama")
+        os.environ.setdefault("RECONCILIATION__VISION__OLLAMA__BASE_URL", "https://ollama.com/v1")
+        os.environ.setdefault("RECONCILIATION__VISION__OLLAMA__MODEL", "kimi-k2.5")
+        logger.info(
+            "vision key injected into env (ENABLED=true, API_KEY set) — "
+            "AppConfig will see vision-on at startup"
+        )
+    else:
+        logger.info("vision key absent — vision stays off; no env mutation")
+
     # Load config (env > yaml > defaults)
     config_path = os.environ.get("RECONCILIATION_CONFIG", "config.yaml")
     config = AppConfig.from_yaml(config_path)
@@ -94,6 +131,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.config = config
     app.state.run_registry = run_registry
+    # D2/D3: expose key_store + key_probe so route Depends resolve the same instances.
+    app.state.key_store = key_store
+    app.state.key_probe = key_probe
 
     logger.info("reconciliation API ready — output_dir=%s", config.output_dir)
     yield

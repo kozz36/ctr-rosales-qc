@@ -249,6 +249,46 @@ class TestSpaApiNotIntercepted:
 
 
 # ---------------------------------------------------------------------------
+# S4b — Path traversal: a path escaping spa_dir must NEVER serve an outside file
+# ---------------------------------------------------------------------------
+
+
+class TestSpaPathTraversalContainment:
+    """Security: the per-file branch must not serve files outside spa_dir.
+
+    A secret file is placed in the tmp_path ROOT (the parent of spa_dir). Any
+    traversal attempt must fall through to index.html / 404 — never leak the
+    secret. (Flagged by automated security review: MEDIUM path-traversal.)
+    """
+
+    def test_traversal_does_not_leak_outside_file(self, tmp_path: Path) -> None:
+        spa_dir = _build_spa_dir(tmp_path)
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP-SECRET-OUTSIDE-SPA-ROOT", encoding="utf-8")
+
+        attempts = [
+            "/../secret.txt",
+            "/..%2fsecret.txt",
+            "/%2e%2e%2fsecret.txt",
+            "/assets/../../secret.txt",
+            "/....//secret.txt",
+        ]
+        with (
+            patch(_SCAN_PATCH, return_value=[]),
+            patch(_SWEEP_PATCH, return_value=[]),
+            _make_spa_client(spa_dir) as client,
+        ):
+            for path in attempts:
+                resp = client.get(path)
+                assert "TOP-SECRET-OUTSIDE-SPA-ROOT" not in resp.text, (
+                    f"Path traversal leaked an outside file via {path!r}"
+                )
+                # Must be either the SPA fallback (200 index.html) or a 404 —
+                # never a 200 serving the escaped file.
+                assert resp.status_code in (200, 404)
+
+
+# ---------------------------------------------------------------------------
 # S5 — GET /api/v1/runs (existing route) → still routes to API, not SPA
 # ---------------------------------------------------------------------------
 

@@ -109,6 +109,10 @@ def mount_spa(app: object) -> None:  # app: FastAPI — avoid import cycle
         async def _favicon() -> _FR:  # type: ignore[return]
             return _FR(str(favicon))
 
+    # Real, canonical SPA root — used for the path-traversal containment check
+    # below. Resolved once at mount time (not per request).
+    spa_root = spa_dir.resolve()
+
     # ------------------------------------------------------------------
     # 3. Catch-all fallback: any path that is NOT under a protected API
     #    prefix and has no real file on disk returns index.html.
@@ -126,9 +130,19 @@ def mount_spa(app: object) -> None:  # app: FastAPI — avoid import cycle
 
             raise HTTPException(status_code=404)
 
-        # Serve a real file if it exists directly under spa_dir (e.g. robots.txt).
-        candidate = spa_dir / full_path
-        if candidate.is_file():
+        # Serve a real file if it exists directly under spa_dir (e.g. robots.txt),
+        # but ONLY if the resolved path stays inside the SPA root — defends against
+        # path traversal (``..`` / URL-encoded / symlink escape). Anything that
+        # resolves outside spa_dir falls through to index.html and is NEVER served.
+        try:
+            candidate = (spa_dir / full_path).resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            candidate = None
+        if (
+            candidate is not None
+            and candidate.is_file()
+            and (candidate == spa_root or spa_root in candidate.parents)
+        ):
             return FileResponse(str(candidate))
 
         # Everything else → index.html (SPA history-mode fallback).

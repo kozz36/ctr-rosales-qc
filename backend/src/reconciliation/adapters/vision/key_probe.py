@@ -103,8 +103,12 @@ class VisionKeyProbeAdapter:
                 message="API key was rejected (HTTP 401). Check that the key is valid.",
             )
 
-        except (openai.APIConnectionError, openai.Timeout):
+        except openai.APIConnectionError:
             # Network/timeout — service unreachable.
+            # openai.APITimeoutError is a subclass of APIConnectionError — covered.
+            # openai.Timeout is httpx.Timeout (a config class, NOT BaseException) and
+            # MUST NOT appear in an except clause — doing so raises TypeError at runtime
+            # on any unrelated exception (JD CRITICAL-1).
             logger.warning(
                 "vision key probe: unreachable (base_url=%s, model=%s)",
                 self._base_url,

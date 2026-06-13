@@ -71,29 +71,29 @@ Chain strategy: stacked-to-main
 
 ### Phase 8: API Client Types and Store
 
-- [ ] **8.1 RED** — Write failing vitest for `useCapabilitiesStore`: initial state `visionEnabled=false`, `sunatEnabled=false`, `loaded=false`; after `fetch()` with mocked 200 `{vision_enabled: false, sunat_enabled: true}` → state updated; fetch failure → safe defaults kept, `loaded=false` or `loaded=true` with prior defaults (REV-R35-S01). Runner: `cd frontend && npm test`. Covers CAP-002-S01/S02, REV-R35-S01.
-- [ ] **8.2 GREEN** — Create `frontend/src/stores/capabilities.ts`: `useCapabilitiesStore` (Pinia); state `visionEnabled=false`, `sunatEnabled=false`, `loaded=false`; action `fetch()` calls `getCapabilities()`, maps response, sets `loaded=true`; on network error keeps safe defaults. Single fetch — no per-component re-fetch logic here. Make tests green.
-- [ ] **8.3 GREEN** — Extend `frontend/src/api/client.ts` with `getCapabilities(): Promise<CapabilitiesResponse>` and `saveVisionKey(key: string): Promise<VisionKeySaveResponse>`. Add corresponding types to `frontend/src/api/types.ts`: `CapabilitiesResponse`, `VisionKeySaveResponse`. No domain logic — pure HTTP wrappers.
+- [x] **8.1 RED** — Write failing vitest for `useCapabilitiesStore`: initial state `visionEnabled=false`, `sunatEnabled=false`, `loaded=false`; after `fetch()` with mocked 200 `{vision_enabled: false, sunat_enabled: true}` → state updated; fetch failure → safe defaults kept, `loaded=false` or `loaded=true` with prior defaults (REV-R35-S01). Runner: `cd frontend && npm test`. Covers CAP-002-S01/S02, REV-R35-S01. (`src/__tests__/stores/capabilities.store.test.ts`)
+- [x] **8.2 GREEN** — Create `frontend/src/stores/capabilities.ts`: `useCapabilitiesStore` (Pinia); state `visionEnabled=false`, `sunatEnabled=false`, `loaded=false`; action `fetch()` calls `getCapabilities()`, maps response, sets `loaded=true`; on network error keeps safe defaults (loaded stays false → retry allowed). Single fetch — `loaded`+`inFlight` gate.
+- [x] **8.3 GREEN** — Extend `frontend/src/api/client.ts` with `getCapabilities()`, `saveVisionKey(key)`, `deleteVisionKey()`. Added types `CapabilitiesResponse`, `VisionKeyMutationResponse` to `frontend/src/api/types.ts`. Pure HTTP wrappers. (`src/__tests__/api/client.visionKey.test.ts`)
 
 ### Phase 9: Disabled-not-Hidden Gating on 3 Surfaces
 
-- [ ] **9.1 RED** — Write failing vitests for `GuiaDrillDown.vue` reprocess button gating: `visionEnabled=false` → button has `disabled` attribute, tooltip text present, element IN DOM (not `v-if` removed), no emit on click (REV-R34-S01/S03/S04); `visionEnabled=true` → button interactive, no tooltip (REV-R34-S02). Covers REV-R34, REV-R35-S02.
-- [ ] **9.2 RED** — Write failing vitests for `ErroredGuiasPanel.vue` per-guía reprocess button: same disabled/tooltip/in-DOM/no-call contract; assert existing `v-if="retry_attempted"` visibility rule UNCHANGED (REV-R34-S03/S04).
-- [ ] **9.3 RED** — Write failing vitests for `PendientesPorProcesarTab.vue` bulk "Procesar todos con IA" button: same disabled/tooltip/in-DOM/no-call contract (REV-R34-S01/S03/S04).
-- [ ] **9.4 GREEN** — Modify `frontend/src/features/review/GuiaDrillDown.vue` ~L164: inject `useCapabilitiesStore`; bind `:disabled="!capabilitiesStore.visionEnabled || ...existing_conditions..."` and `:title="!capabilitiesStore.visionEnabled ? 'Vision IA no disponible — configurá una API key en Ajustes' : ''"` on reprocess button; NEVER use `v-if` for gating. Make test 9.1 green.
-- [ ] **9.5 GREEN** — Modify `frontend/src/features/review/ErroredGuiasPanel.vue` ~L78: same gating pattern; preserve existing `v-if="retry_attempted"` visibility logic unchanged. Make test 9.2 green.
-- [ ] **9.6 GREEN** — Modify `frontend/src/features/run/PendientesPorProcesarTab.vue` ~L49: same gating pattern on bulk button. Make test 9.3 green.
+- [x] **9.1 RED** — `GuiaDrillDown.vue` reprocess gating tests: disabled+tooltip+in-DOM when off, enabled when on, reactive flip (REV-R34/R35-S02). (`src/__tests__/features/GuiaDrillDown.visionGate.test.ts`)
+- [x] **9.2 RED** — `ErroredGuiasPanel.vue` per-guía reprocess gating tests; `v-if="retry_attempted"` visibility preserved. (`src/__tests__/features/ErroredGuiasPanel.visionGate.test.ts`)
+- [x] **9.3 RED** — `PendientesPorProcesarTab.vue` bulk button gating tests. (`src/__tests__/features/PendientesPorProcesarTab.visionGate.test.ts`)
+- [x] **9.4 GREEN** — Modified `GuiaDrillDown.vue` Reprocesar item: `storeToRefs(useCapabilitiesStore())` → `:disabled="...|| !visionEnabled || undefined"` + `:title` shared `VISION_DISABLED_TOOLTIP`. No `v-if`. Shared copy in `src/features/review/visionGate.ts`.
+- [x] **9.5 GREEN** — Modified `ErroredGuiasPanel.vue` reprocess btn (same pattern); existing `v-if="retry_attempted"` unchanged.
+- [x] **9.6 GREEN** — Modified `PendientesPorProcesarTab.vue` bulk btn (same pattern). NOTE: real path is `features/review/`, not `features/run/` as the task draft stated. Added a global Pinia `setupFiles` (`src/__tests__/setup.ts`) so store-reading components mount in existing tests; pre-existing reprocess-flow suites seed `visionEnabled=true`.
 
 ### Phase 10: VisionKeySettingsModal
 
-- [ ] **10.1 RED** — Write failing vitests for `VisionKeySettingsModal.vue`: idle state renders password input + submit button; on submit emits POST; success state shows restart notice + key input cleared (VKS-004-S01/S04); error state shows backend message (VKS-004-S02); `value` of input never pre-populated from store (VKS-004-S04).
-- [ ] **10.2 GREEN** — Create `frontend/src/features/settings/VisionKeySettingsModal.vue`: `<input type="password">` (write-only, no binding to stored key); \"Guardar y validar\" submit; state machine `idle → saving → success | error`; success shows \"Clave válida — reiniciá el servidor para activar Vision\"; error shows backend error message; on success clears input and shows restart notice; on cancel/close clears input. Make tests green.
+- [x] **10.1 RED** — `VisionKeySettingsModal.vue` tests: masked input + submit; success → restart notice + cleared (VKS-004-S01/S04); error → backend message, key NOT cleared (VKS-004-S02); empty-key guard; never pre-populated; "Quitar key" → DELETE; close emits update:modelValue=false. (`src/__tests__/features/VisionKeySettingsModal.test.ts`)
+- [x] **10.2 GREEN** — Created `frontend/src/features/settings/VisionKeySettingsModal.vue`: `<input type="password">` write-only; "Guardar y validar"; state `idle → saving → success | error`; success "Key válida — reiniciá la app para activar la IA."; inline status (role=status/alert — no toast lib in app); resets on every open. Added "Quitar key" → `deleteVisionKey()`.
 
 ### Phase 11: RunHistoryMenu Wiring and App Mount
 
-- [ ] **11.1 RED** — Write failing vitest for `RunHistoryMenu.vue`: \"Ajustes\" menu item present; click opens `VisionKeySettingsModal` (modal visible). Covers VKS-004-S03.
-- [ ] **11.2 GREEN** — Modify `frontend/src/features/run/RunHistoryMenu.vue`: add \"Ajustes\" item to hamburger menu; `v-if` or `ref`-controlled modal display; renders `VisionKeySettingsModal` when open. Make test green.
-- [ ] **11.3 GREEN** — Modify `frontend/src/app/App.vue` `onMounted`: call `useCapabilitiesStore().fetch()` once. This ensures store is populated before any component reads it (CAP-002-S01/S02, REV-R35-S01 loading state).
+- [x] **11.1 RED** — `RunHistoryMenu.vue`: "Ajustes" item present; click opens modal, no navigation (VKS-004-S03). Updated existing menu-count assertion 3→4. (`src/__tests__/features/RunHistoryMenu.ajustes.test.ts`)
+- [x] **11.2 GREEN** — Modified `frontend/src/features/run/RunHistoryMenu.vue`: added "Ajustes" menuitem; `ref`-controlled `settingsOpen`; renders `<VisionKeySettingsModal v-model="settingsOpen" />`.
+- [x] **11.3 GREEN** — Modified `frontend/src/app/App.vue` `onMounted` → `void useCapabilitiesStore().fetch()` once (CAP-002). (`src/__tests__/app/App.capabilities.test.ts`)
 
 ### Phase 12: SA-5 Playwright Runtime Validation (mandatory gate)
 
@@ -104,6 +104,6 @@ Chain strategy: stacked-to-main
 
 ### Phase 13: PR-2 Gate
 
-- [ ] **13.1** — Run full frontend vitest suite: `cd frontend && npm test`. All existing 322 + new tests green.
-- [ ] **13.2** — Work-unit commit sequence: `feat(capabilities): add useCapabilitiesStore + API client methods` → `feat(vision-key): disable-not-hide reprocess gating on 3 surfaces` → `feat(vision-key): add VisionKeySettingsModal` → `feat(vision-key): wire Ajustes to RunHistoryMenu + App.vue onMounted fetch`. Conventional commits, no AI attribution.
+- [x] **13.1** — Full frontend vitest suite green: 405 tests, 47 files (was 322 baseline + new). `vue-tsc --noEmit` exit 0.
+- [x] **13.2** — Three work-unit commits on `feat/optional-vision-key-frontend`: `feat(capabilities): add fail-safe capabilities store + vision-key API client (CAP-002/VKS-001)` → `feat(review): gate 3 AI reprocess surfaces visible-but-disabled when vision off (REV-R34/R35)` → `feat(settings): add vision-key settings modal off the hamburger + fetch capabilities on mount (VKS-004/CAP-002)`. Conventional commits, no AI attribution.
 - [ ] **13.3** — Judgment-day adversarial review before push. Focus: `v-if` vs `disabled` (no DOM removal), store reactivity (REV-R35-S02), key input never pre-populated, modal error path, SA-5 evidence completeness.

@@ -43,10 +43,20 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import { useRunStore } from '@/stores/run'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 import RunHistoryMenu from '@/features/run/RunHistoryMenu.vue'
 
 const runStore = useRunStore()
+
+// SDD#4 / CAP-002: fetch run-independent capabilities once at app startup so the
+// vision-key gating (REV-R34/R35) resolves before the operator reaches review.
+// fetch() never throws — it fails safe to vision-disabled on error.
+const capabilities = useCapabilitiesStore()
+onMounted(() => {
+  void capabilities.fetch()
+})
 </script>
 
 <style scoped>

@@ -46,7 +46,18 @@
       >
         Historial
       </button>
+      <button
+        class="run-history-menu__item"
+        role="menuitem"
+        type="button"
+        @click="onAjustes"
+      >
+        Ajustes
+      </button>
     </div>
+
+    <!-- SDD#4 / VKS-004: key-only vision settings modal, opened in-place (no route). -->
+    <VisionKeySettingsModal v-model="settingsOpen" />
   </div>
 </template>
 
@@ -66,12 +77,16 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRunStore } from '@/stores/run'
+import VisionKeySettingsModal from '@/features/settings/VisionKeySettingsModal.vue'
 
 const router = useRouter()
 const runStore = useRunStore()
 
 const open = ref(false)
 const rootEl = ref<HTMLElement | null>(null)
+
+/** SDD#4 / VKS-004: vision-key settings modal open state (no route). */
+const settingsOpen = ref(false)
 
 function closeMenu(): void {
   open.value = false
@@ -92,6 +107,12 @@ function onBatchActual(): void {
 function onHistorial(): void {
   closeMenu()
   void router.push('/historial')
+}
+
+/** Open the vision-key settings modal in-place (VKS-004-S03 — no navigation). */
+function onAjustes(): void {
+  closeMenu()
+  settingsOpen.value = true
 }
 
 /** Close on outside click (standard disclosure pattern). */

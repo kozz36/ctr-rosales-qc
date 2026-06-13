@@ -1,6 +1,10 @@
 # Windows Native Installer — Design (SDD#5 / direct-build path B)
 
-> Status: **design pinned, implementation in progress** (branch `feat/windows-native-installer`).
+> Status: **implementation complete on Linux; pending Windows build + validation**
+> (branch `feat/windows-native-installer`). Slice 1 (backend SPA serving) + slice 2 (build-kit)
+> done; ctr-review APPROVE-WITH-FINDINGS (0 critical), all confirmed findings fixed; backend suite
+> green (14 SPA tests + 1634 targeted). **NOT YET DONE** — the §3 gate (SA-5 1-click + real-data
+> R8/R9) must pass on the Windows box before this is shippable.
 > This is the source-of-truth contract both implementation slices consume.
 > Authoring machine is Linux; the `.exe` build + 1-click validation happen on Windows.
 

@@ -10,12 +10,10 @@
 ;   data directory (runs, sunat-cache, secrets) so the user's work is preserved.
 ;
 ; AppId GUID:
-;   IMPORTANT — keep this GUID stable across all future releases.  Changing it
-;   causes Windows to treat a new install as a completely different application
-;   (the old one is orphaned and the uninstaller no longer replaces it).
-;   Generate ONE guid for production and never change it:
-;     PowerShell: [System.Guid]::NewGuid().ToString()
-;   Replace the placeholder below with the real GUID before first release.
+;   IMPORTANT — this GUID is FIXED for production and MUST stay stable across all
+;   future releases.  Changing it causes Windows to treat a new install as a
+;   completely different application (the old one is orphaned and the uninstaller
+;   no longer replaces it).  Do NOT regenerate it.
 ;
 ; Build command (from repo root):
 ;   iscc packaging\windows\installer.iss
@@ -30,9 +28,8 @@
 #define MyBundleDir    "..\..\dist\ctr-rosales-qc"
 
 [Setup]
-; IMPORTANT: Keep AppId stable across releases — see note above.
-; Replace this placeholder GUID with a real one before first production release.
-AppId={{REPLACE-WITH-REAL-GUID-BEFORE-RELEASE}}
+; IMPORTANT: Keep AppId stable across releases — see note above. Do NOT change.
+AppId={{E785A512-FCF1-447C-9DD2-51E2F1C14E99}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} v{#MyAppVersion}

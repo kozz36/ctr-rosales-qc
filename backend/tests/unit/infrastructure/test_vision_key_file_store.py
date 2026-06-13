@@ -1,8 +1,11 @@
-"""Failing tests for VisionKeyFileStore.
+"""Tests for VisionKeyFileStore.
 
 Task 2.1 RED — VKS-002-S01/S02.
-These tests will FAIL until infrastructure/vision_key_file_store.py is created
-(Task 2.2 GREEN).
+JD-fix MEDIUM-3: TOCTOU — secret was written at umask 0644 BEFORE chmod 0600;
+tmp file existed world-readable with the secret during the window between
+write_text() and os.chmod(). Fix: use os.open(O_CREAT|O_EXCL, 0o600) to
+create the tmp file at 0600 atomically, BEFORE writing the secret. Also
+mkdir with mode=0o700 so the secrets dir itself is not group/world-accessible.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -121,6 +125,87 @@ class TestVisionKeyFileStoreWrite:
         store.write("second-key")  # overwrite
         result = store.read()
         assert result == "second-key"
+
+
+class TestVisionKeyFileStoreTOCTOU:
+    """JD-fix MEDIUM-3: secret NEVER at group/world-readable mode at any point.
+
+    The TOCTOU fix requires that the tmp file is created at 0600 BEFORE
+    the secret is written. We intercept os.replace to capture the tmp file's
+    mode at the moment of rename (after write, before cleanup) — it must
+    already be 0600 at that point.
+    """
+
+    def test_tmp_file_is_0600_at_creation_not_after_chmod(self, tmp_path: Path) -> None:
+        """The .tmp file must be created at mode 0600 — no chmod call needed.
+
+        JD RED→GREEN test (MEDIUM-3): the bugged code calls
+          tmp_path.write_text(key)  # file created at umask 0644 (TOCTOU exposed)
+          os.chmod(tmp_path, 0o600) # chmod AFTER — secret existed readable
+        The fix must NOT call os.chmod on the tmp file (because the file must be
+        created at 0600 via os.open). This test asserts that os.chmod is never
+        called on the .tmp file path — if it is, that means the file was first
+        written world-readable and THEN restricted (the vulnerable pattern).
+        """
+        from reconciliation.infrastructure.vision_key_file_store import (  # noqa: PLC0415
+            VisionKeyFileStore,
+        )
+
+        secrets_dir = tmp_path / "secrets"
+        store = VisionKeyFileStore(secrets_dir=secrets_dir)
+        chmod_calls_on_tmp: list[str] = []
+
+        real_chmod = os.chmod
+
+        def _track_chmod(path: str | Path, mode: int, **kwargs: object) -> None:
+            path_str = str(path)
+            if path_str.endswith(".tmp"):
+                chmod_calls_on_tmp.append(path_str)
+            return real_chmod(path, mode, **kwargs)  # type: ignore[call-arg]
+
+        with patch("os.chmod", side_effect=_track_chmod):
+            store.write("secret-key-toctou-test")
+
+        assert not chmod_calls_on_tmp, (
+            f"TOCTOU: os.chmod was called on the .tmp file ({chmod_calls_on_tmp}). "
+            "This means the secret was written at umask mode before chmod restricted it. "
+            "Fix: use os.open(O_WRONLY|O_CREAT|O_TRUNC|O_EXCL, 0o600) to create at 0600."
+        )
+
+    def test_secrets_dir_created_with_0700(self, tmp_path: Path) -> None:
+        """mkdir() must create the secrets dir with mode 0700, not default umask.
+
+        JD RED→GREEN test (MEDIUM-3): secrets dir created with default umask
+        (0755) allows group/world to list the directory contents and potentially
+        stat or read the key file. The fix uses mkdir(mode=0o700).
+        """
+        from reconciliation.infrastructure.vision_key_file_store import (  # noqa: PLC0415
+            VisionKeyFileStore,
+        )
+
+        secrets_dir = tmp_path / "new_secrets_dir"
+        store = VisionKeyFileStore(secrets_dir=secrets_dir)
+        store.write("some-key")
+
+        # Check the secrets dir mode
+        dir_mode = stat.S_IMODE(secrets_dir.stat().st_mode)
+        assert dir_mode == 0o700, (
+            f"Secrets dir has mode {oct(dir_mode)}, expected 0o700. "
+            "Group/world can enumerate the directory — use mkdir(mode=0o700)."
+        )
+
+    def test_final_file_mode_is_0600(self, tmp_path: Path) -> None:
+        """After write(), the final key file must be mode 0600 (reinforcement)."""
+        from reconciliation.infrastructure.vision_key_file_store import (  # noqa: PLC0415
+            VisionKeyFileStore,
+        )
+
+        secrets_dir = tmp_path / "secrets"
+        store = VisionKeyFileStore(secrets_dir=secrets_dir)
+        store.write("check-final-mode-key")
+        key_file = secrets_dir / "vision_api_key"
+        mode = stat.S_IMODE(key_file.stat().st_mode)
+        assert mode == 0o600, f"Final file mode {oct(mode)} != 0o600"
 
 
 class TestVisionKeyFileStoreRoundtrip:

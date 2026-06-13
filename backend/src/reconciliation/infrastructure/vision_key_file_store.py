@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import os
-import stat
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -72,29 +71,50 @@ class VisionKeyFileStore:
         return value
 
     def write(self, key: str) -> None:
-        """Persist *key* atomically with mode 0600.
+        """Persist *key* atomically with mode 0600, no TOCTOU window.
 
         Steps:
-        1. mkdir(parents=True, exist_ok=True) for the secrets dir.
-        2. Write to a tmp file in the same dir (same-fs → os.replace is atomic).
-        3. chmod 0600 on the tmp file.
+        1. mkdir(parents=True, exist_ok=True, mode=0o700) — secrets dir at 0700.
+        2. Create .tmp file at exactly 0600 via os.open(O_WRONLY|O_CREAT|O_TRUNC|O_EXCL,
+           0o600) — secret NEVER exists on disk at any other mode (TOCTOU fix).
+           Handle EEXIST by unlinking a stale .tmp first.
+        3. Write the encoded secret via os.write / os.close.
         4. os.replace(tmp → final path) — atomic rename.
 
         Key value NEVER logged; only path reference is logged.
+
+        JD MEDIUM-3: the previous write_text()+chmod() pattern had a TOCTOU window
+        where the .tmp file existed at umask 0644 with the secret already written.
         """
-        self._secrets_dir.mkdir(parents=True, exist_ok=True)
+        self._secrets_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
         tmp_path = self._key_path.with_suffix(".tmp")
+        tmp_str = str(tmp_path)
+        encoded = key.encode("utf-8")
+
+        # Create the tmp file at 0600 atomically — secret never exists at 0644.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_EXCL
         try:
-            tmp_path.write_text(key, encoding="utf-8")
-            # Set 0600 BEFORE the atomic rename so the final path is never
-            # readable by other users even for the brief rename window.
-            os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
-            os.replace(tmp_path, self._key_path)
+            fd = os.open(tmp_str, flags, 0o600)
+        except FileExistsError:
+            # Stale .tmp from a previous crashed write — unlink and retry once.
+            try:
+                os.unlink(tmp_str)
+            except OSError:
+                pass
+            fd = os.open(tmp_str, flags, 0o600)
+
+        try:
+            os.write(fd, encoded)
+        finally:
+            os.close(fd)
+
+        try:
+            os.replace(tmp_str, str(self._key_path))
         except Exception:
             # Best-effort cleanup of tmp on failure.
             try:
-                tmp_path.unlink(missing_ok=True)
+                os.unlink(tmp_str)
             except OSError:
                 pass
             raise

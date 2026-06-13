@@ -5,7 +5,24 @@
 > files in `docs/`) is the versioned source of truth for continuing the work anywhere.
 
 Last session: **2026-06-12**. Current branch: `main`. All PRs merged.
-**Delivery blockers #56 + #60 — CLOSED & MERGED (PR #70). App is delivery-ready. Next: remaining backlog (#57–#62, all non-blocking).**
+**SDD#4 optional-vision-key-ui — COMPLETE & MERGED (PR #74 backend + #75 frontend). Delivery blockers #56/#57/#60 CLOSED. App is delivery-ready. Next: Windows 1-click installer (packaging) + remaining backlog.**
+
+> **SDD#4 outcome (optional-vision-key-ui, PR #74/#75)**: the vision-OFF delivered app no longer
+> shows dead "Reprocesar con IA" buttons, and a non-technical operator can paste their own Ollama
+> Cloud key in-app to enable the AI reprocess feature. **Backend (PR-1 #74)**: `GET /api/v1/capabilities`
+> ({vision_enabled, sunat_enabled}); `VisionKeyStorePort` + 0600-atomic file store (`/data/secrets/`,
+> never logged/in-config.yaml) with `clear()`; `VisionKeyProbeAdapter` (lazy openai, distinguishes
+> 401/valid/unreachable); `POST/DELETE /api/v1/settings/vision-key` (validate-before-persist);
+> composition-root key injection in `main.py` lifespan before AppConfig (force ENABLED+API_KEY,
+> setdefault PROVIDER=ollama/BASE_URL/MODEL) → **restart-to-apply**. **Frontend (PR-2 #75)**: fail-safe
+> capabilities Pinia store; 3 reprocess surfaces **disabled+tooltip (NOT hidden)** gated on vision;
+> key-only settings modal off the hamburger (validate → "reiniciá para activar"). **Dual-blind JD on
+> PR-1 caught a CRITICAL Judge A missed**: `except (…, openai.Timeout)` where `openai.Timeout` is
+> `httpx.Timeout` (NOT a BaseException) → TypeError → HTTP 500 on any 429/404, hidden behind a mock
+> fabricating Timeout as Exception (FAIL→fix→re-judge PASS). SA-5 Playwright PASS. The SA-5
+> `vision_calls:38`-on-disabled anomaly was proven a benign harness artifact (single startup config,
+> no per-run re-read). Specs promoted: `openspec/specs/{app-capabilities,vision-key-settings}/`,
+> review REV-R34/R35. Archived to `openspec/changes/archive/optional-vision-key-ui/`.
 
 > **Delivery closeout (2026-06-12, PR #70)**: closed the two real delivery blockers (audit-ranked).
 > **#56** air-gap OCR: the build warm-up/assertion ran inference on *random noise* → Det found no
@@ -91,7 +108,20 @@ PR #67  feat/run-history-lifecycle (PR-2)         MERGED  SDD#3 PR#2 — lifecyc
 PR #68  fix/run-history-manifest-fields           MERGED  SDD#3 fix — SA-5: manifest registro field mismatch
 PR #69  feat/run-history-ui (PR-3)                MERGED  SDD#3 PR#3 — frontend: hamburger, /historial, cold-load, localStorage; fix infinite poll
 PR #70  fix/delivery-blockers-56-60               MERGED  Delivery: #56 air-gap OCR bundling + #60 in-container acceptance gate (make verify/verify-fast)
+PR #71  fix/vision-deadline-57                     MERGED  #57 vision DEADLINE_S=60 (stop cloud date-read timeouts)
+PR #72  chore/ollama-cloud-vision-apikey           MERGED  Pass OLLAMA_API_KEY for direct ollama.com/v1 cloud
+PR #73  chore/kimi-default-openspec-backfill       MERGED  Default vision kimi-k2.5 + backfill containerized-verification spec
+PR #74  feat/optional-vision-key-backend           MERGED  SDD#4 PR-1: capabilities endpoint + in-app key store (JD×2)
+PR #75  feat/optional-vision-key-frontend          MERGED  SDD#4 PR-2: capabilities gating + settings modal (SA-5 + ctr-review)
 ```
+
+- **Next: Windows 1-click installer** (packaging, user-approved Docker path): Inno Setup `.exe` bundling
+  the pre-built images (`docker save` tarball, offline `docker load`), `docker-compose.app.yml`, a
+  pre-filled `.env` (vision-off deterministic), desktop shortcut + launcher (checks Docker → compose up
+  → opens browser). The engineer never touches code/terminal; one-time Docker Desktop setup by IT.
+- **Vision config note**: delivery (`app.yml`) = vision OFF (deterministic OCR+SUNAT, no key). Dev/verify
+  (`docker-compose.yml`) = cloud-direct kimi-k2.5 via `ollama.com/v1` + `OLLAMA_API_KEY` (export from
+  `secret-tool lookup service ollama-cloud account api`; cloud-direct REQUIRES the key — 401 without).
 
 - **Acceptance gate**: `make verify` (full 493-page, ~90 min) or `make verify-fast` (3-section
   ~50-page subset, ~15 min) → R8 MATCH + R9 divergence over the real API. Strict mode fails on any

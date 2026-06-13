@@ -147,12 +147,13 @@ Hard anti-pattern checklist the implementation sub-agent AND the reviewer enforc
 
 ## Status & next steps
 
-**Branch `main` — all PRs merged as of 2026-06-12 (PR #70). SDD#1/#2/#3 DONE; delivery
-blockers #56 (air-gap OCR) + #60 (in-container acceptance gate) CLOSED. App is delivery-ready.**
-**Read `docs/HANDOFF.md` first — it has the live state.** Next = remaining non-blocking backlog
-(#57 DEADLINE_S, #58 magnitude guard, #59 canonicalization Tier-1, #44 cross-model consensus, etc.).
+**Branch `main` — all PRs merged as of 2026-06-12 (through PR #75). SDD#1/#2/#3/#4 DONE; delivery
+blockers #56/#57/#60 CLOSED. App is delivery-ready.** **Read `docs/HANDOFF.md` first — live state.**
+Next = **Windows 1-click installer** (packaging; Docker path) + non-blocking backlog (#58/#59/#44/etc.).
+SDD#4 (optional-vision-key-ui, PR #74/#75): vision-off delivery gates the AI-reprocess buttons
+(disabled+tooltip) + in-app Ollama-key settings modal (validate-before-persist, restart-to-apply).
 Acceptance gate: `make verify` (full ~90 min) / `make verify-fast` (3-section subset ~15 min);
-backend host port is `CTR_BACKEND_PORT` (default 8010).
+backend host port `CTR_BACKEND_PORT` (default 8010). Delivery=vision-off; dev/verify=cloud kimi-k2.5.
 
 The historical SDD plan below is kept as a record (SDD#1/#2/#3 are all merged now):
 

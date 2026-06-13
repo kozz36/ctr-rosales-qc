@@ -747,7 +747,11 @@ class VisionKeySaveRequest(BaseModel):
          Minimum length 1 — empty string is rejected by Pydantic validation.
     """
 
-    key: str = Field(min_length=1, description="Candidate vision API key (write-only; never echoed).")
+    key: str = Field(
+        min_length=1,
+        max_length=4096,
+        description="Candidate vision API key (write-only; never echoed).",
+    )
 
 
 class VisionKeySaveResponse(BaseModel):
@@ -758,6 +762,17 @@ class VisionKeySaveResponse(BaseModel):
 
     restart_required: bool = Field(
         description="True when the server must be restarted for the key to take effect."
+    )
+
+
+class VisionKeyDeleteResponse(BaseModel):
+    """Response body for DELETE /settings/vision-key (VKS-006).
+
+    restart_required: Always True — vision stays off only after the next restart.
+    """
+
+    restart_required: bool = Field(
+        description="True when the server must be restarted for the key removal to take effect."
     )
 
 

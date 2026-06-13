@@ -120,3 +120,18 @@ class VisionKeyFileStore:
             raise
 
         logger.info("vision key file written: %s", self._key_path)
+
+    def clear(self) -> None:
+        """Remove the stored key file (idempotent — no-op if absent).
+
+        After clear() + server restart, no key file → vision stays off.
+        Key path NEVER logged (only whether absent or removed).
+        """
+        try:
+            self._key_path.unlink()
+            logger.info("vision key file cleared: %s", self._key_path)
+        except FileNotFoundError:
+            logger.debug("vision key file already absent on clear: %s", self._key_path)
+        except OSError as exc:
+            logger.warning("vision key file clear error (non-fatal): %s", exc)
+            raise

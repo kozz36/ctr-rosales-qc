@@ -58,15 +58,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if vision_key:
         # Composition-Root env injection (D4): set env BEFORE AppConfig.from_yaml so
         # pydantic-settings reads the injected values at construction time.
-        # CRITICAL: PROVIDER must be "ollama" — coded default is "anthropic".
-        # Without this, the factory builds the wrong adapter even if ENABLED=true.
+        #
+        # Precedence rules (JD MEDIUM-4):
+        #   ENABLED    → force-set true (a present key file IS the operator's "enable").
+        #   API_KEY    → force-set (the file IS the key; no other source for this value).
+        #   PROVIDER   → setdefault (explicit operator/compose value wins; default=ollama).
+        #   BASE_URL   → setdefault (explicit dev-compose URL must not be retargeted).
+        #   MODEL      → setdefault (explicit override must not be discarded).
         os.environ["RECONCILIATION__VISION__ENABLED"] = "true"
-        os.environ["RECONCILIATION__VISION__PROVIDER"] = "ollama"
         os.environ["RECONCILIATION__VISION__OLLAMA__API_KEY"] = vision_key
-        os.environ["RECONCILIATION__VISION__OLLAMA__BASE_URL"] = "https://ollama.com/v1"
-        os.environ["RECONCILIATION__VISION__OLLAMA__MODEL"] = "kimi-k2.5"
+        os.environ.setdefault("RECONCILIATION__VISION__PROVIDER", "ollama")
+        os.environ.setdefault("RECONCILIATION__VISION__OLLAMA__BASE_URL", "https://ollama.com/v1")
+        os.environ.setdefault("RECONCILIATION__VISION__OLLAMA__MODEL", "kimi-k2.5")
         logger.info(
-            "vision key injected into env (PROVIDER=ollama, ENABLED=true) — "
+            "vision key injected into env (ENABLED=true, API_KEY set) — "
             "AppConfig will see vision-on at startup"
         )
     else:

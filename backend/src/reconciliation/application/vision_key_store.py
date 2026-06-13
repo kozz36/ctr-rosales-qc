@@ -55,6 +55,14 @@ class VisionKeyStorePort(Protocol):
         """Persist the key atomically with mode 0600."""
         ...
 
+    def clear(self) -> None:
+        """Remove the stored key (idempotent — no-op if absent).
+
+        After clear() + restart, vision stays off (kill-switch restored).
+        NEVER raises on a missing file.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # VisionKeyProbePort — abstract key-validity probe contract

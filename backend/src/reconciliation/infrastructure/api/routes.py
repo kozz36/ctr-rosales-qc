@@ -56,6 +56,7 @@ from reconciliation.infrastructure.api.schemas import (
     RunStatusResponse,
     RunSummaryResponse,
     UnresolvedGuiaResponse,
+    VisionKeyDeleteResponse,
     VisionKeySaveRequest,
     VisionKeySaveResponse,
     _row_id,
@@ -2235,7 +2236,38 @@ def save_vision_key(
         )
 
     # unreachable or error → 503
+    # LOW-9: do NOT echo probe message (may contain provider base_url).
+    # Use a generic, provider-agnostic message.
     raise HTTPException(
         status_code=503,
-        detail=result.message or "Vision API service is unreachable. Try again later.",
+        detail="Vision API service is unreachable or returned an unexpected error. "
+               "Check network connectivity and try again.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Vision key DELETE (off-ramp / kill-switch restore — VKS-006)
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/settings/vision-key",
+    response_model=VisionKeyDeleteResponse,
+    summary="Remove the stored vision API key (VKS-006).",
+)
+def delete_vision_key(
+    key_store: KeyStoreDep,
+) -> VisionKeyDeleteResponse:
+    """Clear the stored vision API key, restoring the kill-switch (VKS-006).
+
+    Idempotent — returns 200 even if no key is currently stored.
+    Vision stays off only AFTER the backend is restarted (restart_required=true).
+
+    Security invariants:
+      - Key value NEVER logged.
+      - Nothing is echoed in the response body.
+      - Operation is idempotent (no 404 on absent key).
+    """
+    key_store.clear()
+    logger.info("vision key: cleared (restart_required=True)")
+    return VisionKeyDeleteResponse(restart_required=True)

@@ -1,0 +1,68 @@
+# config.yaml — CTR Rosales QC (Windows native installer profile)
+#
+# Purpose:
+#   Belt-and-suspenders fallback for the deterministic vision-off profile.
+#   The launcher (launcher.py) sets all required env vars BEFORE AppConfig
+#   is constructed, so env vars take precedence over these values.
+#   This file only activates if an env var is missing or not yet set.
+#
+# Source of truth: docker-compose.app.yml (mirrors its env profile).
+# Design contract: docs/WINDOWS-INSTALLER.md §2.3
+#
+# Env var format: RECONCILIATION__<SECTION>__<KEY>
+# Env vars ALWAYS win over values in this file (pydantic-settings priority).
+#
+# DO NOT enable vision or change sunat.enabled to false here.
+# AppConfig._validate_date_source rejects vision=false + sunat=false
+# (no date source available — the pipeline would fail at startup).
+
+vision:
+  # Vision is disabled in the Windows native installer profile.
+  # No LLM calls, no API keys needed.
+  # The launcher sets RECONCILIATION__VISION__ENABLED=false.
+  enabled: false
+
+  # Provider is irrelevant when vision is disabled, but set a safe default.
+  provider: ollama
+
+  ollama:
+    model: kimi-k2.5
+    base_url: http://localhost:11434/v1
+
+  # Cap retained for config schema completeness.
+  max_vision_calls: 0
+
+  stamp_crop:
+    x0: 0.55
+    y0: 0.05
+    x1: 1.0
+    y1: 0.45
+
+ocr:
+  # Deterministic RapidOCR ONNX — no network, no LLM.
+  # Models bundled at rapidocr/models/ inside the PyInstaller bundle.
+  enabled: true
+  engine: rapidocr
+
+deskew:
+  # Locked: guia_only — do not change without amending the spec.
+  scope: guia_only
+
+confidence:
+  # Locked at 0.85 — EXT-002.
+  threshold: 0.85
+
+# output_dir is overridden by the launcher to %LOCALAPPDATA%\ctr-rosales-qc\runs.
+# This relative fallback is for developer source-mode runs only.
+output_dir: runs
+
+sunat:
+  # SUNAT is enabled in the Windows native installer profile.
+  # Required when vision is disabled (AppConfig date-source invariant).
+  # Fetches guía metadata from SUNAT descargaqr for reception date reads.
+  # SUNAT reachability is required for first-run; subsequent runs use the cache.
+  enabled: true
+  timeout_s: 10.0
+  cache: true
+  # cache_dir is overridden by the launcher to %LOCALAPPDATA%\ctr-rosales-qc\sunat-cache.
+  # Relative fallback for developer source-mode runs only.

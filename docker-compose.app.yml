@@ -39,6 +39,7 @@ services:
     volumes:
       - run-output:/data/runs
       - sunat-cache:/data/sunat-cache
+      - secrets:/data/secrets
     ports:
       # Host-published port is configurable (default 8010, OFF :8000 to coexist with
       # sibling services). Container port stays 8000 — the frontend nginx proxies to
@@ -69,3 +70,4 @@ services:
 volumes:
   run-output:
   sunat-cache:
+  secrets:
